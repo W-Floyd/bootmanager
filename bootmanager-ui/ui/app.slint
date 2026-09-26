@@ -35,8 +35,10 @@ component Switch inherits Rectangle {
     height: 24px;
     border-radius: 12px;
     background: on ? Palette.accent : #3a423d;
+    animate background { duration: 150ms; }
     Rectangle {
         x: on ? parent.width - self.width - 3px : 3px;
+        animate x { duration: 150ms; easing: ease-out; }
         y: 3px;
         width: 18px;
         height: 18px;
@@ -54,6 +56,8 @@ component MenuList inherits FocusScope {
     // Compact rows for screens of plain lines (the log).
     in property <bool> compact;
     property <length> row-h: compact ? 30px : 64px;
+    // Keys ease the list to the selected row; a finger moves it directly.
+    property <bool> ease-scroll;
 
     public function show-selected() {
         // Before the first layout the list has no height: nothing to scroll.
@@ -75,6 +79,7 @@ component MenuList inherits FocusScope {
     // long list is one press away.
     key-pressed(event) => {
         root.activity();
+        root.ease-scroll = true;
         if (event.text == Key.UpArrow) {
             root.selected = root.selected <= 0 ? root.rows.length - 1 : root.selected - 1;
             return accept;
@@ -98,17 +103,20 @@ component MenuList inherits FocusScope {
 
     flick := Flickable {
         content-height: root.rows.length * root.row-h;
+        animate content-y { duration: root.ease-scroll ? 150ms : 0ms; easing: ease-out; }
         for row[i] in root.rows: Rectangle {
             y: i * root.row-h;
             height: root.row-h;
             // Pressed, then selected, then hovered (a mouse or trackpad; a
             // finger hovers only while down, and the platform ends it on lift).
             background: ta.pressed ? #2a4a36 : i == root.selected ? Palette.select : ta.has-hover ? #16231b : transparent;
+            animate background { duration: 100ms; }
 
             Rectangle {
                 x: 0;
                 width: 4px;
                 background: i == root.selected ? Palette.accent : transparent;
+                animate background { duration: 100ms; }
             }
 
             Rectangle {
@@ -162,6 +170,11 @@ component MenuList inherits FocusScope {
 
             ta := TouchArea {
                 mouse-cursor: row.kind == "info" ? MouseCursor.default : MouseCursor.pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.ease-scroll = false;
+                    }
+                }
                 clicked => {
                     root.activity();
                     root.selected = i;
@@ -301,8 +314,13 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.busy != "": Rectangle {
+    // Always there, so it can fade in; hidden (and letting touches
+    // through) once faded out.
+    Rectangle {
         background: #000000c8;
+        opacity: root.busy != "" ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        visible: self.opacity > 0;
         Text {
             text: root.busy;
             font-size: 20px;
