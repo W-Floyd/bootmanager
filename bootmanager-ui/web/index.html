@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- The browser front end, served by the phone's Remote UI service next to
-     the wasm build (recovery_ui.js, recovery_ui_bg.wasm). Slint draws into
+     the wasm build (bootmanager_ui.js, bootmanager_ui_bg.wasm). Slint draws into
      the canvas with id "canvas"; src/web.rs connects to ws://<host>/ws.
      #preview is the file viewer: src/web.rs fills in its links and frame
      and unhides it; closing it is handled here. -->
@@ -8,7 +8,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>fogona recovery</title>
+<title>postmarketOS Boot Manager</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   /* The canvas fills the window. Slint first sizes the window to its
@@ -64,7 +64,7 @@
   }, true);
 
   // Absolute: the page is also served at deep paths (/partitions/...).
-  import init from "/recovery_ui.js";
+  import init from "/bootmanager_ui.js";
   await init();
   document.getElementById("canvas").focus();
 </script>

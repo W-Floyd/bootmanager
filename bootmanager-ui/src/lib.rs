@@ -1,4 +1,4 @@
-//! recovery-ui: the Slint front end of the fogona LinuxBoot stage. See
+//! bootmanager-ui: the Slint front end of postmarketOS Boot Manager. See
 //! Cargo.toml for the three builds; src/main.rs is the native entry point
 //! and `web_main` below the browser's.
 

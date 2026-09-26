@@ -738,7 +738,7 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
     let mut items = vec![];
     let sub = String::new();
     if !connected {
-        return ("Recovery".into(), sub, items);
+        return ("Boot Manager".into(), sub, items);
     }
     match &s.screen {
         Screen::Main => {
@@ -762,7 +762,7 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
             items.push((row("Reboot", "", "action", false), Action::Power("reboot")));
             items.push((row("Reboot to bootloader", "ABL fastboot", "action", false), Action::Power("bootloader")));
             items.push((row("Power off", "", "danger", false), Action::Power("poweroff")));
-            ("Recovery".into(), sub, items)
+            ("Boot Manager".into(), sub, items)
         }
         Screen::Boot => {
             match &s.entries {

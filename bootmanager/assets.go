@@ -13,10 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The UI travels inside the backend: recovery/build.sh copies the phone
-// build of recovery-ui and its web build into assets/ before the backend is
-// compiled, so one binary is the whole recovery and the two cannot drift
-// apart. assets/ holds only a placeholder in git; a backend built without
+// The UI travels inside the backend: bootmanager/build.sh copies the phone
+// build of bootmanager-ui and its web build into assets/ before the backend
+// is compiled, so one binary is the whole boot manager and the two cannot
+// drift apart. assets/ holds only a placeholder in git; a backend built without
 // the UI falls back to -ui and -web on disk.
 //
 // A file uploaded to /tmp/dev (dev.go) wins over both.
@@ -32,7 +32,7 @@ var (
 // uiExecutable is the UI binary to start: an upload, else the embedded
 // copy through a memfd (nothing is written to disk), else -ui.
 func uiExecutable() string {
-	if p := filepath.Join(devDir, "recovery-ui"); isFile(p) {
+	if p := filepath.Join(devDir, "bootmanager-ui"); isFile(p) {
 		return p
 	}
 	memfdMu.Lock()
@@ -40,16 +40,16 @@ func uiExecutable() string {
 	if memfdPath != "" {
 		return memfdPath
 	}
-	b, err := assets.ReadFile("assets/recovery-ui")
+	b, err := assets.ReadFile("assets/bootmanager-ui")
 	if err != nil || len(b) == 0 {
 		return *uiPath
 	}
-	fd, err := unix.MemfdCreate("recovery-ui", 0)
+	fd, err := unix.MemfdCreate("bootmanager-ui", 0)
 	if err != nil {
 		log.Printf("memfd: %v", err)
 		return *uiPath
 	}
-	f := os.NewFile(uintptr(fd), "recovery-ui")
+	f := os.NewFile(uintptr(fd), "bootmanager-ui")
 	if _, err := f.Write(b); err != nil {
 		log.Printf("memfd: %v", err)
 		f.Close()

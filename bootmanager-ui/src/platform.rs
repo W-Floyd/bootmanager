@@ -121,7 +121,7 @@ impl Fb {
             red_offset: var[8],
         };
         eprintln!(
-            "recovery-ui: {} {}x{} {} bpp, red at {}, stride {}",
+            "bootmanager-ui: {} {}x{} {} bpp, red at {}, stride {}",
             fb_name(), fb.xres, fb.yres, fb.bpp, fb.red_offset, fb.stride
         );
         if fb.bpp != 32 && fb.bpp != 16 {
@@ -221,7 +221,7 @@ impl InputDev {
             (Some(x), Some(y)) => Some((x, y)),
             _ => abs_range(fd, ABS_X).zip(abs_range(fd, ABS_Y)),
         };
-        eprintln!("recovery-ui: input {path}{}", if axes.is_some() { " (touch)" } else { "" });
+        eprintln!("bootmanager-ui: input {path}{}", if axes.is_some() { " (touch)" } else { "" });
         Some(InputDev { path: path.to_string(), fd, axes, x: 0, y: 0, down: false, slot: 0, was_down: false })
     }
 }

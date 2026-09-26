@@ -10,9 +10,9 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-var webDir = flag.String("web", "/usr/share/recovery-web", "web build of recovery-ui on disk, for a backend built without it embedded")
+var webDir = flag.String("web", "/usr/share/bootmanager-web", "web build of bootmanager-ui on disk, for a backend built without it embedded")
 
-// webHandler serves the web build of recovery-ui and, at /ws, the backend
+// webHandler serves the web build of bootmanager-ui and, at /ws, the backend
 // protocol over a WebSocket: each text frame carries one JSON message either
 // way. Incoming frames are re-joined with a newline after each, because a
 // browser sends a frame without one and the line reader would otherwise

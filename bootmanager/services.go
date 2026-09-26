@@ -205,8 +205,8 @@ func waitable(p *os.Process) func() {
 }
 
 // startRemote serves the UI to other machines: the same JSON-lines protocol
-// raw over TCP for a native recovery-ui (--connect), and over a WebSocket
-// next to the web build of recovery-ui for a browser. There is no
+// raw over TCP for a native bootmanager-ui (--connect), and over a
+// WebSocket next to the web build of bootmanager-ui for a browser. There is no
 // authentication; the stage's only network is the USB link.
 func startRemote() (func(), error) {
 	tcp, err := net.Listen("tcp", ":7777")

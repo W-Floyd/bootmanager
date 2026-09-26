@@ -1,4 +1,4 @@
-//! The backend protocol, one JSON object per line (recovery-backend/main.go
+//! The backend protocol, one JSON object per line (bootmanager/main.go
 //! has the spec). Transport-free: a transport hands complete lines to
 //! `handle_line` and supplies the function that sends one.
 
@@ -49,7 +49,7 @@ impl Client {
         let mut v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("recovery-ui: bad line from backend: {e}");
+                eprintln!("bootmanager-ui: bad line from backend: {e}");
                 return None;
             }
         };

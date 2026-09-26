@@ -1,5 +1,5 @@
 [package]
-name = "recovery-ui"
+name = "bootmanager-ui"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -21,7 +21,7 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
-name = "recovery-ui"
+name = "bootmanager-ui"
 path = "src/main.rs"
 
 [dependencies]

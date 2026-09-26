@@ -1,4 +1,4 @@
-// fogona recovery: one screen that is a header, a status line, a list and a
+// postmarketOS Boot Manager: one screen that is a header, a status line, a list and a
 // key hint. The list is the whole UI -- src/app.rs decides what is in it and
 // what each row does, so the same file serves the phone (three keys, maybe a
 // touchscreen), a desktop window and a browser tab.
@@ -175,9 +175,9 @@ export component AppWindow inherits Window {
     preferred-height: 800px;
     background: Palette.bg;
     default-font-family: "DejaVu Sans";
-    title: "fogona recovery";
+    title: "postmarketOS Boot Manager";
 
-    in property <string> heading: "Recovery";
+    in property <string> heading: "Boot Manager";
     // Where the backend is, when it is not this device: "remote: host:port".
     in property <string> origin;
     // The panel's shape (display.info), set on the phone only: the camera
@@ -234,7 +234,7 @@ export component AppWindow inherits Window {
                 // as the cutout, its text split to either side of it, as
                 // phosh lays out its top bar.
                 if root.cutout-h <= 0: Text {
-                    text: "postmarketOS  ·  fogona recovery" + (root.origin != "" ? "  ·  " + root.origin : "");
+                    text: "postmarketOS  ·  Boot Manager" + (root.origin != "" ? "  ·  " + root.origin : "");
                     font-size: 12px;
                     color: Palette.accent;
                 }
@@ -258,7 +258,7 @@ export component AppWindow inherits Window {
                         height: parent.height;
                         vertical-alignment: center;
                         horizontal-alignment: right;
-                        text: root.origin != "" ? root.origin : "fogona recovery";
+                        text: root.origin != "" ? root.origin : "Boot Manager";
                         font-size: 12px;
                         color: Palette.accent;
                         overflow: elide;

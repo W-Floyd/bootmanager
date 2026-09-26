@@ -17,7 +17,7 @@ import (
 	"github.com/u-root/u-root/pkg/mount"
 )
 
-// Live restarts, for working on the recovery without a reflash.
+// Live restarts, for working on the boot manager without a reflash.
 //
 // The backend restarts by exec'ing itself (or an uploaded build) in place:
 // the PID stays, so sshd and the UI stay its children and keep running --
@@ -29,16 +29,16 @@ import (
 // Uploads, with the Dev uploads service on (it rides on Remote UI's HTTP
 // port, so both must be on), from the container:
 //
-//	curl -T recovery-ui      http://172.16.42.1:8080/dev/recovery-ui       # restarts the UI
-//	curl -T recovery-backend http://172.16.42.1:8080/dev/recovery-backend  # re-execs the backend
-//	curl -T index.html       http://172.16.42.1:8080/dev/web/index.html    # served next reload
+//	curl -T bootmanager-ui http://172.16.42.1:8080/dev/bootmanager-ui   # restarts the UI
+//	curl -T bootmanager    http://172.16.42.1:8080/dev/bootmanager      # re-execs the backend
+//	curl -T index.html     http://172.16.42.1:8080/dev/web/index.html   # served next reload
 //
-// tools/linuxboot/recovery/dev.sh builds and sends them. Uploads live in
+// tools/linuxboot/bootmanager/dev.sh builds and sends them. Uploads live in
 // /tmp/dev, in RAM, and win over the built-in copies until the next boot.
 
 const (
 	devDir    = "/tmp/dev"
-	statePath = "/tmp/recovery-state.json"
+	statePath = "/tmp/bootmanager-state.json"
 )
 
 type handoff struct {
@@ -88,7 +88,7 @@ func reexec() error {
 	unmountBrowsed()
 	mountPool.UnmountAll(mount.MNT_DETACH)
 
-	bin := filepath.Join(devDir, "recovery-backend")
+	bin := filepath.Join(devDir, "bootmanager")
 	argv := os.Args
 	if !isFile(bin) {
 		// /proc/self/exe is u-root's bb for a built-in backend, which picks
@@ -111,10 +111,10 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/dev/")
 	switch {
-	case name == "recovery-ui", name == "recovery-backend":
+	case name == "bootmanager-ui", name == "bootmanager":
 	case strings.HasPrefix(name, "web/") && !strings.Contains(name[4:], "/"):
 	default:
-		http.Error(w, "upload recovery-ui, recovery-backend or web/<file>", http.StatusBadRequest)
+		http.Error(w, "upload bootmanager-ui, bootmanager or web/<file>", http.StatusBadRequest)
 		return
 	}
 	dst := filepath.Join(devDir, name)
@@ -125,10 +125,10 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("dev: received %s", dst)
 
 	switch name {
-	case "recovery-ui":
+	case "bootmanager-ui":
 		restartUI()
 		fmt.Fprintln(w, "ui restarted")
-	case "recovery-backend":
+	case "bootmanager":
 		fmt.Fprintln(w, "backend re-exec")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()

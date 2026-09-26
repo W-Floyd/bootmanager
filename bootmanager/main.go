@@ -1,16 +1,17 @@
-// Command recovery-backend is the fogona LinuxBoot stage's recovery service:
-// it owns every privileged action (boot, services, mounts, power) and serves
-// them over a Unix socket to recovery-ui, the Slint front end, which it
-// starts and restarts.
+// Command bootmanager is postmarketOS Boot Manager, run in the LinuxBoot
+// stage: it owns every privileged action (boot, services, mounts, power)
+// and serves them over a Unix socket to bootmanager-ui, the Slint front
+// end, which it starts and restarts.
 //
-//	recovery-backend [-socket /tmp/recovery.sock] [-ui /bin/recovery-ui]
-//	                 [-autoboot 10] [-scan DIR]
+//	bootmanager [-socket /tmp/bootmanager.sock] [-ui /bin/bootmanager-ui]
+//	            [-autoboot 10] [-scan DIR]
 //
 // The protocol is one JSON object per line. The UI sends
 // {"id":N,"cmd":"...","args":{...}} and gets back {"id":N,"data":...} or
 // {"id":N,"error":"..."}; the backend also pushes {"event":"...","data":...}
 // to every client unasked (autoboot countdown, busy state, errors). Any
-// client works: `nc -U /tmp/recovery.sock` over SSH drives it by hand.
+// client works: `netcat -U /tmp/bootmanager.sock` over SSH drives it by
+// hand (keep its stdin open until the reply: u-root's netcat quits at EOF).
 //
 // Autoboot lives here, not in the UI, so the stage still boots its default
 // entry if the UI never draws. /tmp/hold stops it, as with fogona-boot.sh.
@@ -34,11 +35,11 @@ import (
 )
 
 var (
-	socketPath = flag.String("socket", "/tmp/recovery.sock", "IPC socket")
-	uiPath     = flag.String("ui", "/bin/recovery-ui", "UI binary to run and restart; empty for none")
+	socketPath = flag.String("socket", "/tmp/bootmanager.sock", "IPC socket")
+	uiPath     = flag.String("ui", "/bin/bootmanager-ui", "UI binary on disk, for a backend built without it embedded; empty for no UI")
 	autoboot   = flag.Int("autoboot", 10, "seconds before booting the default entry; 0 disables")
 	scanDir    = flag.String("scan", "", "parse this directory's boot config instead of probing block devices")
-	logPath    = flag.String("log", "/tmp/recovery.log", "log file, also served by log.tail")
+	logPath    = flag.String("log", "/tmp/bootmanager.log", "log file, also served by log.tail")
 )
 
 type request struct {
@@ -167,7 +168,7 @@ func main() {
 		log.SetOutput(io.MultiWriter(os.Stderr, f))
 	}
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("recovery-backend starting")
+	log.Printf("bootmanager starting")
 
 	os.Remove(*socketPath)
 	ln, err := net.Listen("unix", *socketPath)

@@ -1,11 +1,11 @@
-//! recovery-ui, native.
+//! bootmanager-ui, native.
 //!
-//! On the phone (default build), started by recovery-backend:
-//!     recovery-ui [--socket /tmp/recovery.sock] [--fb /dev/fb0]
+//! On the phone (default build), started by bootmanager:
+//!     bootmanager-ui [--socket /tmp/bootmanager.sock] [--fb /dev/fb0]
 //!
 //! Headless, for layout work anywhere (fbdev build): render to a PNG after
-//! feeding it keys, against any backend (recovery-backend -scan DIR works):
-//!     recovery-ui --socket S --screenshot out.png [--keys down,down,enter]
+//! feeding it keys, against any backend (bootmanager -scan DIR works):
+//!     bootmanager-ui --socket S --screenshot out.png [--keys down,down,enter]
 //!         keys: up down enter back wait (each step 400 ms apart)
 //!
 //! On the host (desktop build), against the phone's Remote UI service:
@@ -17,11 +17,11 @@ fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    use recovery_ui::transport::{self, Addr};
-    use recovery_ui::{app::App, AppWindow, APP};
+    use bootmanager_ui::transport::{self, Addr};
+    use bootmanager_ui::{app::App, AppWindow, APP};
     use slint::ComponentHandle;
 
-    let mut socket = "/tmp/recovery.sock".to_string();
+    let mut socket = "/tmp/bootmanager.sock".to_string();
     let mut connect: Option<String> = None;
     #[allow(unused_mut, unused_variables)]
     let (mut fb, mut screenshot, mut keys) = ("/dev/fb0".to_string(), None::<String>, String::new());
@@ -35,7 +35,7 @@ fn main() {
             "--screenshot" => screenshot = Some(val()),
             "--keys" => keys = val(),
             _ => {
-                eprintln!("usage: recovery-ui [--socket PATH | --connect HOST:PORT] [--fb DEV] [--screenshot PNG [--keys LIST]]");
+                eprintln!("usage: bootmanager-ui [--socket PATH | --connect HOST:PORT] [--fb DEV] [--screenshot PNG [--keys LIST]]");
                 std::process::exit(2);
             }
         }
@@ -43,7 +43,7 @@ fn main() {
 
     #[cfg(feature = "fbdev")]
     let buffer = {
-        use recovery_ui::platform::{Fb, FbPlatform, Target};
+        use bootmanager_ui::platform::{Fb, FbPlatform, Target};
         let size = slint::PhysicalSize::new(720, 1600);
         let target = if screenshot.is_some() {
             Target::Memory
@@ -51,7 +51,7 @@ fn main() {
             match Fb::open(&fb) {
                 Ok(f) => Target::Fb(f),
                 Err(e) => {
-                    eprintln!("recovery-ui: {fb}: {e}");
+                    eprintln!("bootmanager-ui: {fb}: {e}");
                     std::process::exit(1);
                 }
             }
@@ -93,7 +93,7 @@ fn main() {
 }
 
 #[cfg(feature = "fbdev")]
-fn run_script(ui: slint::Weak<recovery_ui::AppWindow>, steps: Vec<String>, i: usize) {
+fn run_script(ui: slint::Weak<bootmanager_ui::AppWindow>, steps: Vec<String>, i: usize) {
     use slint::platform::{Key, WindowEvent};
     use slint::ComponentHandle;
     // The first step waits for the connection and the first replies.
@@ -121,7 +121,7 @@ fn run_script(ui: slint::Weak<recovery_ui::AppWindow>, steps: Vec<String>, i: us
 }
 
 #[cfg(feature = "fbdev")]
-fn save_png(path: &str, buf: &[recovery_ui::platform::Px], w: u32, h: u32) {
+fn save_png(path: &str, buf: &[bootmanager_ui::platform::Px], w: u32, h: u32) {
     let file = std::fs::File::create(path).expect("create png");
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgb);

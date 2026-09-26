@@ -1,4 +1,4 @@
-module fogona.local/recovery-backend
+module fogona.local/bootmanager
 
 go 1.25
 

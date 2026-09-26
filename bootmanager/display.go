@@ -15,7 +15,7 @@ import (
 // (data/devices/display-panels/<dt-compatible>.json upstream), looked up by
 // this device's device-tree compatibles as gmobile does. gmobile compiles
 // those files into its library, so there is nothing to read off the
-// rootfs; recovery/build.sh copies fogona's (from the aports overlay) into
+// rootfs; bootmanager/build.sh copies fogona's (from the aports overlay) into
 // assets/display-panels/ for the embed.
 //
 // Each cutout's SVG path is reduced to a bounding box, which is all the UI

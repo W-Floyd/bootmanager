@@ -395,6 +395,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootmanager-ui"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "console_error_panic_hook",
+ "i-slint-common",
+ "libc",
+ "png 0.17.16",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3313,23 +3330,6 @@ dependencies = [
  "bytemuck",
  "font-types",
  "once_cell",
-]
-
-[[package]]
-name = "recovery-ui"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "console_error_panic_hook",
- "i-slint-common",
- "libc",
- "png 0.17.16",
- "serde",
- "serde_json",
- "slint",
- "slint-build",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
