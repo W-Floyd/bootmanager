@@ -49,6 +49,7 @@ the backend.
 | Vol+ / Vol- | up / down; the list wraps at both ends |
 | Power, short | select |
 | Power, held 600 ms | back (every screen but the main one also starts with a Back row) |
+| tap a row | select it (drag to scroll) |
 | any key or touch | stops the autoboot countdown |
 
 ## Why a custom Slint platform on the phone
@@ -64,8 +65,10 @@ time (`build.rs`), at the phone's scale factor of 2, because the stage has
 no fonts. Only ASCII plus the UI's own strings are embedded, so other
 characters in file names do not render.
 
-Touch is handled but not available yet: the ICNL9916 driver is a module,
-and the stage loads none.
+Touch: the stage kernel builds the ICNL9916 driver in and carries its
+firmware in the initramfs (the stage loads no modules). The UI follows the
+first contact only, so tapping a row selects it and drags scroll the list.
+A tap anywhere stops the countdown. Not yet tried on the phone.
 
 ## Live restart, no reflash
 

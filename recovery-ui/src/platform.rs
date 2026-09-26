@@ -7,9 +7,9 @@
 //!   Vol+ / Vol-          Up / Down
 //!   Power, short         Return (select)
 //!   Power, held 600 ms   Escape (back)
-//! A keyboard's arrows, Enter, Esc and Backspace do the same. A touchscreen,
-//! if one has probed (the stage does not load the ICNL9916 module yet),
-//! drives the pointer.
+//! A keyboard's arrows, Enter, Esc and Backspace do the same. The touchscreen
+//! (the ICNL9916, built into the stage kernel) drives the pointer: first
+//! contact only, taps and drags.
 //!
 //! `Target::Memory` renders to a buffer only, for --screenshot.
 
@@ -181,6 +181,7 @@ const ABS_Y: u16 = 0x01;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
+const ABS_MT_SLOT: u16 = 0x2f;
 const BTN_TOUCH: u16 = 0x14a;
 const KEY_POWER: u16 = 116;
 const LONG_PRESS: Duration = Duration::from_millis(600);
@@ -197,6 +198,9 @@ struct InputDev {
     x: i32,
     y: i32,
     down: bool,
+    // The multitouch slot the next ABS_MT_* events are for; only the first
+    // contact (slot 0) drives the pointer.
+    slot: i32,
     was_down: bool,
 }
 
@@ -218,7 +222,7 @@ impl InputDev {
             _ => abs_range(fd, ABS_X).zip(abs_range(fd, ABS_Y)),
         };
         eprintln!("recovery-ui: input {path}{}", if axes.is_some() { " (touch)" } else { "" });
-        Some(InputDev { path: path.to_string(), fd, axes, x: 0, y: 0, down: false, was_down: false })
+        Some(InputDev { path: path.to_string(), fd, axes, x: 0, y: 0, down: false, slot: 0, was_down: false })
     }
 }
 
@@ -431,9 +435,12 @@ impl Platform for FbPlatform {
                                 self.key(k);
                             }
                         }
-                        (EV_ABS, ABS_MT_POSITION_X) | (EV_ABS, ABS_X) => d.x = value,
-                        (EV_ABS, ABS_MT_POSITION_Y) | (EV_ABS, ABS_Y) => d.y = value,
-                        (EV_ABS, ABS_MT_TRACKING_ID) => d.down = value >= 0,
+                        (EV_ABS, ABS_MT_SLOT) => d.slot = value,
+                        (EV_ABS, ABS_MT_POSITION_X) if d.slot == 0 => d.x = value,
+                        (EV_ABS, ABS_X) => d.x = value,
+                        (EV_ABS, ABS_MT_POSITION_Y) if d.slot == 0 => d.y = value,
+                        (EV_ABS, ABS_Y) => d.y = value,
+                        (EV_ABS, ABS_MT_TRACKING_ID) if d.slot == 0 => d.down = value >= 0,
                         (EV_SYN, 0) if d.axes.is_some() => {
                             let position = self.touch_pos(d);
                             let button = PointerEventButton::Left;
