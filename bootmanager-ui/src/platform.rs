@@ -1,34 +1,35 @@
-//! The phone's Slint platform: Slint's software renderer drawing into a RAM
-//! buffer that is copied to /dev/fb0, and input read straight from
-//! /dev/input/event*. Nothing else is available in the stage: no udev (so
+//! The Slint platform for a LinuxBoot stage: Slint's software renderer
+//! drawing into a RAM buffer that is copied to the framebuffer, and input
+//! read straight from /dev/input/event*. Nothing else is there: no udev (so
 //! no libinput), no seat manager, no GPU userspace.
 //!
 //! Keys, for a phone with three of them:
 //!   Vol+ / Vol-          Up / Down
 //!   Power, short         Return (select)
 //!   Power, held 600 ms   Escape (back)
-//! A keyboard's arrows, Enter, Esc and Backspace do the same. The touchscreen
-//! (the ICNL9916, built into the stage kernel) drives the pointer: first
-//! contact only, taps and drags.
+//! A keyboard's arrows, Enter, Esc and Backspace do the same. A touchscreen
+//! drives the pointer: first contact only, taps and drags.
 //!
-//! `Target::Memory` renders to a buffer only, for --screenshot.
+//! `Target::Memory` renders to the buffer only, for --screenshot.
 
-use slint::platform::software_renderer::{
-    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel,
-};
+use crate::app::scale_for;
+use evdev::raw_stream::RawDevice;
+use evdev::{AbsoluteAxisCode, EventSummary, KeyCode, SynchronizationCode};
+use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
 use slint::platform::{EventLoopProxy, Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{LogicalPosition, PhysicalSize, PlatformError};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::os::fd::RawFd;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const SCALE: f32 = 2.0;
-
-/// XRGB8888 in a u32, which is also the byte order of the msm fbdev.
+/// XRGB8888 in a u32.
 #[derive(Clone, Copy, Default)]
 #[repr(transparent)]
 pub struct Px(pub u32);
@@ -44,7 +45,15 @@ impl TargetPixel for Px {
     }
 }
 
-// --- fbdev ---
+/// What is drawn, at the window's size.
+#[derive(Default)]
+pub struct Frame {
+    pub px: Vec<Px>,
+    pub width: usize,
+    pub height: usize,
+}
+
+// --- fbdev (linux/fb.h) ---
 
 const FBIOGET_VSCREENINFO: libc::c_ulong = 0x4600;
 const FBIOGET_FSCREENINFO: libc::c_ulong = 0x4602;
@@ -52,15 +61,70 @@ const KDSETMODE: libc::c_ulong = 0x4b3a;
 const KD_TEXT: libc::c_ulong = 0;
 const KD_GRAPHICS: libc::c_ulong = 1;
 
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+#[allow(dead_code)]
+struct FbBitfield {
+    offset: u32,
+    length: u32,
+    msb_right: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)] // the kernel's layout, whole
+struct FbVarScreeninfo {
+    xres: u32,
+    yres: u32,
+    xres_virtual: u32,
+    yres_virtual: u32,
+    xoffset: u32,
+    yoffset: u32,
+    bits_per_pixel: u32,
+    grayscale: u32,
+    red: FbBitfield,
+    green: FbBitfield,
+    blue: FbBitfield,
+    transp: FbBitfield,
+    nonstd: u32,
+    activate: u32,
+    height: u32, // mm
+    width: u32,  // mm
+    rest: [u32; 16],
+}
+
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct FbFixScreeninfo {
+    id: [u8; 16],
+    smem_start: libc::c_ulong,
+    smem_len: u32,
+    type_: u32,
+    type_aux: u32,
+    visual: u32,
+    xpanstep: u16,
+    ypanstep: u16,
+    ywrapstep: u16,
+    line_length: u32,
+    mmio_start: libc::c_ulong,
+    mmio_len: u32,
+    accel: u32,
+    capabilities: u16,
+    reserved: [u16; 2],
+}
+
 pub struct Fb {
     mem: *mut u8,
     len: usize,
-    stride: usize, // bytes per line
-    xres: usize,
-    yres: usize,
+    stride: usize,
+    pub xres: usize,
+    pub yres: usize,
+    /// Physical width in mm, 0 unknown.
+    pub width_mm: u32,
     yoffset: usize,
-    bpp: u32,
-    red_offset: u32,
+    bytes: usize,
+    rgb: [FbBitfield; 3],
 }
 
 static TTY_FD: AtomicI32 = AtomicI32::new(-1);
@@ -81,57 +145,57 @@ fn fb_name() -> String {
 
 impl Fb {
     pub fn open(path: &str) -> std::io::Result<Fb> {
-        // simpledrm owns fb0 until msm probes (about 1.5 s in) and then
+        // simpledrm owns fb0 until the real display driver probes and
         // replaces it; a mapping of the old one would draw nowhere.
         let t = Instant::now();
         while fb_name().contains("simpledrm") && t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(100));
         }
-        let cpath = std::ffi::CString::new(path).unwrap();
-        let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let mut var = [0u32; 40];
-        let mut fix = [0u8; 80];
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let fd = file.as_raw_fd();
+        let mut var = FbVarScreeninfo::default();
+        let mut fix = FbFixScreeninfo::default();
         unsafe {
-            if libc::ioctl(fd, FBIOGET_VSCREENINFO as _, var.as_mut_ptr()) < 0
-                || libc::ioctl(fd, FBIOGET_FSCREENINFO as _, fix.as_mut_ptr()) < 0
-            {
+            if libc::ioctl(fd, FBIOGET_VSCREENINFO as _, &mut var) < 0 || libc::ioctl(fd, FBIOGET_FSCREENINFO as _, &mut fix) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
         }
-        let smem_len = u32::from_ne_bytes(fix[24..28].try_into().unwrap()) as usize;
-        let stride = u32::from_ne_bytes(fix[48..52].try_into().unwrap()) as usize;
-        let mem = unsafe {
-            libc::mmap(std::ptr::null_mut(), smem_len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0)
-        };
+        if var.bits_per_pixel != 32 && var.bits_per_pixel != 16 {
+            return Err(std::io::Error::other(format!("unsupported {} bpp", var.bits_per_pixel)));
+        }
+        let len = fix.smem_len as usize;
+        let mem = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
         if mem == libc::MAP_FAILED {
             return Err(std::io::Error::last_os_error());
         }
-        unsafe { libc::close(fd) };
         let fb = Fb {
             mem: mem as *mut u8,
-            len: smem_len,
-            stride,
-            xres: var[0] as usize,
-            yres: var[1] as usize,
-            yoffset: var[5] as usize,
-            bpp: var[6],
-            red_offset: var[8],
+            len,
+            stride: fix.line_length as usize,
+            xres: var.xres as usize,
+            yres: var.yres as usize,
+            width_mm: if var.width == u32::MAX { 0 } else { var.width },
+            yoffset: var.yoffset as usize,
+            bytes: var.bits_per_pixel as usize / 8,
+            rgb: [var.red, var.green, var.blue],
         };
         eprintln!(
-            "bootmanager-ui: {} {}x{} {} bpp, red at {}, stride {}",
-            fb_name(), fb.xres, fb.yres, fb.bpp, fb.red_offset, fb.stride
+            "bootmanager-ui: {} {}x{} ({} mm) {} bpp, rgb at {}/{}/{}, stride {}",
+            fb_name(),
+            fb.xres,
+            fb.yres,
+            fb.width_mm,
+            var.bits_per_pixel,
+            fb.rgb[0].offset,
+            fb.rgb[1].offset,
+            fb.rgb[2].offset,
+            fb.stride
         );
-        if fb.bpp != 32 && fb.bpp != 16 {
-            return Err(std::io::Error::other(format!("unsupported {} bpp", fb.bpp)));
-        }
 
-        let tty = unsafe { libc::open(c"/dev/tty0".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-        if tty >= 0 {
-            unsafe { libc::ioctl(tty, KDSETMODE as _, KD_GRAPHICS) };
-            TTY_FD.store(tty, Ordering::Relaxed);
+        if let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty0") {
+            unsafe { libc::ioctl(tty.as_raw_fd(), KDSETMODE as _, KD_GRAPHICS) };
+            // Kept open for on_term, for the life of the process.
+            TTY_FD.store(std::os::fd::IntoRawFd::into_raw_fd(tty), Ordering::Relaxed);
             unsafe {
                 libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
                 libc::signal(libc::SIGINT, on_term as *const () as libc::sighandler_t);
@@ -140,31 +204,27 @@ impl Fb {
         Ok(fb)
     }
 
-    fn present(&self, buf: &[Px], width: usize, x: usize, y: usize, w: usize, h: usize) {
-        for row in y..(y + h).min(self.yres) {
-            let off = (row + self.yoffset) * self.stride;
-            let src = &buf[row * width + x..row * width + (x + w).min(self.xres)];
-            if self.bpp == 32 {
-                if off + (x + src.len()) * 4 > self.len {
-                    return;
-                }
-                let dst = unsafe { std::slice::from_raw_parts_mut(self.mem.add(off) as *mut u32, self.xres) };
-                if self.red_offset == 16 {
-                    dst[x..x + src.len()].copy_from_slice(unsafe { std::mem::transmute::<&[Px], &[u32]>(src) });
-                } else {
-                    for (d, s) in dst[x..].iter_mut().zip(src) {
-                        let v = s.0;
-                        *d = (v & 0xff) << 16 | (v & 0xff00) | (v >> 16) & 0xff;
-                    }
-                }
-            } else {
-                if off + (x + src.len()) * 2 > self.len {
-                    return;
-                }
-                let dst = unsafe { std::slice::from_raw_parts_mut(self.mem.add(off) as *mut u16, self.xres) };
-                for (d, s) in dst[x..].iter_mut().zip(src) {
-                    let v = s.0;
-                    *d = ((v >> 8 & 0xf800) | (v >> 5 & 0x07e0) | (v >> 3 & 0x001f)) as u16;
+    /// Px in the framebuffer's layout, from its bitfields.
+    fn pack(&self, p: Px) -> u32 {
+        let ch = |v: u32, f: &FbBitfield| ((v & 0xff) >> (8 - f.length.min(8))) << f.offset;
+        ch(p.0 >> 16, &self.rgb[0]) | ch(p.0 >> 8, &self.rgb[1]) | ch(p.0, &self.rgb[2])
+    }
+
+    fn present(&self, frame: &Frame, x: usize, y: usize, w: usize, h: usize) {
+        let x1 = (x + w).min(self.xres).min(frame.width);
+        for row in y..(y + h).min(self.yres).min(frame.height) {
+            let off = (row + self.yoffset) * self.stride + x * self.bytes;
+            let n = x1.saturating_sub(x);
+            if off + n * self.bytes > self.len {
+                return;
+            }
+            let src = &frame.px[row * frame.width + x..][..n];
+            let dst = unsafe { std::slice::from_raw_parts_mut(self.mem.add(off), n * self.bytes) };
+            for (d, s) in dst.chunks_exact_mut(self.bytes).zip(src) {
+                let v = self.pack(*s);
+                match self.bytes {
+                    4 => d.copy_from_slice(&v.to_ne_bytes()),
+                    _ => d.copy_from_slice(&(v as u16).to_ne_bytes()),
                 }
             }
         }
@@ -173,66 +233,42 @@ impl Fb {
 
 // --- evdev ---
 
-const EV_SYN: u16 = 0;
-const EV_KEY: u16 = 1;
-const EV_ABS: u16 = 3;
-const ABS_X: u16 = 0x00;
-const ABS_Y: u16 = 0x01;
-const ABS_MT_POSITION_X: u16 = 0x35;
-const ABS_MT_POSITION_Y: u16 = 0x36;
-const ABS_MT_TRACKING_ID: u16 = 0x39;
-const ABS_MT_SLOT: u16 = 0x2f;
-const BTN_TOUCH: u16 = 0x14a;
-const KEY_POWER: u16 = 116;
 const LONG_PRESS: Duration = Duration::from_millis(600);
 
-fn eviocgabs(abs: u16) -> libc::c_ulong {
-    0x8018_4540 + abs as libc::c_ulong
-}
-
-struct InputDev {
-    path: String,
-    fd: RawFd,
-    // Touch axes: (min, max) for x and y, when this is a touchscreen.
+struct Input {
+    path: PathBuf,
+    dev: RawDevice,
+    /// Touch axes, (min, max) for x and y, when this is a touchscreen.
     axes: Option<((i32, i32), (i32, i32))>,
     x: i32,
     y: i32,
     down: bool,
-    // The multitouch slot the next ABS_MT_* events are for; only the first
-    // contact (slot 0) drives the pointer.
-    slot: i32,
     was_down: bool,
+    /// The multitouch slot the next ABS_MT_* events are for; only the first
+    /// contact (slot 0) drives the pointer.
+    slot: i32,
 }
 
-fn abs_range(fd: RawFd, code: u16) -> Option<(i32, i32)> {
-    let mut info = [0i32; 6];
-    let r = unsafe { libc::ioctl(fd, eviocgabs(code) as _, info.as_mut_ptr()) };
-    (r >= 0 && info[2] > info[1]).then_some((info[1], info[2]))
-}
-
-impl InputDev {
-    fn open(path: &str) -> Option<InputDev> {
-        let c = std::ffi::CString::new(path).ok()?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return None;
-        }
-        let axes = match (abs_range(fd, ABS_MT_POSITION_X), abs_range(fd, ABS_MT_POSITION_Y)) {
-            (Some(x), Some(y)) => Some((x, y)),
-            _ => abs_range(fd, ABS_X).zip(abs_range(fd, ABS_Y)),
+impl Input {
+    fn open(path: PathBuf) -> Option<Input> {
+        let dev = RawDevice::open(&path).ok()?;
+        let range = |code| {
+            dev.get_absinfo().ok()?.find(|(c, _)| *c == code).map(|(_, i)| (i.minimum(), i.maximum())).filter(|(lo, hi)| hi > lo)
         };
-        eprintln!("bootmanager-ui: input {path}{}", if axes.is_some() { " (touch)" } else { "" });
-        Some(InputDev { path: path.to_string(), fd, axes, x: 0, y: 0, down: false, slot: 0, was_down: false })
+        let axes = range(AbsoluteAxisCode::ABS_MT_POSITION_X)
+            .zip(range(AbsoluteAxisCode::ABS_MT_POSITION_Y))
+            .or_else(|| range(AbsoluteAxisCode::ABS_X).zip(range(AbsoluteAxisCode::ABS_Y)));
+        eprintln!("bootmanager-ui: input {} {}{}", path.display(), dev.name().unwrap_or(""), if axes.is_some() { " (touch)" } else { "" });
+        Some(Input { path, dev, axes, x: 0, y: 0, down: false, was_down: false, slot: 0 })
     }
 }
 
-fn map_key(code: u16) -> Option<Key> {
+fn map_key(code: KeyCode) -> Option<Key> {
     Some(match code {
-        115 | 103 => Key::UpArrow,  // KEY_VOLUMEUP, KEY_UP
-        114 | 108 => Key::DownArrow, // KEY_VOLUMEDOWN, KEY_DOWN
-        28 | 96 | 57 => Key::Return, // KEY_ENTER, KEY_KPENTER, KEY_SPACE
-        1 | 14 | 105 => Key::Escape, // KEY_ESC, KEY_BACKSPACE, KEY_LEFT
-        106 => Key::Return,          // KEY_RIGHT
+        KeyCode::KEY_VOLUMEUP | KeyCode::KEY_UP => Key::UpArrow,
+        KeyCode::KEY_VOLUMEDOWN | KeyCode::KEY_DOWN => Key::DownArrow,
+        KeyCode::KEY_ENTER | KeyCode::KEY_KPENTER | KeyCode::KEY_SPACE | KeyCode::KEY_RIGHT => Key::Return,
+        KeyCode::KEY_ESC | KeyCode::KEY_BACKSPACE | KeyCode::KEY_LEFT => Key::Escape,
         _ => return None,
     })
 }
@@ -241,15 +277,16 @@ fn map_key(code: u16) -> Option<Key> {
 
 struct Shared {
     queue: Mutex<VecDeque<Box<dyn FnOnce() + Send>>>,
-    wake_w: RawFd,
+    wake: UnixStream,
     quit: AtomicBool,
 }
 
 impl Shared {
     fn wake(&self) {
-        unsafe { libc::write(self.wake_w, [1u8].as_ptr() as *const _, 1) };
+        let _ = (&self.wake).write(&[1]);
     }
 }
+
 
 struct Proxy(Arc<Shared>);
 
@@ -274,43 +311,43 @@ pub enum Target {
 pub struct FbPlatform {
     window: Rc<MinimalSoftwareWindow>,
     target: Target,
-    size: PhysicalSize,
-    pub buffer: Rc<RefCell<Vec<Px>>>,
+    pub frame: Rc<RefCell<Frame>>,
     shared: Arc<Shared>,
-    wake_r: RawFd,
+    wake: UnixStream,
     start: Instant,
 }
 
 impl FbPlatform {
-    pub fn new(target: Target, memory_size: PhysicalSize) -> FbPlatform {
-        let size = match &target {
-            Target::Fb(fb) => PhysicalSize::new(fb.xres as u32, fb.yres as u32),
-            Target::Memory => memory_size,
+    /// A platform drawing to target; `size` is Memory's until the app
+    /// sizes the window to the panel.
+    pub fn new(target: Target, size: PhysicalSize) -> std::io::Result<FbPlatform> {
+        let (size, mm) = match &target {
+            Target::Fb(fb) => (PhysicalSize::new(fb.xres as u32, fb.yres as u32), fb.width_mm),
+            Target::Memory => (size, 0),
         };
-        let mut fds = [0; 2];
-        unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        let (wake, wake_w) = UnixStream::pair()?;
+        wake.set_nonblocking(true)?;
+        wake_w.set_nonblocking(true)?;
         let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-        window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: SCALE });
+        window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale_for(size.width, mm) });
         window.set_size(size);
-        FbPlatform {
+        Ok(FbPlatform {
             window,
             target,
-            size,
-            buffer: Rc::new(RefCell::new(vec![Px::default(); (size.width * size.height) as usize])),
-            shared: Arc::new(Shared { queue: Mutex::new(VecDeque::new()), wake_w: fds[1], quit: AtomicBool::new(false) }),
-            wake_r: fds[0],
+            frame: Rc::default(),
+            shared: Arc::new(Shared { queue: Mutex::default(), wake: wake_w, quit: AtomicBool::new(false) }),
+            wake,
             start: Instant::now(),
-        }
+        })
     }
 
-    fn scan_inputs(&self, inputs: &mut Vec<InputDev>) {
+    fn scan_inputs(&self, inputs: &mut Vec<Input>) {
         let Ok(dir) = std::fs::read_dir("/dev/input") else { return };
         for e in dir.flatten() {
-            let p = e.path().to_string_lossy().to_string();
-            if p.contains("/event") && !inputs.iter().any(|d| d.path == p) {
-                if let Some(d) = InputDev::open(&p) {
-                    inputs.push(d);
-                }
+            let p = e.path();
+            let is_event = p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("event"));
+            if is_event && !inputs.iter().any(|d| d.path == p) {
+                inputs.extend(Input::open(p));
             }
         }
     }
@@ -321,11 +358,32 @@ impl FbPlatform {
         self.window.dispatch_event(WindowEvent::KeyReleased { text });
     }
 
-    fn touch_pos(&self, d: &InputDev) -> LogicalPosition {
+    fn touch_pos(&self, d: &Input) -> LogicalPosition {
         let ((x0, x1), (y0, y1)) = d.axes.unwrap();
-        let px = (d.x - x0) as f32 / (x1 - x0) as f32 * self.size.width as f32;
-        let py = (d.y - y0) as f32 / (y1 - y0) as f32 * self.size.height as f32;
-        LogicalPosition::new(px / SCALE, py / SCALE)
+        let size = self.window.size();
+        let scale = self.window.scale_factor();
+        let px = (d.x - x0) as f32 / (x1 - x0) as f32 * size.width as f32;
+        let py = (d.y - y0) as f32 / (y1 - y0) as f32 * size.height as f32;
+        LogicalPosition::new(px / scale, py / scale)
+    }
+
+    fn draw(&self) {
+        self.window.draw_if_needed(|renderer| {
+            let size = self.window.size();
+            let mut frame = self.frame.borrow_mut();
+            let (w, h) = (size.width as usize, size.height as usize);
+            if (frame.width, frame.height) != (w, h) {
+                *frame = Frame { px: vec![Px::default(); w * h], width: w, height: h };
+                renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+            } else {
+                renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);
+            }
+            let region = renderer.render(&mut frame.px, w);
+            if let Target::Fb(fb) = &self.target {
+                let (o, s) = (region.bounding_box_origin(), region.bounding_box_size());
+                fb.present(&frame, o.x.max(0) as usize, o.y.max(0) as usize, s.width as usize, s.height as usize);
+            }
+        });
     }
 }
 
@@ -343,15 +401,14 @@ impl Platform for FbPlatform {
     }
 
     fn run_event_loop(&self) -> Result<(), PlatformError> {
-        let mut inputs = vec![];
         let reads_input = matches!(self.target, Target::Fb(_));
+        let mut inputs = vec![];
         if reads_input {
             self.scan_inputs(&mut inputs);
         }
         let mut last_scan = Instant::now();
         let mut power_down: Option<Instant> = None;
         let mut power_fired = false;
-        let width = self.size.width as usize;
 
         loop {
             slint::platform::update_timers_and_animations();
@@ -362,20 +419,11 @@ impl Platform for FbPlatform {
             if self.shared.quit.load(Ordering::SeqCst) {
                 return Ok(());
             }
-
-            self.window.draw_if_needed(|renderer| {
-                let mut buf = self.buffer.borrow_mut();
-                let region = renderer.render(&mut buf, width);
-                if let Target::Fb(fb) = &self.target {
-                    let o = region.bounding_box_origin();
-                    let s = region.bounding_box_size();
-                    fb.present(&buf, width, o.x.max(0) as usize, o.y.max(0) as usize, s.width as usize, s.height as usize);
-                }
-            });
+            self.draw();
 
             // How long poll may sleep: the next Slint timer, an animation
-            // frame, the long-press deadline, or the input rescan (a touch
-            // module loaded after start shows up within 3 s).
+            // frame, the long-press deadline, or the input rescan (a device
+            // whose driver probes late shows up within 3 s).
             let mut timeout = Duration::from_secs(3);
             if self.window.has_active_animations() {
                 timeout = Duration::from_millis(16);
@@ -387,16 +435,16 @@ impl Platform for FbPlatform {
                 timeout = timeout.min(LONG_PRESS.saturating_sub(t.elapsed()));
             }
 
-            let mut fds: Vec<libc::pollfd> = std::iter::once(self.wake_r)
-                .chain(inputs.iter().map(|d| d.fd))
-                .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+            let mut fds: Vec<libc::pollfd> = std::iter::once(self.wake.as_raw_fd())
+                .chain(inputs.iter().map(|d| d.dev.as_raw_fd()))
+                .map(|fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
                 .collect();
             let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, ms) };
 
             if fds[0].revents != 0 {
                 let mut b = [0u8; 64];
-                while unsafe { libc::read(self.wake_r, b.as_mut_ptr() as *mut _, b.len()) } > 0 {}
+                while (&self.wake).read(&mut b).is_ok_and(|n| n > 0) {}
             }
 
             let mut dead = vec![];
@@ -408,40 +456,32 @@ impl Platform for FbPlatform {
                 if pfd.revents & libc::POLLIN == 0 {
                     continue;
                 }
-                let mut ev = [0u8; 24 * 32];
-                let n = unsafe { libc::read(pfd.fd, ev.as_mut_ptr() as *mut _, ev.len()) };
-                if n <= 0 {
-                    continue;
-                }
-                for e in ev[..n as usize].chunks_exact(24) {
-                    let ty = u16::from_ne_bytes([e[16], e[17]]);
-                    let code = u16::from_ne_bytes([e[18], e[19]]);
-                    let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
-                    let d = &mut inputs[i];
-                    match (ty, code) {
-                        (EV_KEY, KEY_POWER) => {
-                            if value == 1 {
-                                power_down = Some(Instant::now());
-                                power_fired = false;
-                            } else if value == 0 {
-                                if power_down.take().is_some() && !power_fired {
-                                    self.key(Key::Return);
-                                }
+                let d = &mut inputs[i];
+                let Ok(events) = d.dev.fetch_events().map(|e| e.collect::<Vec<_>>()) else { continue };
+                for ev in events {
+                    match ev.destructure() {
+                        EventSummary::Key(_, KeyCode::KEY_POWER, 1) => (power_down, power_fired) = (Some(Instant::now()), false),
+                        EventSummary::Key(_, KeyCode::KEY_POWER, 0) => {
+                            if power_down.take().is_some() && !power_fired {
+                                self.key(Key::Return);
                             }
                         }
-                        (EV_KEY, BTN_TOUCH) => d.down = value != 0,
-                        (EV_KEY, c) if value >= 1 => {
-                            if let Some(k) = map_key(c) {
+                        EventSummary::Key(_, KeyCode::BTN_TOUCH, v) => d.down = v != 0,
+                        EventSummary::Key(_, code, v) if v >= 1 => {
+                            if let Some(k) = map_key(code) {
                                 self.key(k);
                             }
                         }
-                        (EV_ABS, ABS_MT_SLOT) => d.slot = value,
-                        (EV_ABS, ABS_MT_POSITION_X) if d.slot == 0 => d.x = value,
-                        (EV_ABS, ABS_X) => d.x = value,
-                        (EV_ABS, ABS_MT_POSITION_Y) if d.slot == 0 => d.y = value,
-                        (EV_ABS, ABS_Y) => d.y = value,
-                        (EV_ABS, ABS_MT_TRACKING_ID) if d.slot == 0 => d.down = value >= 0,
-                        (EV_SYN, 0) if d.axes.is_some() => {
+                        EventSummary::AbsoluteAxis(_, code, v) => match code {
+                            AbsoluteAxisCode::ABS_MT_SLOT => d.slot = v,
+                            AbsoluteAxisCode::ABS_MT_POSITION_X if d.slot == 0 => d.x = v,
+                            AbsoluteAxisCode::ABS_MT_POSITION_Y if d.slot == 0 => d.y = v,
+                            AbsoluteAxisCode::ABS_MT_TRACKING_ID if d.slot == 0 => d.down = v >= 0,
+                            AbsoluteAxisCode::ABS_X => d.x = v,
+                            AbsoluteAxisCode::ABS_Y => d.y = v,
+                            _ => {}
+                        },
+                        EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _) if d.axes.is_some() => {
                             let position = self.touch_pos(d);
                             let button = PointerEventButton::Left;
                             let event = match (d.was_down, d.down) {
@@ -463,7 +503,6 @@ impl Platform for FbPlatform {
                 }
             }
             for i in dead.into_iter().rev() {
-                unsafe { libc::close(inputs[i].fd) };
                 inputs.remove(i);
             }
 

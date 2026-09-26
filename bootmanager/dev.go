@@ -1,8 +1,30 @@
+//go:build dev
+
+// Dev builds (go build -tags dev) add what working on the boot manager
+// and kernels needs without a reflash, behind the Dev uploads service
+// (which rides on Remote UI's HTTP port, so both must be on):
+//
+//	PUT /dev/bootmanager-ui   restarts the UI with it
+//	PUT /dev/bootmanager      re-execs the backend with it
+//	PUT /dev/web/<file>       served from the next reload
+//	POST /dev/kexec           boots a kernel from RAM (kexec below)
+//
+// dev.sh sends them. Uploads live in /tmp/dev, in RAM, and win over the
+// built-in copies until the next boot. A normal build has none of this:
+// no remote path to run code as root.
+//
+// The backend restarts by exec'ing itself (or an upload) in place: the
+// PID stays, so sshd and the UI stay its children and keep running -- an
+// SSH session survives -- and a state file hands the new image what it
+// cannot rediscover: those PIDs, which services were on, and whether the
+// autoboot was already stopped. The sockets close on exec; the UI
+// reconnects by itself.
 package main
 
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -10,37 +32,28 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/u-root/u-root/pkg/boot"
-	"github.com/u-root/u-root/pkg/mount"
-)
+	uboot "github.com/u-root/u-root/pkg/boot"
 
-// Live restarts, for working on the boot manager without a reflash.
-//
-// The backend restarts by exec'ing itself (or an uploaded build) in place:
-// the PID stays, so sshd and the UI stay its children and keep running --
-// an SSH session survives -- and a state file hands the new image what it
-// cannot rediscover: those PIDs, which services were on, and whether the
-// autoboot was already stopped. The sockets close on exec; the UI's
-// transport reconnects by itself.
-//
-// Uploads, with the Dev uploads service on (it rides on Remote UI's HTTP
-// port, so both must be on), from the container:
-//
-//	curl -T bootmanager-ui http://172.16.42.1:8080/dev/bootmanager-ui   # restarts the UI
-//	curl -T bootmanager    http://172.16.42.1:8080/dev/bootmanager      # re-execs the backend
-//	curl -T index.html     http://172.16.42.1:8080/dev/web/index.html   # served next reload
-//
-// dev.sh, at the repo root, builds and sends them. Uploads live in
-// /tmp/dev, in RAM, and win over the built-in copies until the next boot.
+	"bootmanager.local/bootmanager/internal/rpc"
+	"bootmanager.local/bootmanager/internal/svc"
+)
 
 const (
 	devDir    = "/tmp/dev"
 	statePath = "/tmp/bootmanager-state.json"
+	maxUpload = 512 << 20
 )
+
+var devOnce = flag.String("dev-once", "", "file naming services to switch on at start, one-shot (the stage's dev.sh stage-hold)")
+
+func init() { devExt = dev{} }
+
+type dev struct{}
 
 type handoff struct {
 	Cancelled bool           `json:"cancelled"`
@@ -48,236 +61,288 @@ type handoff struct {
 	Services  map[string]int `json:"services"` // name -> pid (0: in-process)
 }
 
-// loadHandoff returns the state an exec left, once.
-func loadHandoff() *handoff {
+func (dev) register(a *app) {
+	a.services = append(a.services, &svc.Service{
+		Name:   "dev",
+		Title:  "Dev uploads",
+		Detail: "PUT to :" + webPort + "/dev/ replaces the UI or backend",
+		// Only a gate: upload checks it.
+		Start: svc.InProcess(func() (func(), error) { return func() {}, nil }),
+	})
+	a.web.mux.HandleFunc("/dev/", func(w http.ResponseWriter, r *http.Request) { upload(a, w, r) })
+	a.web.static = overlay{http.Dir(filepath.Join(devDir, "web")), a.web.static}
+	builtin := a.ui.Path
+	a.ui.Path = func() string {
+		if p := filepath.Join(devDir, "bootmanager-ui"); isFile(p) {
+			return p
+		}
+		return builtin()
+	}
+	rpc.Handle(a.rpc, "dev.restart", func(x struct{ What string }) (any, error) {
+		switch x.What {
+		case "ui":
+			a.ui.Restart()
+		case "backend":
+			go reexec(a)
+		default:
+			return nil, fmt.Errorf("restart ui or backend, not %q", x.What)
+		}
+		return nil, nil
+	})
+}
+
+func (dev) resume(a *app) (bool, int) {
 	b, err := os.ReadFile(statePath)
 	if err != nil {
-		return nil
+		applyDevOnce(a)
+		return false, 0
 	}
 	os.Remove(statePath)
 	var h handoff
 	if err := json.Unmarshal(b, &h); err != nil {
 		log.Printf("handoff: %v", err)
-		return nil
+		applyDevOnce(a)
+		return false, 0
 	}
-	return &h
-}
-
-// reexec replaces this process with the uploaded backend, or with itself.
-func reexec() error {
-	h := handoff{UIPid: uiPid(), Services: map[string]int{}}
-	cdMu.Lock()
-	h.Cancelled = cancelled || remaining < 0
-	cdMu.Unlock()
-	svcMu.Lock()
-	for _, s := range services {
-		if !s.Running {
-			continue
-		}
-		h.Services[s.Name] = s.pid
-		if s.pid == 0 {
-			// In-process: stopped here, started again by the new image.
-			s.stop()
-		}
+	log.Printf("restarted in place: ui pid %d, services %v", h.UIPid, h.Services)
+	if h.Cancelled {
+		a.boot.Cancel()
 	}
-	svcMu.Unlock()
-	b, _ := json.Marshal(h)
-	if err := os.WriteFile(statePath, b, 0o600); err != nil {
-		return err
-	}
-
-	unmountBrowsed()
-	mountPool.UnmountAll(mount.MNT_DETACH)
-
-	bin := filepath.Join(devDir, "bootmanager")
-	argv := os.Args
-	if !isFile(bin) {
-		// /proc/self/exe is u-root's bb for a built-in backend, which picks
-		// the command from argv[0]; os.Args keeps that.
-		bin = "/proc/self/exe"
-	}
-	log.Printf("re-exec %s (ui pid %d, services %v)", bin, h.UIPid, h.Services)
-	return syscall.Exec(bin, argv, os.Environ())
-}
-
-// devHandler takes the uploads.
-func devHandler(w http.ResponseWriter, r *http.Request) {
-	if !serviceRunning("dev") {
-		http.Error(w, "Dev uploads is off (Services on the phone)", http.StatusForbidden)
-		return
-	}
-	if r.Method != http.MethodPut && r.Method != http.MethodPost {
-		http.Error(w, "PUT a file", http.StatusMethodNotAllowed)
-		return
-	}
-	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/dev/")
-	switch {
-	case name == "bootmanager-ui", name == "bootmanager":
-	case name == "kernel-stage", name == "kernel-pmos":
-	case name == "android-kernel", name == "android-initrd", name == "android-dtb", name == "kexec-android":
-	case strings.HasPrefix(name, "web/") && !strings.Contains(name[4:], "/"):
-	default:
-		http.Error(w, "upload bootmanager-ui, bootmanager, kernel-stage, kernel-pmos or web/<file>", http.StatusBadRequest)
-		return
-	}
-	dst := filepath.Join(devDir, name)
-	if err := saveUpload(dst, r.Body); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("dev: received %s", dst)
-
-	switch name {
-	case "bootmanager-ui":
-		restartUI()
-		fmt.Fprintln(w, "ui restarted")
-	case "bootmanager":
-		fmt.Fprintln(w, "backend re-exec")
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			if err := reexec(); err != nil {
-				log.Printf("re-exec: %v", err)
+	// Children by pid; in-process servers, and children that died, anew.
+	for name, pid := range h.Services {
+		if pid > 0 {
+			err := a.svcs.Adopt(name, pid)
+			if err == nil {
+				continue
 			}
-		}()
-	case "android-kernel", "android-initrd", "android-dtb":
-		fmt.Fprintln(w, "saved; PUT the command line to kexec-android to boot it")
-	case "kernel-stage", "kernel-pmos", "kexec-android":
-		fmt.Fprintln(w, "kexec into it")
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+			log.Printf("adopt %s: %v; starting afresh", name, err)
 		}
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			if err := kexecTest(name); err != nil {
-				log.Printf("kexec %s: %v", name, err)
-				broadcast("error", map[string]string{"message": "kexec " + name + ": " + err.Error()})
-			}
-		}()
-	default:
-		fmt.Fprintln(w, "saved; reload the page")
+		if err := a.svcs.Set(name, true); err != nil {
+			log.Printf("%s: %v", name, err)
+		}
 	}
+	return true, h.UIPid
 }
 
-// devOnce acts on a one-shot request the uinit found on the boot partition
-// (dev.sh stage-hold, from pmOS): /tmp/hold means stay here, so the
-// countdown is not even started, and /tmp/dev-once names the services to
-// switch on -- Remote UI and Dev uploads, so the next upload is accepted.
-func devOnce() {
-	if isFile("/tmp/hold") {
-		cdMu.Lock()
-		cancelled = true
-		cdMu.Unlock()
-		log.Printf("dev: held for kexec testing, no autoboot")
+// applyDevOnce switches on the services a one-shot request names: Remote
+// UI and Dev uploads, so the next upload is accepted.
+func applyDevOnce(a *app) {
+	if *devOnce == "" {
+		return
 	}
-	b, err := os.ReadFile("/tmp/dev-once")
+	b, err := os.ReadFile(*devOnce)
 	if err != nil {
 		return
 	}
 	for _, name := range strings.Fields(string(b)) {
 		if name == "hold" {
-			continue
+			continue // the stage's own: it made the hold file
 		}
-		if _, err := setService(name, true); err != nil {
+		if err := a.svcs.Set(name, true); err != nil {
 			log.Printf("dev-once: %v", err)
 		}
 	}
 }
 
-// kexecTest boots an uploaded kernel straight from RAM, for testing a
-// kernel with no reflash and no install (dev.sh kexec-stage, kexec-pmos):
-//
-//   - kernel-stage, a LinuxBoot stage Image (its DTB and initramfs are
-//     built in), with this stage's command line. It is loaded with the
-//     running tree as its DTB, which takes the fork's kexec_load path --
-//     the one the pmOS handover proves on this SoC -- and the stage kernel
-//     uses its built-in tree regardless.
-//   - kernel-pmos, a pmOS Image or Image.gz, booted as the first boot entry
-//     with only its kernel replaced: the entry's initramfs, DTB and
-//     command line, and the rootfs's modules, so its version string must
-//     match the installed kernel's.
-//   - kexec-android, stock Android: the android-kernel, android-initrd and
-//     android-dtb uploads and this upload's body as the command line, as
-//     android-payload.py assembles them from what ABL would hand it. The
-//     tree is the live stock one, so the loader keeps out of every region
-//     Android reserves (its /reserved-memory and /memreserve/).
-//
-// Nothing is written: a kernel that does not come up costs a reboot.
-func kexecTest(name string) error {
-	if name == "kexec-android" {
-		return kexecAndroid()
+// reexec replaces this process with the uploaded backend, or with itself.
+func reexec(a *app) {
+	time.Sleep(200 * time.Millisecond) // let the reply go out
+	h := handoff{Cancelled: a.boot.Cancelled(), UIPid: a.ui.Pid(), Services: a.svcs.Snapshot()}
+	// In-process services die with the image; the new one starts them.
+	for name, pid := range h.Services {
+		if pid == 0 {
+			a.svcs.Set(name, false)
+		}
 	}
-	k, err := os.Open(filepath.Join(devDir, name))
-	if err != nil {
-		return err
-	}
-	switch name {
-	case "kernel-stage":
-		dtb, err := os.Open("/sys/firmware/fdt")
-		if err != nil {
+	err := func() error {
+		b, _ := json.Marshal(h)
+		if err := os.WriteFile(statePath, b, 0o600); err != nil {
 			return err
 		}
-		cmdline, _ := os.ReadFile("/proc/cmdline")
-		return handover(&boot.LinuxImage{
-			Name:    "stage test kernel",
-			Kernel:  k,
-			DTB:     dtb,
-			Cmdline: strings.TrimSpace(string(cmdline)),
-		})
-	case "kernel-pmos":
-		bootMu.Lock()
-		var li *boot.LinuxImage
-		if len(images) > 0 {
-			li, _ = images[0].(*boot.LinuxImage)
+		a.disks.UnmountAll()
+		a.boot.Unmount()
+		bin, argv := filepath.Join(devDir, "bootmanager"), os.Args
+		if !isFile(bin) {
+			// A built-in backend is u-root's busybox, which picks the
+			// command from argv[0]; os.Args keeps that.
+			bin = "/proc/self/exe"
 		}
-		bootMu.Unlock()
-		if li == nil {
-			return errors.New("no Linux boot entry to take the initramfs and DTB from")
+		log.Printf("re-exec %s (ui pid %d, services %v)", bin, h.UIPid, h.Services)
+		return syscall.Exec(bin, argv, os.Environ())
+	}()
+	log.Printf("re-exec: %v", err)
+	os.Remove(statePath)
+	for name, pid := range h.Services {
+		if pid == 0 {
+			a.svcs.Set(name, true)
 		}
-		test := *li
-		test.Name = li.Label() + " (test kernel)"
-		test.Kernel = k
-		return handover(&test)
 	}
-	return fmt.Errorf("not a test kernel: %s", name)
 }
 
-func kexecAndroid() error {
-	open := func(n string) (*os.File, error) {
-		f, err := os.Open(filepath.Join(devDir, n))
+func upload(a *app, w http.ResponseWriter, r *http.Request) {
+	if !a.svcs.Running("dev") {
+		http.Error(w, "Dev uploads is off (Services, on the device)", http.StatusForbidden)
+		return
+	}
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/dev/")
+	if name == "kexec" {
+		kexec(a, w, r)
+		return
+	}
+	// PUT only: a cross-site page can send a POST without the browser
+	// asking this server first.
+	if r.Method != http.MethodPut {
+		http.Error(w, "PUT a file", http.StatusMethodNotAllowed)
+		return
+	}
+	switch {
+	case name == "bootmanager-ui", name == "bootmanager":
+	case strings.HasPrefix(name, "web/") && !strings.Contains(name[4:], "/"):
+	default:
+		http.Error(w, "PUT bootmanager-ui, bootmanager or web/<file>", http.StatusBadRequest)
+		return
+	}
+	dst := filepath.Join(devDir, name)
+	if err := save(dst, http.MaxBytesReader(w, r.Body, maxUpload)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("dev: received %s", dst)
+	switch name {
+	case "bootmanager-ui":
+		a.ui.Restart()
+		fmt.Fprintln(w, "ui restarted")
+	case "bootmanager":
+		fmt.Fprintln(w, "backend re-exec")
+		go reexec(a)
+	default:
+		fmt.Fprintln(w, "saved; reload the page")
+	}
+}
+
+// kexec boots a kernel straight from RAM, for testing one with no reflash
+// and no install. A multipart PUT with the parts:
+//
+//	kernel   the kernel (required)
+//	initrd   its initramfs
+//	dtb      its device tree
+//	cmdline  its command line
+//	inherit  where missing parts come from: "running" (this stage's tree
+//	         and command line), or "entry:N" (boot entry N's initramfs,
+//	         tree and command line); none by default
+//
+// "entry:N" with only a kernel boots that entry with its kernel replaced,
+// so the kernel's release must match the entry's installed modules.
+// Nothing is written: a kernel that does not come up costs a reboot.
+func kexec(a *app, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "PUT multipart/form-data", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	img, err := kexecImage(a, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	fmt.Fprintln(w, "kexec into it")
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		if err := a.boot.Handover(img); err != nil {
+			log.Printf("kexec: %v", err)
+			a.rpc.Broadcast("error", map[string]string{"message": "kexec: " + err.Error()})
+		}
+	}()
+}
+
+func kexecImage(a *app, r *http.Request) (*uboot.LinuxImage, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(devDir, "kexec")
+	os.RemoveAll(dir)
+	parts := map[string]string{}
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			return nil, fmt.Errorf("%s not uploaded: %w", n, err)
+			return nil, err
 		}
-		return f, nil
+		switch n := p.FormName(); n {
+		case "kernel", "initrd", "dtb":
+			if err := save(filepath.Join(dir, n), p); err != nil {
+				return nil, err
+			}
+			parts[n] = filepath.Join(dir, n)
+		case "cmdline", "inherit":
+			b, err := io.ReadAll(io.LimitReader(p, 64<<10))
+			if err != nil {
+				return nil, err
+			}
+			parts[n] = strings.TrimSpace(string(b))
+		default:
+			return nil, fmt.Errorf("unknown part %q", n)
+		}
 	}
-	k, err := open("android-kernel")
-	if err != nil {
-		return err
+	if parts["kernel"] == "" {
+		return nil, errors.New("no kernel part")
 	}
-	i, err := open("android-initrd")
-	if err != nil {
-		return err
+
+	img := &uboot.LinuxImage{Name: "test kernel"}
+	switch inherit := parts["inherit"]; {
+	case inherit == "":
+	case inherit == "running":
+		img.DTB, err = os.Open("/sys/firmware/fdt")
+		if err != nil {
+			return nil, err
+		}
+		b, _ := os.ReadFile("/proc/cmdline")
+		img.Cmdline = strings.TrimSpace(string(b))
+	case strings.HasPrefix(inherit, "entry:"):
+		i, err := strconv.Atoi(inherit[len("entry:"):])
+		if err != nil {
+			return nil, fmt.Errorf("inherit: %w", err)
+		}
+		e, err := a.boot.Image(i)
+		if err != nil {
+			return nil, err
+		}
+		li, ok := e.(*uboot.LinuxImage)
+		if !ok {
+			return nil, fmt.Errorf("entry %d is not a Linux image", i)
+		}
+		copied := *li
+		img = &copied
+		img.Name = li.Label() + " (test kernel)"
+	default:
+		return nil, fmt.Errorf("inherit %q: want running or entry:N", inherit)
 	}
-	d, err := open("android-dtb")
-	if err != nil {
-		return err
+	open := func(n string) (*os.File, error) { return os.Open(parts[n]) }
+	if img.Kernel, err = open("kernel"); err != nil {
+		return nil, err
 	}
-	cmdline, err := os.ReadFile(filepath.Join(devDir, "kexec-android"))
-	if err != nil {
-		return err
+	if parts["initrd"] != "" {
+		if img.Initrd, err = open("initrd"); err != nil {
+			return nil, err
+		}
 	}
-	return handover(&boot.LinuxImage{
-		Name:    "stock Android",
-		Kernel:  k,
-		Initrd:  i,
-		DTB:     d,
-		Cmdline: strings.TrimSpace(string(cmdline)),
-	})
+	if parts["dtb"] != "" {
+		if img.DTB, err = open("dtb"); err != nil {
+			return nil, err
+		}
+	}
+	if c, ok := parts["cmdline"]; ok {
+		img.Cmdline = c
+	}
+	return img, nil
 }
 
-func saveUpload(dst string, body io.Reader) error {
+// save writes body to dst by way of a rename, so a running copy of the
+// old file is never half-overwritten.
+func save(dst string, body io.Reader) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -297,29 +362,27 @@ func saveUpload(dst string, body io.Reader) error {
 		os.Remove(tmp)
 		return err
 	}
-	// A rename, so a running copy of the old file is never half-overwritten.
 	return os.Rename(tmp, dst)
 }
 
-// devRestart is the socket command: {"what": "ui"|"backend"}, for restarting
-// without an upload (after one sent another way, or just to reset state).
-func devRestart(args []byte) (any, error) {
-	a, err := decode[struct{ What string }](args)
-	if err != nil {
-		return nil, err
+func isFile(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// overlay is a stack of file systems, the first that has a file winning.
+type overlay []http.FileSystem
+
+func (o overlay) Open(name string) (http.File, error) {
+	var first error
+	for _, l := range o {
+		f, err := l.Open(name)
+		if err == nil {
+			return f, nil
+		}
+		if first == nil {
+			first = err
+		}
 	}
-	switch a.What {
-	case "ui":
-		restartUI()
-	case "backend":
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			if err := reexec(); err != nil {
-				log.Printf("re-exec: %v", err)
-			}
-		}()
-	default:
-		return nil, fmt.Errorf("restart ui or backend, not %q", a.What)
-	}
-	return nil, nil
+	return nil, first
 }

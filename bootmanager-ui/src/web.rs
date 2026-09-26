@@ -1,10 +1,11 @@
-//! Browser transport: the page is served by the phone's Remote UI service,
-//! so the backend is the page's own host, at /ws. One text frame per JSON
-//! line each way.
+//! The browser build: the page is served by the backend, so the backend is
+//! the page's own host, at /ws. One text frame per JSON message each way.
 
-use crate::app::UrlMode;
-use crate::{with_app, AppWindow, APP};
+use crate::app::{with_app, App, Mode};
+use crate::screens::UrlMode;
+use crate::AppWindow;
 use slint::ComponentHandle;
+use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, WebSocket};
@@ -13,22 +14,23 @@ pub fn run() {
     let ui = AppWindow::new().expect("create window");
     let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
     ui.set_hint("Arrow keys and Enter, Esc for back, or click".into());
-    let app = crate::app::App::new(&ui, &host);
+    let app = App::install(&ui, Mode::Browser { host: host.clone() });
     app.set_url_opener(Box::new(open_url));
     sync_url(&app);
-    APP.with(|a| *a.borrow_mut() = Some(app));
     connect(format!("ws://{host}/ws"));
     ui.run().expect("run");
 }
 
-/// The screen is the URL path (app.rs, route_of): each screen change is a
-/// history entry, so the browser's Back and Forward walk what was visited;
-/// a loaded or reloaded URL opens its screen, Back stack included; and the
-/// server answers any such path with this page.
-fn sync_url(app: &std::rc::Rc<crate::app::App>) {
-    let Some(window) = web_sys::window() else { return };
-    let path = || web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default();
+fn path() -> String {
+    web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default()
+}
 
+/// The screen is the URL path (routes.rs): each screen change is a history
+/// entry, so the browser's Back and Forward walk what was visited; a loaded
+/// URL opens its screen, Back stack included; and the backend answers any
+/// such path with this page.
+fn sync_url(app: &Rc<App>) {
+    let Some(window) = web_sys::window() else { return };
     if let Ok(history) = window.history() {
         app.set_route_listener(Box::new(move |route| {
             if path() != route {
@@ -38,34 +40,25 @@ fn sync_url(app: &std::rc::Rc<crate::app::App>) {
     }
     app.navigate_to(&path());
 
-    let onpop = Closure::<dyn FnMut()>::new(move || with_app(|a| a.navigate_to(&path())));
+    let onpop = Closure::<dyn FnMut()>::new(|| with_app(|a| a.navigate_to(&path())));
     let _ = window.add_event_listener_with_callback("popstate", onpop.as_ref().unchecked_ref());
     onpop.forget();
 }
 
 fn connect(url: String) {
-    let ws = match WebSocket::new(&url) {
-        Ok(ws) => ws,
-        Err(_) => return retry(url),
-    };
+    let Ok(ws) = WebSocket::new(&url) else { return retry(url) };
 
     let sender = ws.clone();
     let onopen = Closure::<dyn FnMut()>::new(move || {
         let s = sender.clone();
-        with_app(|a| {
-            a.connected(Box::new(move |line: String| {
-                let _ = s.send_with_str(&line);
-            }))
-        });
+        with_app(|a| a.connected(Box::new(move |line: String| drop(s.send_with_str(&line)))));
     });
     ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
     onopen.forget();
 
-    let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+    let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(|e: MessageEvent| {
         if let Some(text) = e.data().as_string() {
-            for line in text.lines().filter(|l| !l.is_empty()) {
-                with_app(|a| a.line(line));
-            }
+            with_app(|a| a.line(&text));
         }
     });
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
@@ -79,24 +72,31 @@ fn connect(url: String) {
     onclose.forget();
 }
 
-/// Preview fills index.html's #preview overlay: the file in a frame, shown
-/// by the browser's own viewer (the server sandboxes it). Downloads go
-/// through an `<a download>` click, which leaves this page alone even if
-/// the server answers with an error.
-fn open_url(url: &str, mode: UrlMode) {
+fn retry(url: String) {
+    slint::Timer::single_shot(std::time::Duration::from_secs(1), move || connect(url));
+}
+
+/// Files come from the backend's files port, a separate origin from this
+/// page. Preview fills index.html's #preview overlay with the file in a
+/// frame, shown by the browser's own viewer; downloads go through an
+/// `<a download>` click, which leaves this page alone even on an error.
+fn open_url(port: &str, path: &str, mode: UrlMode) {
     let Some(window) = web_sys::window() else { return };
     let Some(doc) = window.document() else { return };
-    let name = url.rsplit('/').next().unwrap_or("file");
+    let loc = window.location();
+    let (proto, host) = (loc.protocol().unwrap_or_default(), loc.hostname().unwrap_or_default());
+    let url = format!("{proto}//{host}:{port}{path}");
     let download = format!("{url}?download=1");
+    let name = percent_encoding::percent_decode_str(path.rsplit('/').next().unwrap_or("file")).decode_utf8_lossy().into_owned();
     match mode {
         UrlMode::Tab => {
-            let _ = window.open_with_url_and_target(url, "_blank");
+            let _ = window.open_with_url_and_target_and_features(&url, "_blank", "noopener");
         }
         UrlMode::Download => {
             let Ok(el) = doc.create_element("a") else { return };
             let a: web_sys::HtmlAnchorElement = el.unchecked_into();
             a.set_href(&download);
-            a.set_download(name);
+            a.set_download(&name);
             a.click();
         }
         UrlMode::Preview => {
@@ -106,37 +106,14 @@ fn open_url(url: &str, mode: UrlMode) {
                 }
             };
             if let Some(el) = doc.get_element_by_id("preview-name") {
-                el.set_text_content(Some(&decode_name(name)));
+                el.set_text_content(Some(&name));
             }
-            set("preview-tab", "href", url);
+            set("preview-tab", "href", &url);
             set("preview-download", "href", &download);
-            set("preview-frame", "src", url);
+            set("preview-frame", "src", &url);
             if let Some(el) = doc.get_element_by_id("preview") {
                 let _ = el.remove_attribute("hidden");
             }
         }
     }
-}
-
-/// Undoes the percent-encoding of a URL's last segment, for the title.
-fn decode_name(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn retry(url: String) {
-    slint::Timer::single_shot(std::time::Duration::from_secs(1), move || connect(url));
 }

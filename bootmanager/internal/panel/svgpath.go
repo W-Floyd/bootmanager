@@ -1,89 +1,11 @@
-package main
+package panel
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"flag"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 )
-
-// display.info: the panel's shape, from a gmobile display-panel file
-// (data/devices/display-panels/<dt-compatible>.json upstream), looked up by
-// this device's device-tree compatibles as gmobile does. gmobile compiles
-// those files into its library, so there is nothing to read off the
-// rootfs; bootmanager/build.sh copies fogona's (from the aports overlay) into
-// assets/display-panels/ for the embed.
-//
-// Each cutout's SVG path is reduced to a bounding box, which is all the UI
-// needs to keep text clear of it. Arcs are boxed conservatively (their
-// endpoints widened by the radii), never smaller than the real shape.
-
-type cutoutJSON struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	X    int    `json:"x"`
-	Y    int    `json:"y"`
-	W    int    `json:"w"`
-	H    int    `json:"h"`
-}
-
-type panelJSON struct {
-	Name         string       `json:"name"`
-	XRes         int          `json:"x-res"`
-	YRes         int          `json:"y-res"`
-	BorderRadius int          `json:"border-radius"`
-	Cutouts      []cutoutJSON `json:"cutouts"`
-}
-
-var compatOverride = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
-
-func compatibles() []string {
-	if *compatOverride != "" {
-		return strings.Fields(*compatOverride)
-	}
-	b, err := os.ReadFile("/proc/device-tree/compatible")
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, c := range bytes.Split(bytes.TrimRight(b, "\x00"), []byte{0}) {
-		if len(c) > 0 {
-			out = append(out, string(c))
-		}
-	}
-	return out
-}
-
-func displayInfo([]byte) (any, error) {
-	for _, c := range compatibles() {
-		if strings.ContainsAny(c, "/") {
-			continue
-		}
-		b, err := assets.ReadFile("assets/display-panels/" + c + ".json")
-		if err != nil {
-			continue
-		}
-		var p panelJSON
-		if err := json.Unmarshal(b, &p); err != nil {
-			return nil, err
-		}
-		for i := range p.Cutouts {
-			x0, y0, x1, y1, err := pathBounds(p.Cutouts[i].Path)
-			if err != nil {
-				return nil, err
-			}
-			c := &p.Cutouts[i]
-			c.X, c.Y = int(math.Floor(x0)), int(math.Floor(y0))
-			c.W, c.H = int(math.Ceil(x1))-c.X, int(math.Ceil(y1))-c.Y
-		}
-		return map[string]any{"compatible": c, "panel": p}, nil
-	}
-	return map[string]any{"panel": nil}, nil
-}
 
 // pathBounds is the bounding box of an SVG path: M L H V C S Q T A Z and
 // their relative forms. Control points count, so curves are boxed by their
@@ -122,8 +44,7 @@ func pathBounds(d string) (x0, y0, x1, y1 float64, err error) {
 			}
 			return x, y
 		}
-		// How many numbers each command takes.
-		n := map[byte]int{'M': 2, 'L': 2, 'T': 2, 'H': 1, 'V': 1, 'C': 6, 'S': 4, 'Q': 4, 'A': 7, 'Z': 0}[up]
+		n := argCount[up]
 		if up == 'Z' {
 			cx, cy = sx, sy
 			continue
@@ -171,7 +92,7 @@ func pathBounds(d string) (x0, y0, x1, y1 float64, err error) {
 			if up == 'M' {
 				sx, sy = cx, cy
 				// Further pairs after M are implicit L (l after m).
-				cmd = map[bool]byte{true: 'l', false: 'L'}[rel]
+				cmd = 'L' | cmd&0x20
 			}
 		}
 		add(cx, cy)
@@ -181,6 +102,9 @@ func pathBounds(d string) (x0, y0, x1, y1 float64, err error) {
 	}
 	return x0, y0, x1, y1, nil
 }
+
+// argCount is how many numbers each command takes.
+var argCount = map[byte]int{'M': 2, 'L': 2, 'T': 2, 'H': 1, 'V': 1, 'C': 6, 'S': 4, 'Q': 4, 'A': 7, 'Z': 0}
 
 func isCmd(t string) bool {
 	return len(t) == 1 && strings.ContainsRune("MmLlHhVvCcSsQqTtAaZz", rune(t[0]))

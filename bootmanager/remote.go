@@ -1,68 +1,85 @@
 package main
 
 import (
-	"flag"
-	"io"
+	"net"
 	"net/http"
 	"path"
-	"strings"
-
-	"golang.org/x/net/websocket"
+	"time"
 )
 
-var webDir = flag.String("web", "/usr/share/bootmanager-web", "web build of bootmanager-ui on disk, for a backend built without it embedded")
+// Remote UI's ports, both on -listen. The files port is a separate origin
+// from the page's, so nothing served off a card can act as the page.
+const (
+	webPort   = "8080" // the page, and the protocol over a WebSocket at /ws
+	filesPort = "8081" // /files/<dev>/<path>
+)
 
-// webHandler serves the web build of bootmanager-ui and, at /ws, the backend
-// protocol over a WebSocket: each text frame carries one JSON message either
-// way. Incoming frames are re-joined with a newline after each, because a
-// browser sends a frame without one and the line reader would otherwise
-// wait for the end of a line that never comes.
-func webHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/ws", websocket.Server{
-		// Any origin: the page is ours, served from this same port, and the
-		// link is USB only. The default check would refuse other tools.
-		Handshake: func(*websocket.Config, *http.Request) error { return nil },
-		Handler: func(ws *websocket.Conn) {
-			ws.PayloadType = websocket.TextFrame
-			pr, pw := io.Pipe()
-			go func() {
-				for {
-					var msg string
-					if err := websocket.Message.Receive(ws, &msg); err != nil {
-						pw.CloseWithError(err)
-						return
-					}
-					io.WriteString(pw, strings.TrimRight(msg, "\n")+"\n")
-				}
-			}()
-			serveStream(pr, ws)
-		},
-	})
-	mux.HandleFunc("/dev/", devHandler)
-	mux.HandleFunc("/files/", filesHandler)
-	mux.Handle("/", pageFallback(webFS()))
-	return mux
+type webServer struct {
+	mux *http.ServeMux
+	// static is the web build of bootmanager-ui (-web); the dev build
+	// layers uploads over it.
+	static http.FileSystem
 }
 
-// pageFallback serves the web build's files, and the page itself for any
-// other path: the UI keeps its screen in the URL (/partitions/mmcblk0p2/usr,
-// /file/..., /boot), so a reload or a pasted link has to load the page,
-// which then opens that screen. /ws, /dev/ and /files/ have their own
-// routes and never get here.
-func pageFallback(fsys http.FileSystem) http.Handler {
-	files := http.FileServer(fsys)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if f, err := fsys.Open(path.Clean(r.URL.Path)); err == nil {
-			st, err := f.Stat()
-			f.Close()
-			if err == nil && !st.IsDir() {
-				files.ServeHTTP(w, r)
-				return
-			}
+func newWebServer(a *app) *webServer {
+	w := &webServer{mux: http.NewServeMux(), static: http.Dir(*webDir)}
+	w.mux.HandleFunc("/ws", a.rpc.ServeWebSocket)
+	w.mux.HandleFunc("/", w.page)
+	return w
+}
+
+// page serves the web build's files, and the page itself for any other
+// path: the UI keeps its screen in the URL (/partitions/mmcblk0p2/usr, /boot),
+// so a reload or a pasted link has to load it.
+func (w *webServer) page(rw http.ResponseWriter, r *http.Request) {
+	if f, err := w.static.Open(path.Clean(r.URL.Path)); err == nil {
+		st, err := f.Stat()
+		f.Close()
+		if err == nil && !st.IsDir() {
+			http.FileServer(w.static).ServeHTTP(rw, r)
+			return
 		}
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		files.ServeHTTP(w, r2)
-	})
+	}
+	f, err := w.static.Open("/index.html")
+	if err != nil {
+		http.Error(rw, "no web build of the UI (-web)", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.ServeContent(rw, r, "index.html", st.ModTime(), f)
+}
+
+// startRemote serves the UI to the host over the USB network. Nothing
+// here asks for a password, so it listens on -listen only.
+func (a *app) startRemote() (func(), error) {
+	var closers []func() error
+	stop := func() {
+		for _, c := range closers {
+			c()
+		}
+	}
+	listen := func(port string) (net.Listener, error) {
+		ln, err := net.Listen("tcp", net.JoinHostPort(*listen, port))
+		if err == nil {
+			closers = append(closers, ln.Close)
+		}
+		return ln, err
+	}
+
+	for port, h := range map[string]http.Handler{webPort: a.web.mux, filesPort: a.disks} {
+		ln, err := listen(port)
+		if err != nil {
+			stop()
+			return nil, err
+		}
+		srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+		closers = append(closers, srv.Close)
+		go srv.Serve(ln)
+	}
+	return stop, nil
 }

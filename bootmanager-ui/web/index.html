@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- The browser front end, served by the phone's Remote UI service next to
+<!-- The browser front end, served by the backend (-web) next to
      the wasm build (bootmanager_ui.js, bootmanager_ui_bg.wasm). Slint draws into
      the canvas with id "canvas"; src/web.rs connects to ws://<host>/ws.
      #preview is the file viewer: src/web.rs fills in its links and frame
@@ -8,7 +8,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>postmarketOS Boot Manager</title>
+<title>Boot Manager</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   /* The canvas fills the window. Slint first sizes the window to its

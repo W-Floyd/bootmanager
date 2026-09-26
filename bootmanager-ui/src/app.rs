@@ -1,183 +1,91 @@
-//! What is on screen and what each row does. Every screen is a list; this
-//! builds the rows from the backend's data and turns an activated row into a
-//! request. The .slint side only draws.
+//! The UI's state and its conversation with the backend. screens.rs
+//! decides what each screen shows; the .slint side only draws.
 
-use crate::proto::Client;
+use crate::proto::{self, Client, DisplayInfo, Event, Hello, Panel, Service, Thumb};
+use crate::routes::{route_of, screens_of};
+use crate::screens::{self, is_image, join, Action, Load, Screen, UrlMode};
 use crate::{AppWindow, Row};
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
-use std::cell::{Cell, RefCell};
+use slint::platform::WindowEvent;
+use slint::{ComponentHandle, Image, ModelRc, PhysicalSize, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-#[derive(Clone, Debug, PartialEq)]
-enum Screen {
-    Main,
-    Boot,
-    Services,
-    Disks,
-    Files { dev: String, name: String, path: String },
-    /// One file: what can be done with it.
-    File { dev: String, path: String, size: u64 },
-    /// A file's start, as text.
-    Text { dev: String, path: String },
-    Log,
+thread_local! {
+    /// The one App, on the UI thread, where the transport delivers lines.
+    static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone)]
-enum Action {
-    Open(Screen),
-    Boot(usize),
-    Service(String, bool),
-    Dir(String),
-    /// A file in the current directory: name, size.
-    File(String, u64),
-    /// Hand a URL on this backend to the browser.
-    Url(String, UrlMode),
-    Up,
-    Power(&'static str),
-    Refresh,
-    None,
+/// Runs f with the App, once there is one.
+pub fn with_app(f: impl FnOnce(&Rc<App>)) {
+    if let Some(app) = APP.with(|a| a.borrow().clone()) {
+        f(&app)
+    }
 }
 
-#[derive(Deserialize, Clone)]
-struct Entry {
-    label: String,
-    detail: String,
+/// Where the UI draws, which decides what it lays out around.
+pub enum Mode {
+    /// The device's own panel: its shape and scale from display.info.
+    /// fb_width_mm is the scale's fallback when the panel file has no
+    /// physical size (0 unknown).
+    Panel { fb_width_mm: u32 },
+    /// Rendering to memory (--screenshot): as Panel, and the window takes
+    /// the panel's size.
+    Headless,
+    /// A browser page served by the backend at host.
+    Browser { host: String },
 }
 
-#[derive(Deserialize, Clone)]
-struct Service {
-    name: String,
-    title: String,
-    detail: String,
-    running: bool,
+/// The scale factor for a panel `width` pixels and `width_mm` wide (0
+/// unknown): logical pixels of about 0.19 mm, which puts 360 of them across
+/// a typical 68 mm phone, in quarter steps. Without a physical size, 360
+/// logical pixels across.
+pub fn scale_for(width: u32, width_mm: u32) -> f32 {
+    let raw = if width_mm > 0 { width as f32 / width_mm as f32 * (68.0 / 360.0) } else { width as f32 / 360.0 };
+    ((raw * 4.0).round() / 4.0).clamp(1.0, 4.0)
 }
 
-#[derive(Deserialize, Clone)]
-struct Disk {
-    dev: String,
-    name: String,
-    fstype: String,
-    size: u64,
-}
+/// Opens a file for the browser: the files port, the path under it, how.
+pub type UrlOpener = Box<dyn Fn(&str, &str, UrlMode)>;
 
-#[derive(Deserialize, Clone)]
-struct FileEntry {
-    name: String,
-    dir: bool,
-    #[serde(default)]
-    link: String,
-    size: i64,
-}
-
-#[derive(Deserialize, Clone)]
-struct Listing {
-    path: String,
-    entries: Vec<FileEntry>,
-    truncated: bool,
-}
-
-#[derive(Deserialize, Clone)]
-struct TextView {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    binary: bool,
-    size: u64,
-    truncated: bool,
-}
-
-/// Opens a URL on the backend's HTTP server. Only the
-/// web build has one; elsewhere the file screen offers the viewer alone.
-pub type UrlOpener = Box<dyn Fn(&str, UrlMode)>;
-
-/// What the browser should do with a file URL.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum UrlMode {
-    /// In the page, in the browser's own viewer.
-    Preview,
-    Tab,
-    Download,
-}
-
-/// A request in flight or its failure, for screens whose data is loading.
-enum Load<T> {
-    Waiting,
-    Failed(String),
-    Ready(T),
-}
-
-struct State {
-    screen: Screen,
+pub struct State {
+    pub screen: Screen,
     stack: Vec<(Screen, i32)>,
     actions: Vec<Action>,
-    entries: Option<Vec<Entry>>,
-    services: Vec<Service>,
-    disks: Load<Vec<Disk>>,
-    files: Load<Listing>,
-    log: Load<Vec<String>>,
-    text: Load<TextView>,
-    /// Thumbnails by "dev:path"; None for a file that had none to give.
-    thumbs: HashMap<String, Option<Image>>,
+    /// Bumped at every screen change, so a late reply for a screen already
+    /// left is dropped.
+    generation: u64,
+    pub entries: Option<Vec<proto::Entry>>,
+    pub services: Vec<Service>,
+    pub modes: Vec<String>,
+    /// Files can be handed to a browser (the web build).
+    pub browser: bool,
+    files_port: String,
+    /// Thumbnails by (dev, path); None for a file that had none to give.
+    pub thumbs: HashMap<(String, String), Option<Image>>,
     /// Image files of the listing on screen still to fetch, one at a time.
     thumb_queue: VecDeque<(String, String)>,
     thumb_busy: bool,
     countdown: i64,
     countdown_label: String,
     error: String,
-    where_: String,
 }
 
 pub struct App {
     ui: slint::Weak<AppWindow>,
-    pub client: Client,
+    client: Client,
     state: RefCell<State>,
+    mode: Mode,
     open_url: RefCell<Option<UrlOpener>>,
-    /// Lay out around the panel's cutout and corners (display.info): only
-    /// when drawing on the phone's own panel.
-    panel_shape: Cell<bool>,
-    /// The web build's URL sync (set_route_listener) and the last route told.
+    /// The web build's URL sync, and the last route it was told.
     on_route: RefCell<Option<Box<dyn Fn(&str)>>>,
     last_route: RefCell<String>,
 }
 
-/// Percent-encodes a partition path for /files/<dev><path>, keeping '/'.
-fn url_path(p: &str) -> String {
-    let mut out = String::new();
-    for b in p.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-fn human_size(n: u64) -> String {
-    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < units.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", units[u])
-    }
-}
-
-fn row(title: impl Into<SharedString>, detail: impl Into<SharedString>, kind: &str, on: bool) -> Row {
-    Row { title: title.into(), detail: detail.into(), kind: kind.into(), on, thumb: Image::default() }
-}
-
 impl App {
-    /// `where_` names the backend in the header when it is not local, so a
-    /// remote window is never mistaken for the phone's own screen.
-    pub fn new(ui: &AppWindow, where_: &str) -> Rc<App> {
+    pub fn install(ui: &AppWindow, mode: Mode) -> Rc<App> {
         let app = Rc::new(App {
             ui: ui.as_weak(),
             client: Client::default(),
@@ -185,121 +93,44 @@ impl App {
                 screen: Screen::Main,
                 stack: vec![],
                 actions: vec![],
+                generation: 0,
                 entries: None,
                 services: vec![],
-                disks: Load::Waiting,
-                files: Load::Waiting,
-                log: Load::Waiting,
-                text: Load::Waiting,
+                modes: vec![],
+                browser: matches!(mode, Mode::Browser { .. }),
+                files_port: String::new(),
                 thumbs: HashMap::new(),
                 thumb_queue: VecDeque::new(),
                 thumb_busy: false,
                 countdown: -1,
                 countdown_label: String::new(),
                 error: String::new(),
-                where_: where_.to_string(),
             }),
+            mode,
             open_url: RefCell::new(None),
-            panel_shape: Cell::new(false),
             on_route: RefCell::new(None),
             last_route: RefCell::new("/".into()),
         });
-        let a = Rc::downgrade(&app);
+        let weak = Rc::downgrade(&app);
+        let on = move |f: fn(&Rc<App>)| {
+            let weak = weak.clone();
+            move || {
+                if let Some(a) = weak.upgrade() {
+                    f(&a)
+                }
+            }
+        };
+        ui.on_back(on(|a| a.back()));
+        ui.on_activity(on(|a| a.activity()));
+        let weak = Rc::downgrade(&app);
         ui.on_activated(move |i| {
-            if let Some(a) = a.upgrade() {
+            if let Some(a) = weak.upgrade() {
                 a.activate(i as usize)
             }
         });
-        let a = Rc::downgrade(&app);
-        ui.on_back(move || {
-            if let Some(a) = a.upgrade() {
-                a.back()
-            }
-        });
-        let a = Rc::downgrade(&app);
-        ui.on_activity(move || {
-            if let Some(a) = a.upgrade() {
-                a.activity()
-            }
-        });
-        if !where_.is_empty() {
-            ui.set_origin(format!("remote: {where_}").into());
-        }
+        APP.with(|a| *a.borrow_mut() = Some(app.clone()));
         app.render();
         app
-    }
-
-    /// Fetches the next queued thumbnail, one request at a time so a
-    /// directory of photos does not flood the backend; each reply starts
-    /// the next. Leaving the directory clears the queue (see load_screen).
-    fn pump_thumbs(self: &Rc<Self>) {
-        let next = {
-            let mut s = self.state.borrow_mut();
-            if s.thumb_busy {
-                return;
-            }
-            let cur = match &s.screen {
-                Screen::Files { dev, path, .. } => Some((dev.clone(), path.trim_end_matches('/').to_string())),
-                _ => None,
-            };
-            let on_dir = |dev: &str, p: &str| {
-                cur.as_ref().is_some_and(|(d, dir)| d == dev && p.rsplit_once('/').map(|x| x.0).unwrap_or("") == dir)
-            };
-            let mut next = None;
-            while let Some((dev, p)) = s.thumb_queue.pop_front() {
-                if on_dir(&dev, &p) {
-                    next = Some((dev, p));
-                    break;
-                }
-            }
-            s.thumb_busy = next.is_some();
-            next
-        };
-        let Some((dev, path)) = next else { return };
-        let key = thumb_key(&dev, &path);
-        // Physical pixels at the phone's scale: a 52 px image at 2x.
-        self.call("fs.thumb", json!({"dev": dev, "path": path, "size": 104}), move |a, r| {
-            let img = r.ok().and_then(|v| thumb_image(&v));
-            {
-                let mut s = a.state.borrow_mut();
-                s.thumbs.insert(key, img);
-                s.thumb_busy = false;
-            }
-            a.pump_thumbs();
-        });
-    }
-
-    /// Lays the UI out around the panel's shape; for the phone's own panel.
-    pub fn use_panel_shape(&self) {
-        self.panel_shape.set(true);
-    }
-
-    /// display.info -> the header's cutout split and corner padding. The
-    /// panel file is in physical pixels; the UI's lengths are logical.
-    fn load_panel(self: &Rc<Self>) {
-        self.call("display.info", json!({}), |a, r| {
-            let Some(ui) = a.ui.upgrade() else { return };
-            let Ok(v) = r else { return };
-            let p = &v["panel"];
-            if p.is_null() {
-                return;
-            }
-            let scale = ui.window().scale_factor();
-            let px = |v: &Value| v.as_f64().unwrap_or(0.0) as f32 / scale;
-            ui.set_corner_radius(px(&p["border-radius"]));
-            // The first cutout on the top edge is the one the header meets.
-            let top = p["cutouts"].as_array().and_then(|c| c.iter().find(|c| c["y"].as_i64() == Some(0)));
-            if let Some(c) = top {
-                ui.set_cutout_x(px(&c["x"]));
-                ui.set_cutout_w(px(&c["w"]));
-                ui.set_cutout_h(px(&c["h"]));
-            }
-        });
-    }
-
-    /// Lets the file screen hand files to the browser (web build only).
-    pub fn set_url_opener(&self, open: UrlOpener) {
-        *self.open_url.borrow_mut() = Some(open);
     }
 
     // --- transport hooks ---
@@ -307,11 +138,26 @@ impl App {
     pub fn connected(self: &Rc<Self>, send: Box<dyn Fn(String)>) {
         self.client.set_sender(Some(send));
         self.state.borrow_mut().error.clear();
+        self.call("hello", json!({}), |a, r: Result<Hello, _>| match r {
+            Ok(h) if h.version == proto::VERSION => {
+                let top = match &a.mode {
+                    Mode::Browser { host } => [h.model.as_str(), &format!("remote: {host}")].join("  ·  "),
+                    _ => h.model,
+                };
+                if let Some(ui) = a.ui.upgrade() {
+                    ui.set_model(top.trim_start_matches("  ·  ").into());
+                }
+                a.state.borrow_mut().files_port = h.files_port;
+            }
+            Ok(h) => a.state.borrow_mut().error = format!("Backend protocol {}, UI {}: update both", h.version, proto::VERSION),
+            Err(e) => a.state.borrow_mut().error = e,
+        });
+        if !matches!(self.mode, Mode::Browser { .. }) {
+            self.call("display.info", json!({}), |a, r: Result<DisplayInfo, _>| a.apply_panel(r.ok().and_then(|d| d.panel)));
+        }
+        self.call("power.modes", json!({}), |a, r| a.state.borrow_mut().modes = r.unwrap_or_default());
         self.refresh_boot();
         self.refresh_services();
-        if self.panel_shape.get() {
-            self.load_panel();
-        }
         self.load_screen();
     }
 
@@ -325,35 +171,32 @@ impl App {
     }
 
     pub fn line(self: &Rc<Self>, line: &str) {
-        let Some((event, data)) = self.client.handle_line(line) else { return };
-        match event.as_str() {
-            "autoboot" => {
-                let mut s = self.state.borrow_mut();
-                s.countdown = data["remaining"].as_i64().unwrap_or(-1);
-                s.countdown_label = data["label"].as_str().unwrap_or("").to_string();
-            }
-            "entries" => self.set_entries(&data),
-            "services" => {
-                if let Ok(v) = serde_json::from_value(data) {
-                    self.state.borrow_mut().services = v;
-                }
-            }
-            "busy" => {
+        let Some(event) = self.client.handle_line(line) else { return };
+        let mut s = self.state.borrow_mut();
+        match event {
+            Event::Autoboot(a) => (s.countdown, s.countdown_label) = (a.remaining, a.label),
+            Event::Entries(e) if !e.scanning => s.entries = Some(e.entries),
+            Event::Entries(_) => {}
+            Event::Services(v) => s.services = v,
+            Event::Error(e) => s.error = e,
+            Event::Busy(text) => {
                 if let Some(ui) = self.ui.upgrade() {
-                    ui.set_busy(data["text"].as_str().unwrap_or("").into());
+                    ui.set_busy(text.into());
                 }
             }
-            "error" => {
-                self.state.borrow_mut().error = data["message"].as_str().unwrap_or("").to_string();
-            }
-            _ => {}
         }
+        drop(s);
         self.render();
     }
 
     // --- requests ---
 
-    fn call(self: &Rc<Self>, cmd: &str, args: Value, done: impl FnOnce(&Rc<App>, Result<Value, String>) + 'static) {
+    fn call<T: DeserializeOwned + 'static>(
+        self: &Rc<Self>,
+        cmd: &str,
+        args: Value,
+        done: impl FnOnce(&Rc<App>, Result<T, String>) + 'static,
+    ) {
         let weak = Rc::downgrade(self);
         self.client.call(cmd, args, move |r| {
             if let Some(a) = weak.upgrade() {
@@ -363,25 +206,36 @@ impl App {
         });
     }
 
-    fn set_entries(&self, data: &Value) {
-        if data["scanning"].as_bool() == Some(true) {
-            return;
-        }
-        if let Ok(v) = serde_json::from_value(data["entries"].clone()) {
-            self.state.borrow_mut().entries = Some(v);
+    /// Requests data for the screen on show and hands the reply to put,
+    /// unless the screen has changed in the meantime.
+    fn fetch<T: DeserializeOwned + 'static>(self: &Rc<Self>, cmd: &str, args: Value, put: impl FnOnce(&mut State, Load<T>) + 'static) {
+        let generation = self.state.borrow().generation;
+        self.call(cmd, args, move |a, r| {
+            let mut s = a.state.borrow_mut();
+            if s.generation == generation {
+                put(&mut s, r.into());
+            }
+        });
+    }
+
+    /// Reports a failed action on the status line.
+    fn report(a: &Rc<App>, r: Result<Value, String>) {
+        if let Err(e) = r {
+            a.state.borrow_mut().error = e;
         }
     }
 
     fn refresh_boot(self: &Rc<Self>) {
-        self.call("boot.list", json!({}), |a, r| match r {
-            Ok(v) => a.set_entries(&v),
+        self.call("boot.list", json!({}), |a, r: Result<proto::Entries, _>| match r {
+            Ok(e) if !e.scanning => a.state.borrow_mut().entries = Some(e.entries),
+            Ok(_) => {}
             Err(e) => a.state.borrow_mut().error = e,
         });
     }
 
     fn refresh_services(self: &Rc<Self>) {
-        self.call("service.list", json!({}), |a, r| {
-            if let Ok(v) = r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+        self.call("service.list", json!({}), |a, r: Result<Vec<Service>, _>| {
+            if let Ok(v) = r {
                 a.state.borrow_mut().services = v;
             }
         });
@@ -392,92 +246,139 @@ impl App {
         match screen {
             Screen::Boot => self.refresh_boot(),
             Screen::Services => self.refresh_services(),
-            Screen::Disks => {
-                self.state.borrow_mut().disks = Load::Waiting;
-                self.call("disk.list", json!({}), |a, r| {
-                    a.state.borrow_mut().disks = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
-                        Ok(v) => Load::Ready(v),
-                        Err(e) => Load::Failed(e),
-                    };
-                });
-            }
-            Screen::Files { dev, path, .. } => {
-                self.state.borrow_mut().files = Load::Waiting;
-                let want = screen_key(&self.state.borrow().screen);
-                let (dir_dev, dir) = (dev.clone(), path.clone());
-                self.call("fs.list", json!({"dev": dev, "path": path}), move |a, r| {
-                    // Ignore a listing for a directory we have already left.
-                    if screen_key(&a.state.borrow().screen) != want {
-                        return;
-                    }
-                    let listing = r.and_then(|v| serde_json::from_value::<Listing>(v).map_err(|e| e.to_string()));
-                    if let Ok(l) = &listing {
-                        let mut s = a.state.borrow_mut();
-                        s.thumb_queue.clear();
-                        for f in l.entries.iter().filter(|f| !f.dir && f.link.is_empty() && is_image(&f.name)) {
-                            let p = format!("{}/{}", dir.trim_end_matches('/'), f.name);
-                            if !s.thumbs.contains_key(&thumb_key(&dir_dev, &p)) {
-                                s.thumb_queue.push_back((dir_dev.clone(), p));
-                            }
-                        }
-                    }
-                    a.state.borrow_mut().files = match listing {
-                        Ok(v) => Load::Ready(v),
-                        Err(e) => Load::Failed(e),
-                    };
-                    a.pump_thumbs();
-                });
-            }
-            Screen::Log => {
-                self.state.borrow_mut().log = Load::Waiting;
-                self.call("log.tail", json!({"lines": 300}), |a, r| {
-                    a.state.borrow_mut().log = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
-                        Ok(v) => Load::Ready(v),
-                        Err(e) => Load::Failed(e),
-                    };
-                });
-            }
-            Screen::Text { dev, path } => {
-                self.state.borrow_mut().text = Load::Waiting;
-                self.call("fs.read", json!({"dev": dev, "path": path}), |a, r| {
-                    a.state.borrow_mut().text = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
-                        Ok(v) => Load::Ready(v),
-                        Err(e) => Load::Failed(e),
-                    };
-                });
-            }
+            Screen::Disks(_) => self.fetch("disk.list", json!({}), |s, l| {
+                if let Screen::Disks(d) = &mut s.screen {
+                    *d = l
+                }
+            }),
+            Screen::Files { dev, path, .. } => self.fetch("fs.list", json!({"dev": dev, "path": path}), move |s, l: Load<proto::Listing>| {
+                if let Load::Ready(listing) = &l {
+                    s.thumb_queue = listing
+                        .entries
+                        .iter()
+                        .filter(|f| !f.dir && f.link.is_empty() && is_image(&f.name))
+                        .map(|f| (dev.clone(), join(&path, &f.name)))
+                        .filter(|k| !s.thumbs.contains_key(k))
+                        .collect();
+                }
+                if let Screen::Files { listing, .. } = &mut s.screen {
+                    *listing = l
+                }
+            }),
+            Screen::Text { dev, path, .. } => self.fetch("fs.read", json!({"dev": dev, "path": path}), |s, l| {
+                if let Screen::Text { text, .. } = &mut s.screen {
+                    *text = l
+                }
+            }),
+            Screen::Log(_) => self.fetch("log.tail", json!({"lines": 300}), |s, l| {
+                if let Screen::Log(log) = &mut s.screen {
+                    *log = l
+                }
+            }),
             Screen::Main | Screen::File { .. } => {}
+        }
+    }
+
+    /// Fetches the next queued thumbnail, one request at a time so a
+    /// directory of photos does not flood the backend; each reply starts
+    /// the next. A screen change clears the queue.
+    fn pump_thumbs(self: &Rc<Self>) {
+        if !self.client.connected() {
+            return;
+        }
+        let next = {
+            let mut s = self.state.borrow_mut();
+            if s.thumb_busy {
+                return;
+            }
+            let next = s.thumb_queue.pop_front();
+            s.thumb_busy = next.is_some();
+            next
+        };
+        let Some(key) = next else { return };
+        let scale = self.ui.upgrade().map_or(1.0, |u| u.window().scale_factor());
+        // The row's 52 px picture, in physical pixels.
+        let size = (52.0 * scale).round() as u32;
+        self.call("fs.thumb", json!({"dev": key.0, "path": key.1, "size": size}), move |a, r: Result<Thumb, _>| {
+            let mut s = a.state.borrow_mut();
+            s.thumbs.insert(key, r.ok().and_then(|t| thumb_image(&t)));
+            s.thumb_busy = false;
+        });
+    }
+
+    /// Scale, corner padding and the cutouts' span, from display.info. The
+    /// panel file is in the panel's pixels; the window may be the
+    /// framebuffer's, and the UI's lengths are logical.
+    fn apply_panel(&self, p: Option<Panel>) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let window = ui.window();
+        let (size, fb_mm) = match (&self.mode, &p) {
+            (Mode::Headless, Some(p)) => (PhysicalSize::new(p.xres, p.yres), 0),
+            (Mode::Panel { fb_width_mm }, _) => (window.size(), *fb_width_mm),
+            _ => (window.size(), 0),
+        };
+        let width = size.width;
+        let mm = p.as_ref().map_or(0, |p| p.width_mm);
+        let scale = scale_for(width, if mm > 0 { mm } else { fb_mm });
+        window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale });
+        // The window keeps its logical size across a scale change.
+        window.set_size(size);
+        let Some(p) = p else { return };
+        let k = width as f32 / p.xres as f32 / scale;
+        ui.set_corner_radius(p.corner_radii[0].max(p.corner_radii[1]) as f32 * k);
+        // The cutouts near the top edge share the header's first line, which
+        // grows to clear the lowest of them.
+        let top: Vec<_> = p.cutouts.iter().filter(|c| c.y < p.yres as i32 / 10).collect();
+        if let (Some(x0), Some(x1), Some(y1)) = (
+            top.iter().map(|c| c.x).min(),
+            top.iter().map(|c| c.x + c.w).max(),
+            top.iter().map(|c| c.y + c.h).max(),
+        ) {
+            ui.set_cutout_x(x0 as f32 * k);
+            ui.set_cutout_w((x1 - x0) as f32 * k);
+            ui.set_cutout_h(y1 as f32 * k);
         }
     }
 
     // --- input ---
 
     fn activity(self: &Rc<Self>) {
-        let counting = self.state.borrow().countdown >= 0;
-        if counting {
+        if self.state.borrow().countdown >= 0 {
             self.state.borrow_mut().countdown = -1;
-            self.call("autoboot.cancel", json!({}), |_, _| {});
-            self.render();
+            self.call("autoboot.cancel", json!({}), App::report);
         }
     }
 
-    fn open(self: &Rc<Self>, screen: Screen) {
-        let selected = self.ui.upgrade().map(|u| u.get_selected()).unwrap_or(0);
+    fn show(self: &Rc<Self>, screen: Screen, selected: i32) {
         {
             let mut s = self.state.borrow_mut();
-            let prev = std::mem::replace(&mut s.screen, screen);
-            s.stack.push((prev, selected));
+            s.screen = screen;
+            s.generation += 1;
+            s.thumb_queue.clear();
         }
-        self.render_at(1);
+        self.render();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_selected(selected);
+            ui.invoke_scroll_to_selected();
+        }
         self.load_screen();
+    }
+
+    /// Opens a screen with the row after Back selected, so a stray select
+    /// does not leave it.
+    fn open(self: &Rc<Self>, screen: Screen) {
+        let selected = self.ui.upgrade().map_or(0, |u| u.get_selected());
+        let mut s = self.state.borrow_mut();
+        let prev = std::mem::replace(&mut s.screen, Screen::Main);
+        s.stack.push((prev, selected));
+        drop(s);
+        self.show(screen, 1);
     }
 
     fn back(self: &Rc<Self>) {
         let popped = self.state.borrow_mut().stack.pop();
         if let Some((screen, selected)) = popped {
-            self.state.borrow_mut().screen = screen;
-            self.render_at(selected);
-            self.load_screen();
+            self.show(screen, selected);
         }
     }
 
@@ -485,105 +386,51 @@ impl App {
         let action = self.state.borrow().actions.get(i).cloned().unwrap_or(Action::None);
         match action {
             Action::Open(s) => self.open(s),
-            Action::Boot(i) => {
-                self.call("boot.start", json!({"index": i}), |a, r| {
-                    if let Err(e) = r {
-                        a.state.borrow_mut().error = e;
-                    }
-                });
-            }
-            Action::Service(name, on) => {
-                self.call("service.set", json!({"name": name, "running": on}), |a, r| match r {
-                    Ok(v) => {
-                        if let Ok(v) = serde_json::from_value(v) {
-                            a.state.borrow_mut().services = v;
-                        }
-                    }
-                    Err(e) => a.state.borrow_mut().error = e,
-                });
-            }
-            Action::Dir(name) => {
-                let next = match &self.state.borrow().screen {
-                    Screen::Files { dev, name: part, path } => Some(Screen::Files {
-                        dev: dev.clone(),
-                        name: part.clone(),
-                        path: format!("{}/{}", path.trim_end_matches('/'), name),
-                    }),
-                    _ => None,
-                };
-                if let Some(s) = next {
-                    self.open(s);
-                }
-            }
-            Action::Up => self.back(),
-            Action::Power(what) => {
-                self.call("power", json!({"action": what}), |a, r| {
-                    if let Err(e) = r {
-                        a.state.borrow_mut().error = e;
-                    }
-                });
-            }
-            Action::File(name, size) => {
-                let next = match &self.state.borrow().screen {
-                    Screen::Files { dev, path, .. } => Some(Screen::File {
-                        dev: dev.clone(),
-                        path: format!("{}/{}", path.trim_end_matches('/'), name),
-                        size,
-                    }),
-                    _ => None,
-                };
-                if let Some(s) = next {
-                    self.open(s);
-                }
-            }
-            Action::Url(url, mode) => {
-                if let Some(open) = &*self.open_url.borrow() {
-                    open(&url, mode);
-                }
-            }
+            Action::Back => self.back(),
             Action::Refresh => self.load_screen(),
+            Action::Boot(i) => self.call("boot.start", json!({"index": i}), App::report),
+            Action::Service(name, on) => self.call("service.set", json!({"name": name, "running": on}), |a, r| match r {
+                Ok(v) => a.state.borrow_mut().services = v,
+                Err(e) => a.state.borrow_mut().error = e,
+            }),
+            Action::Reboot(mode) => self.call("power", json!({"action": "reboot", "mode": mode}), App::report),
+            Action::PowerOff => self.call("power", json!({"action": "poweroff"}), App::report),
+            Action::Url(path, mode) => {
+                if let Some(open) = &*self.open_url.borrow() {
+                    open(&self.state.borrow().files_port, &path, mode);
+                }
+            }
             Action::None => {}
         }
     }
 
     // --- drawing ---
 
-    fn render_at(&self, selected: i32) {
-        self.render();
-        if let Some(ui) = self.ui.upgrade() {
-            ui.set_selected(selected);
-            ui.invoke_scroll_to_selected();
-        }
-    }
-
-    pub fn render(&self) {
+    pub fn render(self: &Rc<Self>) {
         let Some(ui) = self.ui.upgrade() else { return };
+        let connected = self.client.connected();
         let mut s = self.state.borrow_mut();
-        let (heading, sub, items) = build(&s, self.client.connected(), self.open_url.borrow().is_some());
+        let (heading, sub, items) = if connected { screens::build(&s) } else { ("Boot Manager".into(), String::new(), vec![]) };
         let (rows, actions): (Vec<Row>, Vec<Action>) = items.into_iter().unzip();
         s.actions = actions;
 
-        let (status, alert) = if !self.client.connected() {
-            (format!("Waiting for the backend{}…", if s.where_.is_empty() { String::new() } else { format!(" at {}", s.where_) }), true)
+        let status = if !connected {
+            "Waiting for the backend…".to_string()
         } else if s.countdown >= 0 {
-            (format!("Booting {} in {} s. Press any key to stay.", s.countdown_label, s.countdown), true)
-        } else if !s.error.is_empty() {
-            (s.error.clone(), true)
+            format!("Booting {} in {} s. Press any key to stay.", s.countdown_label, s.countdown)
         } else {
-            (String::new(), false)
+            s.error.clone()
         };
-
         let n = rows.len() as i32;
-        ui.set_compact(matches!(s.screen, Screen::Log | Screen::Text { .. }));
+        ui.set_compact(matches!(s.screen, Screen::Log(_) | Screen::Text { .. }));
         ui.set_heading(heading.into());
         ui.set_subheading(sub.into());
         ui.set_status(status.into());
-        ui.set_status_alert(alert);
         ui.set_rows(ModelRc::new(VecModel::from(rows)));
         if ui.get_selected() >= n {
             ui.set_selected((n - 1).max(0));
         }
-
+        let more_thumbs = !s.thumb_busy && !s.thumb_queue.is_empty();
         let route = route_of(&s.screen);
         drop(s);
         if *self.last_route.borrow() != route {
@@ -592,9 +439,16 @@ impl App {
                 f(&route);
             }
         }
+        if more_thumbs {
+            self.pump_thumbs();
+        }
     }
 
-    // --- routes: the screen as a URL path, for the web build ---
+    // --- the web build's hooks ---
+
+    pub fn set_url_opener(&self, open: UrlOpener) {
+        *self.open_url.borrow_mut() = Some(open);
+    }
 
     /// Called with the new route whenever the screen changes.
     pub fn set_route_listener(&self, f: Box<dyn Fn(&str)>) {
@@ -602,326 +456,28 @@ impl App {
     }
 
     /// Goes to the screen a route names, with the Back stack its path
-    /// implies (a directory's parents, then the file), and loads it. An
-    /// unknown route is the main screen.
+    /// implies, and loads it.
     pub fn navigate_to(self: &Rc<Self>, route: &str) {
         let (stack, screen) = screens_of(route);
-        let selected = if screen == Screen::Main { 0 } else { 1 };
+        let selected = if matches!(screen, Screen::Main) { 0 } else { 1 };
         {
             let mut s = self.state.borrow_mut();
-            s.stack = stack.into_iter().map(|sc| (sc, 1)).collect();
-            if let Some(first) = s.stack.first_mut() {
-                first.1 = 0;
-            }
-            s.screen = screen;
+            // Back from each screen lands on the row it was opened from:
+            // not known here, so the row after Back (the main screen's first).
+            s.stack = stack.into_iter().enumerate().map(|(i, sc)| (sc, if i == 0 { 0 } else { 1 })).collect();
         }
         // The listener must not echo this back as a new history entry.
-        *self.last_route.borrow_mut() = route_of(&self.state.borrow().screen);
-        self.render_at(selected);
-        self.load_screen();
+        *self.last_route.borrow_mut() = route_of(&screen);
+        self.show(screen, selected);
     }
 }
 
-/// The screen's URL path. Directories and files are percent-encoded.
-fn route_of(s: &Screen) -> String {
-    match s {
-        Screen::Main => "/".into(),
-        Screen::Boot => "/boot".into(),
-        Screen::Services => "/services".into(),
-        Screen::Disks => "/partitions".into(),
-        Screen::Log => "/log".into(),
-        Screen::Files { dev, path, .. } => {
-            format!("/partitions/{dev}{}", url_path(path.trim_end_matches('/')))
-        }
-        Screen::File { dev, path, .. } => format!("/file/{dev}{}", url_path(path)),
-        Screen::Text { dev, path } => format!("/text/{dev}{}", url_path(path)),
-    }
-}
-
-/// A route's screen and the stack of screens Back walks from it.
-fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
-    let route = url_unpath(route);
-    let parts: Vec<&str> = route.split('/').filter(|p| !p.is_empty()).collect();
-    let dir_stack = |dev: &str, dirs: &[&str]| {
-        let mut st = vec![Screen::Main, Screen::Disks];
-        let mut p = String::new();
-        st.push(Screen::Files { dev: dev.into(), name: String::new(), path: "/".into() });
-        for d in dirs {
-            p.push('/');
-            p.push_str(d);
-            st.push(Screen::Files { dev: dev.into(), name: String::new(), path: p.clone() });
-        }
-        st
-    };
-    match parts.as_slice() {
-        ["boot"] => (vec![Screen::Main], Screen::Boot),
-        ["services"] => (vec![Screen::Main], Screen::Services),
-        ["log"] => (vec![Screen::Main], Screen::Log),
-        ["partitions"] => (vec![Screen::Main], Screen::Disks),
-        ["partitions", dev, rest @ ..] => {
-            let mut st = dir_stack(dev, rest);
-            let screen = st.pop().unwrap();
-            (st, screen)
-        }
-        [kind @ ("file" | "text"), dev, rest @ ..] if !rest.is_empty() => {
-            let path = format!("/{}", rest.join("/"));
-            let mut st = dir_stack(dev, &rest[..rest.len() - 1]);
-            let file = Screen::File { dev: dev.to_string(), path: path.clone(), size: 0 };
-            if *kind == "file" {
-                (st, file)
-            } else {
-                st.push(file);
-                (st, Screen::Text { dev: dev.to_string(), path })
-            }
-        }
-        _ => (vec![], Screen::Main),
-    }
-}
-
-/// Undoes url_path's percent-encoding.
-fn url_unpath(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn thumb_key(dev: &str, path: &str) -> String {
-    format!("{dev}:{path}")
-}
-
-/// The formats the backend can make thumbnails of (Go's standard library).
-fn is_image(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    [".jpg", ".jpeg", ".png", ".gif"].iter().any(|e| n.ends_with(e))
-}
-
-/// fs.thumb's reply -- width, height, base64 RGBA -- as an image.
-fn thumb_image(v: &Value) -> Option<Image> {
+/// fs.thumb's reply as an image.
+fn thumb_image(t: &Thumb) -> Option<Image> {
     use base64::Engine;
-    let w = v["width"].as_u64()? as u32;
-    let h = v["height"].as_u64()? as u32;
-    let px = base64::engine::general_purpose::STANDARD.decode(v["rgba"].as_str()?).ok()?;
-    if w == 0 || h == 0 || px.len() != (w * h * 4) as usize {
+    let px = base64::engine::general_purpose::STANDARD.decode(&t.rgba).ok()?;
+    if t.width == 0 || t.height == 0 || px.len() != (t.width * t.height * 4) as usize {
         return None;
     }
-    Some(Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&px, w, h)))
-}
-
-fn screen_key(s: &Screen) -> String {
-    format!("{s:?}")
-}
-
-/// Every screen but the main one starts with a Back row: with three keys,
-/// an item is easier to find than a long press. `open` selects the row
-/// after it, so a stray Power press does not leave the screen.
-fn build(s: &State, connected: bool, web: bool) -> (String, String, Vec<(Row, Action)>) {
-    let (heading, sub, mut items) = build_screen(s, connected, web);
-    if connected && s.screen != Screen::Main {
-        items.insert(0, (row("< Back", "", "back", false), Action::Up));
-    }
-    (heading, sub, items)
-}
-
-fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(Row, Action)>) {
-    let mut items = vec![];
-    let sub = String::new();
-    if !connected {
-        return ("Boot Manager".into(), sub, items);
-    }
-    match &s.screen {
-        Screen::Main => {
-            let boot_detail = match &s.entries {
-                None => "Looking for boot entries…".to_string(),
-                Some(e) if e.is_empty() => "No boot entries found".to_string(),
-                Some(e) => format!("Default: {}", e[0].label),
-            };
-            let svc: Vec<String> = s
-                .services
-                .iter()
-                .map(|v| format!("{} {}", v.title, if v.running { "on" } else { "off" }))
-                .collect();
-            items.push((row("Boot", boot_detail, "nav", false), Action::Open(Screen::Boot)));
-            items.push((row("Services", svc.join("  ·  "), "nav", false), Action::Open(Screen::Services)));
-            if let Some(r) = s.services.iter().find(|v| v.name == "remote" && v.running) {
-                items.push((row("Remote UI is on", r.detail.clone(), "info", false), Action::Open(Screen::Services)));
-            }
-            items.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks)));
-            items.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log)));
-            items.push((row("Reboot", "", "action", false), Action::Power("reboot")));
-            items.push((row("Reboot to bootloader", "ABL fastboot", "action", false), Action::Power("bootloader")));
-            items.push((row("Power off", "", "danger", false), Action::Power("poweroff")));
-            ("Boot Manager".into(), sub, items)
-        }
-        Screen::Boot => {
-            match &s.entries {
-                None => items.push((row("Scanning…", "", "info", false), Action::None)),
-                Some(e) if e.is_empty() => {
-                    items.push((row("No boot entries", "Nothing on any disk has an extlinux.conf", "info", false), Action::None))
-                }
-                Some(e) => {
-                    for (i, e) in e.iter().enumerate() {
-                        let title = if i == 0 { format!("{}  (default)", e.label) } else { e.label.clone() };
-                        items.push((row(title, e.detail.clone(), "action", false), Action::Boot(i)));
-                    }
-                }
-            }
-            ("Boot".into(), "Load the entry and kexec into it".into(), items)
-        }
-        Screen::Services => {
-            for v in &s.services {
-                items.push((row(v.title.clone(), v.detail.clone(), "toggle", v.running), Action::Service(v.name.clone(), !v.running)));
-            }
-            ("Services".into(), "Power toggles the selected service".into(), items)
-        }
-        Screen::Disks => {
-            match &s.disks {
-                Load::Waiting => items.push((row("Probing…", "", "info", false), Action::None)),
-                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
-                Load::Ready(d) if d.is_empty() => items.push((row("No file systems found", "", "info", false), Action::Refresh)),
-                Load::Ready(d) => {
-                    for d in d {
-                        let title = if d.name.is_empty() { d.dev.clone() } else { format!("{}  ·  {}", d.dev, d.name) };
-                        items.push((
-                            row(title, format!("{}  ·  {}", d.fstype, human_size(d.size)), "nav", false),
-                            Action::Open(Screen::Files { dev: d.dev.clone(), name: d.name.clone(), path: "/".into() }),
-                        ));
-                    }
-                }
-            }
-            ("Partitions".into(), "Mounted read-only".into(), items)
-        }
-        Screen::Files { dev, name, path } => {
-            match &s.files {
-                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
-                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
-                Load::Ready(l) => {
-                    for f in &l.entries {
-                        if f.dir {
-                            items.push((row(format!("{}/", f.name), "", "nav", false), Action::Dir(f.name.clone())));
-                        } else if !f.link.is_empty() {
-                            items.push((row(f.name.clone(), format!("-> {}", f.link), "info", false), Action::None));
-                        } else {
-                            let mut r = row(f.name.clone(), human_size(f.size as u64), "nav", false);
-                            let p = format!("{}/{}", path.trim_end_matches('/'), f.name);
-                            if let Some(Some(img)) = s.thumbs.get(&thumb_key(dev, &p)) {
-                                r.thumb = img.clone();
-                            }
-                            items.push((r, Action::File(f.name.clone(), f.size.max(0) as u64)));
-                        }
-                    }
-                    if l.truncated {
-                        items.push((row("(listing truncated)", "", "info", false), Action::None));
-                    }
-                    let _ = &l.path;
-                }
-            }
-            let heading = if name.is_empty() { dev.clone() } else { name.clone() };
-            (heading, format!("{dev}:{path}"), items)
-        }
-        Screen::File { dev, path, size } => {
-            let name = path.rsplit('/').next().unwrap_or(path).to_string();
-            let text = (
-                row(if web { "View as text" } else { "View" }, "The start of it, in this UI", "nav", false),
-                Action::Open(Screen::Text { dev: dev.clone(), path: path.clone() }),
-            );
-            if web {
-                let url = format!("/files/{dev}{}", url_path(path));
-                items.push((
-                    row("Preview", "In the browser's own viewer: images, video, audio, text, PDF", "action", false),
-                    Action::Url(url.clone(), UrlMode::Preview),
-                ));
-                items.push((row("Open in a new tab", "", "action", false), Action::Url(url.clone(), UrlMode::Tab)));
-                // A deep-linked file screen has no size (it comes from the listing).
-                let size = if *size > 0 { human_size(*size) } else { String::new() };
-                items.push((row("Download", size, "action", false), Action::Url(url, UrlMode::Download)));
-                items.push(text);
-            } else {
-                items.push(text);
-                items.push((row(human_size(*size), "Download it from the browser UI (Remote UI)", "info", false), Action::None));
-            }
-            (name, format!("{dev}:{path}"), items)
-        }
-        Screen::Text { dev, path } => {
-            match &s.text {
-                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
-                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
-                Load::Ready(t) if t.binary => {
-                    items.push((row(format!("Binary, {}", human_size(t.size)), "Not shown as text", "info", false), Action::None))
-                }
-                Load::Ready(t) => {
-                    // Tabs as spaces: the list draws one line per row, no tab stops.
-                    for l in t.text.lines().take(5000) {
-                        items.push((row(l.replace('\t', "    "), "", "info", false), Action::None));
-                    }
-                    if t.truncated {
-                        items.push((row(format!("(first {} of {})", human_size(t.text.len() as u64), human_size(t.size)), "", "info", false), Action::None));
-                    }
-                }
-            }
-            let name = path.rsplit('/').next().unwrap_or(path).to_string();
-            (name, format!("{dev}:{path}"), items)
-        }
-        Screen::Log => {
-            match &s.log {
-                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
-                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
-                Load::Ready(lines) => {
-                    items.push((row("Refresh", "", "action", false), Action::Refresh));
-                    for l in lines.iter().rev() {
-                        items.push((row(l.clone(), "", "info", false), Action::None));
-                    }
-                }
-            }
-            ("Log".into(), "Newest first".into(), items)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn files(dev: &str, path: &str) -> Screen {
-        Screen::Files { dev: dev.into(), name: String::new(), path: path.into() }
-    }
-
-    #[test]
-    fn routes_round_trip() {
-        let d = "mmcblk0p2";
-        for (route, stack_len, screen) in [
-            ("/", 0, Screen::Main),
-            ("/boot", 1, Screen::Boot),
-            ("/partitions", 1, Screen::Disks),
-            ("/partitions/mmcblk0p2", 2, files(d, "/")),
-            ("/partitions/mmcblk0p2/usr/share", 4, files(d, "/usr/share")),
-            ("/file/mmcblk0p2/etc/os-release", 4, Screen::File { dev: d.into(), path: "/etc/os-release".into(), size: 0 }),
-            ("/text/mmcblk0p2/etc/os-release", 5, Screen::Text { dev: d.into(), path: "/etc/os-release".into() }),
-            ("/file/mmcblk0p2/my%20photo%20%C3%A9.jpg", 3, Screen::File { dev: d.into(), path: "/my photo é.jpg".into(), size: 0 }),
-        ] {
-            let (stack, got) = screens_of(route);
-            assert_eq!(got, screen, "{route}");
-            assert_eq!(stack.len(), stack_len, "{route}: {stack:?}");
-            assert_eq!(route_of(&got), route, "{route} back to a route");
-        }
-        // The stack under a file is its directories, parent last.
-        let (stack, _) = screens_of("/text/mmcblk0p2/a/b/c.txt");
-        assert_eq!(stack[3], files(d, "/a"));
-        assert_eq!(stack[4], files(d, "/a/b"));
-        assert!(matches!(stack[5], Screen::File { .. }));
-        // Anything else is the main screen.
-        assert_eq!(screens_of("/nope/x").1, Screen::Main);
-        assert_eq!(screens_of("/file/mmcblk0p2").1, Screen::Main);
-    }
+    Some(Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&px, t.width, t.height)))
 }

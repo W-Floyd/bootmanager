@@ -1,10 +1,9 @@
-// postmarketOS Boot Manager: one screen that is a header, a status line, a list and a
-// key hint. The list is the whole UI -- src/app.rs decides what is in it and
-// what each row does, so the same file serves the phone (three keys, maybe a
-// touchscreen), a desktop window and a browser tab.
+// The boot manager: one screen that is a header, a status line, a list and a
+// key hint. The list is the whole UI -- src/screens.rs decides what is in it
+// and what each row does.
 //
-// Sizes are logical pixels; the phone runs at scale factor 2 (720x1600 ->
-// 360x800), which build.rs also bakes into the embedded glyphs.
+// Sizes are logical pixels, about 0.19 mm each; the scale factor comes from
+// the panel (src/platform.rs, scale_for).
 
 import "DejaVuSans.ttf";
 import "DejaVuSans-Bold.ttf";
@@ -57,6 +56,10 @@ component MenuList inherits FocusScope {
     property <length> row-h: compact ? 30px : 64px;
 
     public function show-selected() {
+        // Before the first layout the list has no height: nothing to scroll.
+        if (flick.height <= 0) {
+            return;
+        }
         if (root.selected * root.row-h + flick.content-y < 0) {
             flick.content-y = -root.selected * root.row-h;
         } else if ((root.selected + 1) * root.row-h + flick.content-y > flick.height) {
@@ -175,13 +178,13 @@ export component AppWindow inherits Window {
     preferred-height: 800px;
     background: Palette.bg;
     default-font-family: "DejaVu Sans";
-    title: "postmarketOS Boot Manager";
+    title: "Boot Manager";
 
     in property <string> heading: "Boot Manager";
-    // Where the backend is, when it is not this device: "remote: host:port".
-    in property <string> origin;
-    // The panel's shape (display.info), set on the phone only: the camera
-    // cutout's span along the top edge and the corner radius, logical px.
+    // The device tree's name for the device.
+    in property <string> model;
+    // The panel's shape (display.info): the span of the cutouts near the
+    // top edge, how far down the lowest reaches, and the corner radius.
     in property <length> cutout-x;
     in property <length> cutout-w;
     in property <length> cutout-h;
@@ -192,9 +195,8 @@ export component AppWindow inherits Window {
     in property <bool> compact;
     in property <string> subheading;
     in property <string> status;
-    in property <bool> status-alert;
     in property <string> busy;
-    in property <string> hint: "Vol ▲▼ move  ·  Power select  ·  or tap";
+    in property <string> hint: "▲▼ move  ·  Power select  ·  or tap";
     in property <[Row]> rows;
     in-out property <int> selected;
     callback activated(int);
@@ -230,37 +232,17 @@ export component AppWindow inherits Window {
                 padding-top: root.cutout-h > 0 ? 0 : 14px;
                 padding-bottom: 12px;
                 spacing: 4px;
-                // With no cutout, one line. With one, a status row as tall
-                // as the cutout, its text split to either side of it, as
-                // phosh lays out its top bar.
-                if root.cutout-h <= 0: Text {
-                    // The heading below names the screen (the main one is
-                    // "Boot Manager"), so the top line does not repeat it.
-                    text: "postmarketOS" + (root.origin != "" ? "  ·  " + root.origin : "");
-                    font-size: 12px;
-                    color: Palette.accent;
-                }
-
-                if root.cutout-h > 0: Rectangle {
-                    height: max(root.cutout-h, 24px);
+                // With no cutout, one line. With some, a line as tall as
+                // they reach, its text left of them, as phosh lays out its
+                // top bar.
+                Rectangle {
+                    height: root.cutout-h > 0 ? max(root.cutout-h, 24px) : 16px;
                     Text {
                         x: 0;
-                        width: max(0px, root.cutout-x - root.side-pad - 8px);
+                        width: root.cutout-h > 0 ? max(0px, root.cutout-x - root.side-pad - 8px) : parent.width;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: "postmarketOS";
-                        font-size: 12px;
-                        color: Palette.accent;
-                        overflow: elide;
-                    }
-
-                    Text {
-                        x: root.cutout-x + root.cutout-w + 8px - root.side-pad;
-                        width: max(0px, parent.width - self.x);
-                        height: parent.height;
-                        vertical-alignment: center;
-                        horizontal-alignment: right;
-                        text: root.origin;
+                        text: root.model;
                         font-size: 12px;
                         color: Palette.accent;
                         overflow: elide;
@@ -285,14 +267,14 @@ export component AppWindow inherits Window {
         }
 
         if root.status != "": Rectangle {
-            background: root.status-alert ? #3a2a10 : #1a211d;
+            background: #3a2a10;
             HorizontalLayout {
                 padding: 12px;
                 padding-left: 18px;
                 Text {
                     text: root.status;
                     font-size: 13px;
-                    color: root.status-alert ? Palette.alert : Palette.text;
+                    color: Palette.alert;
                     wrap: word-wrap;
                 }
             }

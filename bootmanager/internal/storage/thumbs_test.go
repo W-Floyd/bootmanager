@@ -1,4 +1,4 @@
-package main
+package storage
 
 import (
 	"image"
@@ -20,11 +20,11 @@ func TestShrink(t *testing.T) {
 				src.Set(x, y, color.NRGBA{200, 100, 50, 255})
 			}
 		}
-		w, h, px := shrink(src, tc.size)
-		if w != tc.w || h != tc.h || len(px) != w*h*4 {
-			t.Fatalf("%dx%d -> %dx%d (%d bytes), want %dx%d", tc.sw, tc.sh, w, h, len(px), tc.w, tc.h)
+		dst := shrink(src, tc.size)
+		if w, h := dst.Rect.Dx(), dst.Rect.Dy(); w != tc.w || h != tc.h || len(dst.Pix) != w*h*4 {
+			t.Fatalf("%dx%d -> %dx%d (%d bytes), want %dx%d", tc.sw, tc.sh, w, h, len(dst.Pix), tc.w, tc.h)
 		}
-		for i := 0; i < len(px); i += 4 {
+		for i, px := 0, dst.Pix; i < len(px); i += 4 {
 			if px[i] != 200 || px[i+1] != 100 || px[i+2] != 50 || px[i+3] != 255 {
 				t.Fatalf("%dx%d: pixel %d = %v", tc.sw, tc.sh, i/4, px[i:i+4])
 			}

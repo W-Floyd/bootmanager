@@ -1,174 +1,114 @@
-// Command bootmanager is postmarketOS Boot Manager, run in the LinuxBoot
-// stage: it owns every privileged action (boot, services, mounts, power)
-// and serves them over a Unix socket to bootmanager-ui, the Slint front
-// end, which it starts and restarts.
+// Command bootmanager is a boot manager for a LinuxBoot stage: it owns every privileged action (boot, services, mounts, power)
+// and serves them to bootmanager-ui, the Slint front end: on the device's
+// panel, which it starts and restarts, and its web build in a browser.
 //
-//	bootmanager [-socket /tmp/bootmanager.sock] [-ui /bin/bootmanager-ui]
-//	            [-autoboot 10] [-scan DIR]
-//
-// The protocol is one JSON object per line. The UI sends
-// {"id":N,"cmd":"...","args":{...}} and gets back {"id":N,"data":...} or
-// {"id":N,"error":"..."}; the backend also pushes {"event":"...","data":...}
-// to every client unasked (autoboot countdown, busy state, errors). Any
-// client works: `netcat -U /tmp/bootmanager.sock` over SSH drives it by
-// hand (keep its stdin open until the reply: u-root's netcat quits at EOF).
+// The protocol is internal/rpc's; any client works. By hand over SSH:
+// `netcat -U /tmp/bootmanager.sock` (keep its stdin open until the reply:
+// u-root's netcat quits at EOF).
 //
 // Autoboot lives here, not in the UI, so the stage still boots its default
-// entry if the UI never draws. /tmp/hold stops it, as with fogona-boot.sh.
+// entry if the UI never draws.
 //
-// -scan DIR parses DIR's extlinux.conf instead of probing block devices, and
-// lets the backend run anywhere for UI work; nothing it does then needs root
-// except the actions that obviously do.
+// -scan DIR parses DIR's extlinux.conf instead of probing block devices,
+// so the backend runs anywhere for UI work; -compatible then stands in
+// for the device tree's compatibles.
 package main
 
 import (
-	"bufio"
-	"encoding/json"
-	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
-	"sync"
+	"strings"
+
+	"bootmanager.local/bootmanager/internal/boot"
+	"bootmanager.local/bootmanager/internal/rpc"
+	"bootmanager.local/bootmanager/internal/storage"
+	"bootmanager.local/bootmanager/internal/svc"
+	"bootmanager.local/bootmanager/internal/uiproc"
 )
 
 var (
 	socketPath = flag.String("socket", "/tmp/bootmanager.sock", "IPC socket")
-	uiPath     = flag.String("ui", "/bin/bootmanager-ui", "UI binary on disk, for a backend built without it embedded; empty for no UI")
+	uiPath     = flag.String("ui", "/bin/bootmanager-ui", "UI binary; empty for none")
+	webDir     = flag.String("web", "/usr/share/bootmanager-web", "web build of bootmanager-ui, served by Remote UI")
 	autoboot   = flag.Int("autoboot", 10, "seconds before booting the default entry; 0 disables")
+	holdFile   = flag.String("hold", "/tmp/hold", "stay in the stage when this file exists as the countdown starts or ends")
 	scanDir    = flag.String("scan", "", "parse this directory's boot config instead of probing block devices")
-	logPath    = flag.String("log", "/tmp/bootmanager.log", "log file, also served by log.tail")
+	logPath    = flag.String("log", "/tmp/bootmanager.log", "log file, also shown on the Log screen")
+	extraLogs  = flag.String("logs", "", "comma-separated files shown on the Log screen before the log (the stage's own, say)")
+	listen     = flag.String("listen", "127.0.0.1", "address Remote UI listens on: a USB network's, say, never one reachable from elsewhere; the default needs an SSH tunnel")
+	panelFile  = flag.String("panel", "", "gmobile display-panel file for this device, instead of looking it up in gmobile's set")
+	compatible = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
+	sshKeys    = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
+	sshHostKey = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
 )
 
-type request struct {
-	ID   int64           `json:"id"`
-	Cmd  string          `json:"cmd"`
-	Args json.RawMessage `json:"args"`
+type app struct {
+	rpc      *rpc.Server
+	boot     *boot.Manager
+	services []*svc.Service // until svcs is made from them
+	svcs     *svc.Set
+	disks    *storage.Browser
+	ui       *uiproc.Supervisor
+	web      *webServer
 }
 
-type reply struct {
-	ID    int64  `json:"id"`
-	Data  any    `json:"data,omitempty"`
-	Error string `json:"error,omitempty"`
-}
-
-type event struct {
-	Event string `json:"event"`
-	Data  any    `json:"data,omitempty"`
-}
-
-// client is one connection; writes are serialised because replies and
-// broadcast events come from different goroutines.
-type client struct {
-	mu sync.Mutex
-	w  *bufio.Writer
-}
-
-func (c *client) send(v any) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		log.Printf("marshal %T: %v", v, err)
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.w.Write(b)
-	c.w.WriteByte('\n')
-	c.w.Flush()
-}
-
-var (
-	clientsMu sync.Mutex
-	clients   = map[*client]bool{}
-)
-
-func broadcast(name string, data any) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
-	for c := range clients {
-		c.send(event{Event: name, Data: data})
-	}
-}
-
-type handler func(args []byte) (any, error)
-
-// Filled in init: a literal would be an initialisation cycle, since the
-// Remote UI service's handlers serve connections that look up handlers.
-var handlers map[string]handler
-
-func init() {
-	handlers = map[string]handler{
-		"hello": func([]byte) (any, error) {
-			return map[string]any{"version": 1}, nil
-		},
-		"boot.list":       bootList,
-		"boot.start":      bootStart,
-		"autoboot.cancel": autobootCancel,
-		"service.list":    serviceList,
-		"service.set":     serviceSet,
-		"disk.list":       diskList,
-		"fs.list":         fsList,
-		"log.tail":        logTail,
-		"power":           power,
-		"dev.restart":     devRestart,
-		"fs.read":         fsRead,
-		"fs.thumb":        fsThumb,
-		"display.info":    displayInfo,
-	}
-}
-
-func serve(conn net.Conn) { serveStream(conn, conn) }
-
-// serveStream reads requests from r, one per line, and replies on conn.
-func serveStream(r io.Reader, conn net.Conn) {
-	c := &client{w: bufio.NewWriter(conn)}
-	clientsMu.Lock()
-	clients[c] = true
-	clientsMu.Unlock()
-	defer func() {
-		clientsMu.Lock()
-		delete(clients, c)
-		clientsMu.Unlock()
-		conn.Close()
-	}()
-	// A new client missed every event so far; give it the current state.
-	c.send(event{Event: "autoboot", Data: autobootState()})
-
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var req request
-		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-			c.send(reply{Error: "bad request: " + err.Error()})
-			continue
-		}
-		h, ok := handlers[req.Cmd]
-		if !ok {
-			c.send(reply{ID: req.ID, Error: "unknown command " + req.Cmd})
-			continue
-		}
-		// Each request runs on its own goroutine: a mount or a boot load
-		// takes seconds and must not hold up autoboot.cancel behind it.
-		go func() {
-			data, err := h(req.Args)
-			if err != nil {
-				c.send(reply{ID: req.ID, Error: err.Error()})
-				return
-			}
-			c.send(reply{ID: req.ID, Data: data})
-		}()
-	}
+// devExt is the dev build's extension (dev.go): live restarts and test
+// kernels. nil in a normal build.
+var devExt interface {
+	// register adds the dev service, routes and commands.
+	register(*app)
+	// resume takes over what an exec'd predecessor left running, or
+	// applies the stage's one-shot requests; resumed reports the former.
+	resume(*app) (resumed bool, uiPid int)
 }
 
 func main() {
 	flag.Parse()
+	logOut := io.Writer(os.Stderr)
 	if f, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-		log.SetOutput(io.MultiWriter(os.Stderr, f))
+		logOut = io.MultiWriter(os.Stderr, f)
 	}
+	log.SetOutput(logOut)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("bootmanager starting")
+
+	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser()}
+	a.boot = boot.New(boot.Config{
+		ScanDir:  *scanDir,
+		Autoboot: *autoboot,
+		HoldFile: *holdFile,
+		Emit:     a.rpc.Broadcast,
+		Teardown: a.teardown,
+	})
+	a.ui = &uiproc.Supervisor{
+		Path:   func() string { return *uiPath },
+		Args:   []string{"--socket", *socketPath},
+		Output: logOut,
+	}
+	a.web = newWebServer(a)
+	a.services = []*svc.Service{
+		{
+			Name:   "ssh",
+			Title:  "SSH",
+			Detail: "port 22, public key only",
+			Start:  svc.Process("sshd", "-port", "22", "-keys", *sshKeys, "-privatekey", *sshHostKey),
+		},
+		{
+			Name:   "remote",
+			Title:  "Remote UI",
+			Detail: "http://" + net.JoinHostPort(*listen, webPort),
+			Start:  svc.InProcess(a.startRemote),
+		},
+	}
+	a.rpc.Greeting = func() []rpc.Event { return []rpc.Event{{Event: "autoboot", Data: a.boot.Autoboot()}} }
+	a.register()
+	if devExt != nil {
+		devExt.register(a)
+	}
+	a.svcs = svc.NewSet(a.services...)
 
 	os.Remove(*socketPath)
 	ln, err := net.Listen("unix", *socketPath)
@@ -176,50 +116,43 @@ func main() {
 		log.Fatalf("listen %s: %v", *socketPath, err)
 	}
 
-	// After a live restart (dev.go) the processes are already running and
-	// the user has already stopped the autoboot; take them over instead.
-	adoptUI := 0
-	if h := loadHandoff(); h != nil {
-		log.Printf("restarted in place: ui pid %d, services %v", h.UIPid, h.Services)
-		cdMu.Lock()
-		cancelled = h.Cancelled
-		cdMu.Unlock()
-		adoptServices(h.Services)
-		adoptUI = h.UIPid
-	} else {
-		startDefaultServices()
-		devOnce()
+	resumed, uiPid := false, 0
+	if devExt != nil {
+		resumed, uiPid = devExt.resume(a)
 	}
-	go scanAndCountdown()
-	switch {
-	case *uiPath == "":
+	if !resumed {
+		// On at boot, as it was before the UI existed: it is how the stage
+		// is reached when the panel does not come up.
+		if err := a.svcs.Set("ssh", true); err != nil {
+			log.Printf("ssh: %v", err)
+		}
+	}
+	go a.boot.Run()
+	if *uiPath != "" || uiPid > 0 {
+		go a.ui.Run(uiPid)
+	} else {
 		log.Printf("-ui empty, running headless")
-	case adoptUI > 0 || hasUI():
-		go superviseUI(adoptUI)
-	default:
-		log.Printf("no UI embedded or at %s, running headless", *uiPath)
 	}
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Printf("accept: %v", err)
-			continue
-		}
-		go serve(conn)
-	}
+	log.Fatal(a.rpc.ServeListener(ln))
 }
 
-func decode[T any](args []byte) (T, error) {
-	var v T
-	if len(args) == 0 {
-		return v, nil
+// teardown ends whatever must not outlive the stage, before a handover or
+// a power action.
+func (a *app) teardown() {
+	a.boot.Cancel()
+	a.ui.Stop()
+	a.svcs.StopAll()
+	a.disks.UnmountAll()
+	a.boot.Unmount()
+}
+
+func (a *app) logFiles() []string {
+	var files []string
+	for _, f := range strings.Split(*extraLogs, ",") {
+		if f != "" {
+			files = append(files, f)
+		}
 	}
-	if err := json.Unmarshal(args, &v); err != nil {
-		return v, fmt.Errorf("bad args: %w", err)
-	}
-	return v, nil
+	return append(files, *logPath)
 }
