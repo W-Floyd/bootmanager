@@ -12,7 +12,7 @@ import "DejaVuSans-Bold.ttf";
 export struct Row {
     title: string,
     detail: string,
-    // "nav" (opens a screen), "toggle", "action", "danger", "info"
+    // "nav" (opens a screen), "toggle", "action", "danger", "info", "back"
     kind: string,
     on: bool,
 }
@@ -118,7 +118,7 @@ component MenuList inherits FocusScope {
                 Text {
                     text: row.title;
                     font-size: root.compact ? 12px : 17px;
-                    color: row.kind == "danger" ? Palette.danger : row.kind == "info" ? Palette.dim : Palette.text;
+                    color: row.kind == "danger" ? Palette.danger : row.kind == "back" ? Palette.accent : row.kind == "info" ? Palette.dim : Palette.text;
                     overflow: elide;
                 }
 

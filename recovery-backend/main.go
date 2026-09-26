@@ -30,10 +30,7 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"sync"
-	"syscall"
-	"time"
 )
 
 var (
@@ -114,10 +111,14 @@ func init() {
 		"fs.list":         fsList,
 		"log.tail":        logTail,
 		"power":           power,
+		"dev.restart":     devRestart,
 	}
 }
 
-func serve(conn net.Conn) {
+func serve(conn net.Conn) { serveStream(conn, conn) }
+
+// serveStream reads requests from r, one per line, and replies on conn.
+func serveStream(r io.Reader, conn net.Conn) {
 	c := &client{w: bufio.NewWriter(conn)}
 	clientsMu.Lock()
 	clients[c] = true
@@ -131,7 +132,7 @@ func serve(conn net.Conn) {
 	// A new client missed every event so far; give it the current state.
 	c.send(event{Event: "autoboot", Data: autobootState()})
 
-	sc := bufio.NewScanner(conn)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		var req request
@@ -157,75 +158,6 @@ func serve(conn net.Conn) {
 	}
 }
 
-// superviseUI runs the UI for as long as the backend lives. A UI that dies
-// straight away five times in a row is given up on: the backend and its
-// autoboot carry on without it.
-func superviseUI(path string) {
-	quick := 0
-	for quick < 5 {
-		start := time.Now()
-		cmd := exec.Command(path, "--socket", *socketPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		uiMu.Lock()
-		err := cmd.Start()
-		if err == nil {
-			uiProc = cmd.Process
-		}
-		uiMu.Unlock()
-		if err != nil {
-			log.Printf("ui: %v", err)
-			return
-		}
-		err = cmd.Wait()
-		uiMu.Lock()
-		uiProc = nil
-		stopping := uiStopping
-		uiMu.Unlock()
-		if stopping {
-			return
-		}
-		log.Printf("ui exited: %v", err)
-		if time.Since(start) < 10*time.Second {
-			quick++
-		} else {
-			quick = 0
-		}
-		time.Sleep(time.Second)
-	}
-	log.Printf("ui: giving up after %d quick exits", quick)
-}
-
-var (
-	uiMu       sync.Mutex
-	uiProc     *os.Process
-	uiStopping bool
-)
-
-// stopUI ends the UI before a handover, so the next kernel inherits the
-// display in the state the stage without a UI leaves it: SIGTERM lets the
-// UI hand the console back to text mode.
-func stopUI() {
-	uiMu.Lock()
-	uiStopping = true
-	p := uiProc
-	uiMu.Unlock()
-	if p == nil {
-		return
-	}
-	p.Signal(syscall.SIGTERM)
-	for i := 0; i < 20; i++ {
-		time.Sleep(50 * time.Millisecond)
-		uiMu.Lock()
-		gone := uiProc == nil
-		uiMu.Unlock()
-		if gone {
-			return
-		}
-	}
-	p.Kill()
-}
-
 func main() {
 	flag.Parse()
 	if f, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
@@ -240,14 +172,27 @@ func main() {
 		log.Fatalf("listen %s: %v", *socketPath, err)
 	}
 
-	startDefaultServices()
+	// After a live restart (dev.go) the processes are already running and
+	// the user has already stopped the autoboot; take them over instead.
+	adoptUI := 0
+	if h := loadHandoff(); h != nil {
+		log.Printf("restarted in place: ui pid %d, services %v", h.UIPid, h.Services)
+		cdMu.Lock()
+		cancelled = h.Cancelled
+		cdMu.Unlock()
+		adoptServices(h.Services)
+		adoptUI = h.UIPid
+	} else {
+		startDefaultServices()
+	}
 	go scanAndCountdown()
-	if *uiPath != "" {
-		if _, err := os.Stat(*uiPath); err == nil {
-			go superviseUI(*uiPath)
-		} else {
-			log.Printf("no UI at %s, running headless", *uiPath)
-		}
+	switch {
+	case *uiPath == "":
+		log.Printf("-ui empty, running headless")
+	case adoptUI > 0 || hasUI():
+		go superviseUI(adoptUI)
+	default:
+		log.Printf("no UI embedded or at %s, running headless", *uiPath)
 	}
 
 	for {

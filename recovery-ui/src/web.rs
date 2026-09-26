@@ -29,7 +29,7 @@ fn connect(url: String) {
         let s = sender.clone();
         with_app(|a| {
             a.connected(Box::new(move |line: String| {
-                let _ = s.send_with_str(line.trim_end());
+                let _ = s.send_with_str(&line);
             }))
         });
     });

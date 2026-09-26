@@ -5,7 +5,8 @@
 #
 #   sh tools/linuxboot/recovery/build.sh OUTDIR
 #
-# OUTDIR gets:
+# OUTDIR gets (and the UI and web build are also copied into
+# recovery-backend/assets/, for the backend to embed):
 #   recovery-ui     the phone build, static musl (nothing to resolve in the
 #                   stage's /lib)
 #   web/            the browser build, when the wasm toolchain is present
@@ -47,3 +48,10 @@ fi
 
 rm -f "$OUT/go.work"
 (cd "$OUT" && go work init "$UROOT" "$HERE/recovery-backend")
+
+# The backend embeds both (recovery-backend/assets.go), so the backend is
+# the whole recovery. assets/ is gitignored but for its README.
+A=$HERE/recovery-backend/assets
+find "$A" -mindepth 1 ! -name README -exec rm -rf {} +
+cp "$OUT/recovery-ui" "$A/"
+[ -d "$OUT/web" ] && cp -r "$OUT/web" "$A/"

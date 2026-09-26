@@ -18,9 +18,10 @@ may not work, since the running tree shows no reboot-mode node). Without
 
 | | what | where it runs |
 |---|---|---|
-| `recovery-backend/` | Go, a u-root command. Owns every privileged action; serves them as JSON lines on `/tmp/recovery.sock`; starts and restarts the UI; runs the 10 s autoboot itself, so a UI that never draws still boots pmOS | phone |
+| `recovery-backend/` | Go, a u-root command. Owns every privileged action; serves them as JSON lines on `/tmp/recovery.sock`; starts and restarts the UI; runs the 10 s autoboot itself, so a UI that never draws still boots pmOS. **Embeds the UI and its web build** (`assets.go`): one binary is the whole recovery, and the UI runs from a memfd | phone |
 | `recovery-ui/` | Rust + Slint 1.18. One list-driven screen (`ui/app.slint`); navigation in `src/app.rs`; transport-free protocol client in `src/proto.rs` | phone, host, browser |
-| `build.sh` | builds the UI (static), its web build, and the Go workspace for u-root; `../build.sh` calls it | container |
+| `build.sh` | builds the UI (static) and its web build, copies both into `recovery-backend/assets/` for the embed, and writes the Go workspace for u-root; `../build.sh` calls it | container |
+| `dev.sh` | rebuilds the UI, backend or web build and swaps it into the running stage (below) | container |
 
 ```
 kernel -> u-root init -> gosh /etc/uinit.sh (USB net, as before)
@@ -47,7 +48,7 @@ the backend.
 |---|---|
 | Vol+ / Vol- | up / down; the list wraps at both ends |
 | Power, short | select |
-| Power, held 600 ms | back |
+| Power, held 600 ms | back (every screen but the main one also starts with a Back row) |
 | any key or touch | stops the autoboot countdown |
 
 ## Why a custom Slint platform on the phone
@@ -65,6 +66,32 @@ characters in file names do not render.
 
 Touch is handled but not available yet: the ICNL9916 driver is a module,
 and the stage loads none.
+
+## Live restart, no reflash
+
+Turn on **Remote UI** and **Dev uploads** on the phone, then from the
+container:
+
+    sh tools/linuxboot/recovery/dev.sh ui        # UI restarts with the new build
+    sh tools/linuxboot/recovery/dev.sh backend   # backend re-execs in place
+    sh tools/linuxboot/recovery/dev.sh web       # then reload the browser page
+
+Each is a `PUT` to `:8080/dev/<name>`. The file is kept in `/tmp/dev`
+(RAM) and wins over the built-in copy until the stage reboots.
+
+The backend restarts with `exec`, keeping its PID, so sshd and the UI stay
+its children. **An SSH session survives it.** It writes
+`/tmp/recovery-state.json` first (the UI's and sshd's PIDs, which services
+were on, whether the autoboot was stopped), and the new image adopts from
+it. The sockets close on exec, and the UI reconnects by itself. Over the
+socket, `dev.restart {what: ui|backend}` does the same without an upload.
+
+Tested in the container: the re-exec keeps the PID and restores Telnet,
+Remote UI and Dev uploads. The UI process survives, is adopted, and can
+then be restarted. Not yet tried on the phone.
+
+Dev uploads is a remote root code path with no authentication, like
+telnet. That is acceptable on a USB-only link, and it is off by default.
 
 ## Other builds
 
@@ -89,7 +116,7 @@ Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
 `{"event":E,"data":...}` with `autoboot`, `entries`, `services`, `busy` or
 `error`. The commands are `boot.list`, `boot.start {index}`,
 `autoboot.cancel`, `service.list`, `service.set {name, running}`,
-`disk.list`, `fs.list {dev, path}`, `log.tail {lines}` and
+`disk.list`, `fs.list {dev, path}`, `log.tail {lines}`, `dev.restart {what}` and
 `power {action: reboot|bootloader|poweroff}`.
 
 ## Traps

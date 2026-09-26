@@ -1,0 +1,1 @@
+recovery/build.sh copies the UI here before the backend is built; see assets.go.

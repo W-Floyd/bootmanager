@@ -305,7 +305,7 @@ impl App {
             let prev = std::mem::replace(&mut s.screen, screen);
             s.stack.push((prev, selected));
         }
-        self.render_at(0);
+        self.render_at(1);
         self.load_screen();
     }
 
@@ -409,7 +409,18 @@ fn screen_key(s: &Screen) -> String {
     format!("{s:?}")
 }
 
+/// Every screen but the main one starts with a Back row: with three keys,
+/// an item is easier to find than a long press. `open` selects the row
+/// after it, so a stray Power press does not leave the screen.
 fn build(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
+    let (heading, sub, mut items) = build_screen(s, connected);
+    if connected && s.screen != Screen::Main {
+        items.insert(0, (row("< Back", "", "back", false), Action::Up));
+    }
+    (heading, sub, items)
+}
+
+fn build_screen(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
     let mut items = vec![];
     let sub = String::new();
     if !connected {
@@ -478,7 +489,6 @@ fn build(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
             ("Partitions".into(), "Mounted read-only, journal untouched".into(), items)
         }
         Screen::Files { dev, name, path } => {
-            items.push((row("..", "Up", "nav", false), Action::Up));
             match &s.files {
                 Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
                 Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
