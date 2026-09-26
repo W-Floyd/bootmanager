@@ -217,6 +217,10 @@ export component AppWindow inherits Window {
     VerticalLayout {
         Rectangle {
             background: Palette.panel;
+            // Its content's height, no more: the cutout's status row is a
+            // plain Rectangle, which would otherwise let the header share the
+            // spare height with the list.
+            vertical-stretch: 0;
             VerticalLayout {
                 padding-left: root.side-pad;
                 padding-right: root.side-pad;
