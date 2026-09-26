@@ -55,3 +55,20 @@ A=$HERE/recovery-backend/assets
 find "$A" -mindepth 1 ! -name README -exec rm -rf {} +
 cp "$OUT/recovery-ui" "$A/"
 [ -d "$OUT/web" ] && cp -r "$OUT/web" "$A/"
+
+# Display-panel descriptions for display.info (recovery-backend/display.go),
+# in gmobile's format and named by DT compatible, as gmobile installs them:
+# gmobile's own set, from the release pmOS builds (the overlay APKBUILD's
+# pkgver; pmbootstrap keeps the tarball in its distfiles), then fogona's
+# from the aports overlay on top until it is upstream.
+GM=/repo/aports/community/gmobile
+GMVER=$(sed -n 's/^pkgver=//p' "$GM/APKBUILD")
+GMOBILE_TARBALL=${GMOBILE_TARBALL:-$HOME/.local/var/pmbootstrap/cache_distfiles/gmobile-$GMVER.tar.xz}
+mkdir -p "$A/display-panels"
+if [ -f "$GMOBILE_TARBALL" ]; then
+	tar -xJf "$GMOBILE_TARBALL" -C "$A/display-panels" --strip-components=4 \
+		"gmobile-$GMVER/data/devices/display-panels"
+else
+	echo "recovery: no $GMOBILE_TARBALL, only fogona's display panel" >&2
+fi
+cp "$GM/motorola-fogona.json" "$A/display-panels/motorola,fogona.json"

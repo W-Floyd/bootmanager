@@ -114,6 +114,7 @@ func init() {
 		"dev.restart":     devRestart,
 		"fs.read":         fsRead,
 		"fs.thumb":        fsThumb,
+		"display.info":    displayInfo,
 	}
 }
 

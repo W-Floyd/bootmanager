@@ -71,6 +71,11 @@ fn main() {
         ui.set_hint("Arrow keys and Enter, Esc for back, or click".into());
     }
     let app = App::new(&ui, &where_);
+    // On the phone's own panel (and headless, which renders its size),
+    // lay out around its cutout; a remote window is not that shape.
+    if cfg!(feature = "fbdev") && where_.is_empty() {
+        app.use_panel_shape();
+    }
     APP.with(|a| *a.borrow_mut() = Some(app));
     transport::start(addr);
 

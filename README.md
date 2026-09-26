@@ -72,6 +72,29 @@ firmware in the initramfs (the stage loads no modules). The UI follows the
 first contact only, so tapping a row selects it and drags scroll the list.
 A tap anywhere stops the countdown. Not yet tried on the phone.
 
+## Panel shape (cutout, rounded corners)
+
+On the phone the UI lays out around the panel, as phosh does. The top line
+becomes a status row as tall as the camera cutout, with its text split to
+either side, and the side padding keeps clear of the rounded corners. The
+browser and host-window builds are not that shape and do not do this.
+
+The shape comes from gmobile's display-panel files (`display.info`,
+`recovery-backend/display.go`), looked up by device-tree compatible as
+gmobile does. gmobile compiles them into its library, so there is nothing
+to read off the rootfs. The build embeds gmobile's own set, from the
+release tarball of the version pmOS builds (the overlay APKBUILD's
+`pkgver`, from pmbootstrap's distfiles), plus fogona's from the aports
+overlay on top. That keeps the set version-locked to phosh's without a
+submodule.
+
+Cutout paths are reduced to bounding boxes. Arcs (round punch-holes) are
+boxed conservatively, never smaller than the shape.
+`GMOBILE_PANELS=<gmobile>/data/devices/display-panels go test` checks that
+all 33 cutouts in gmobile 0.7.3 parse and land on their panels. Headless,
+`recovery-backend -compatible "motorola,fogona"` stands in for the device
+tree.
+
 ## Live restart, no reflash
 
 Turn on **Remote UI** and **Dev uploads** on the phone, then from the
@@ -158,7 +181,7 @@ Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
 `{"event":E,"data":...}` with `autoboot`, `entries`, `services`, `busy` or
 `error`. The commands are `boot.list`, `boot.start {index}`,
 `autoboot.cancel`, `service.list`, `service.set {name, running}`,
-`disk.list`, `fs.list {dev, path}`, `fs.read {dev, path}`, `fs.thumb {dev, path, size}`, `log.tail {lines}`,
+`disk.list`, `fs.list {dev, path}`, `fs.read {dev, path}`, `fs.thumb {dev, path, size}`, `display.info`, `log.tail {lines}`,
 `dev.restart {what}` and
 `power {action: reboot|bootloader|poweroff}`.
 

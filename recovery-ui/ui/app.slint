@@ -177,6 +177,15 @@ export component AppWindow inherits Window {
     in property <string> heading: "Recovery";
     // Where the backend is, when it is not this device: "remote: host:port".
     in property <string> origin;
+    // The panel's shape (display.info), set on the phone only: the camera
+    // cutout's span along the top edge and the corner radius, logical px.
+    in property <length> cutout-x;
+    in property <length> cutout-w;
+    in property <length> cutout-h;
+    in property <length> corner-radius;
+    // Clear of the rounded corners: half the radius covers text a line
+    // down from the top edge.
+    property <length> side-pad: max(18px, root.corner-radius / 2);
     in property <bool> compact;
     in property <string> subheading;
     in property <string> status;
@@ -209,15 +218,44 @@ export component AppWindow inherits Window {
         Rectangle {
             background: Palette.panel;
             VerticalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
-                padding-top: 14px;
+                padding-left: root.side-pad;
+                padding-right: root.side-pad;
+                padding-top: root.cutout-h > 0 ? 0 : 14px;
                 padding-bottom: 12px;
                 spacing: 4px;
-                Text {
+                // With no cutout, one line. With one, a status row as tall
+                // as the cutout, its text split to either side of it, as
+                // phosh lays out its top bar.
+                if root.cutout-h <= 0: Text {
                     text: "postmarketOS  ·  fogona recovery" + (root.origin != "" ? "  ·  " + root.origin : "");
                     font-size: 12px;
                     color: Palette.accent;
+                }
+
+                if root.cutout-h > 0: Rectangle {
+                    height: max(root.cutout-h, 24px);
+                    Text {
+                        x: 0;
+                        width: max(0px, root.cutout-x - root.side-pad - 8px);
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: "postmarketOS";
+                        font-size: 12px;
+                        color: Palette.accent;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        x: root.cutout-x + root.cutout-w + 8px - root.side-pad;
+                        width: max(0px, parent.width - self.x);
+                        height: parent.height;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        text: root.origin != "" ? root.origin : "fogona recovery";
+                        font-size: 12px;
+                        color: Palette.accent;
+                        overflow: elide;
+                    }
                 }
 
                 Text {

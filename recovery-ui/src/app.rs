@@ -7,7 +7,7 @@ use crate::{AppWindow, Row};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -135,6 +135,9 @@ pub struct App {
     pub client: Client,
     state: RefCell<State>,
     open_url: RefCell<Option<UrlOpener>>,
+    /// Lay out around the panel's cutout and corners (display.info): only
+    /// when drawing on the phone's own panel.
+    panel_shape: Cell<bool>,
 }
 
 /// Percent-encodes a partition path for /files/<dev><path>, keeping '/'.
@@ -194,6 +197,7 @@ impl App {
                 where_: where_.to_string(),
             }),
             open_url: RefCell::new(None),
+            panel_shape: Cell::new(false),
         });
         let a = Rc::downgrade(&app);
         ui.on_activated(move |i| {
@@ -260,6 +264,34 @@ impl App {
         });
     }
 
+    /// Lays the UI out around the panel's shape; for the phone's own panel.
+    pub fn use_panel_shape(&self) {
+        self.panel_shape.set(true);
+    }
+
+    /// display.info -> the header's cutout split and corner padding. The
+    /// panel file is in physical pixels; the UI's lengths are logical.
+    fn load_panel(self: &Rc<Self>) {
+        self.call("display.info", json!({}), |a, r| {
+            let Some(ui) = a.ui.upgrade() else { return };
+            let Ok(v) = r else { return };
+            let p = &v["panel"];
+            if p.is_null() {
+                return;
+            }
+            let scale = ui.window().scale_factor();
+            let px = |v: &Value| v.as_f64().unwrap_or(0.0) as f32 / scale;
+            ui.set_corner_radius(px(&p["border-radius"]));
+            // The first cutout on the top edge is the one the header meets.
+            let top = p["cutouts"].as_array().and_then(|c| c.iter().find(|c| c["y"].as_i64() == Some(0)));
+            if let Some(c) = top {
+                ui.set_cutout_x(px(&c["x"]));
+                ui.set_cutout_w(px(&c["w"]));
+                ui.set_cutout_h(px(&c["h"]));
+            }
+        });
+    }
+
     /// Lets the file screen hand files to the browser (web build only).
     pub fn set_url_opener(&self, open: UrlOpener) {
         *self.open_url.borrow_mut() = Some(open);
@@ -272,6 +304,9 @@ impl App {
         self.state.borrow_mut().error.clear();
         self.refresh_boot();
         self.refresh_services();
+        if self.panel_shape.get() {
+            self.load_panel();
+        }
         self.load_screen();
     }
 
