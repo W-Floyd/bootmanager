@@ -234,7 +234,9 @@ export component AppWindow inherits Window {
                 // as the cutout, its text split to either side of it, as
                 // phosh lays out its top bar.
                 if root.cutout-h <= 0: Text {
-                    text: "postmarketOS  ·  Boot Manager" + (root.origin != "" ? "  ·  " + root.origin : "");
+                    // The heading below names the screen (the main one is
+                    // "Boot Manager"), so the top line does not repeat it.
+                    text: "postmarketOS" + (root.origin != "" ? "  ·  " + root.origin : "");
                     font-size: 12px;
                     color: Palette.accent;
                 }
@@ -258,7 +260,7 @@ export component AppWindow inherits Window {
                         height: parent.height;
                         vertical-alignment: center;
                         horizontal-alignment: right;
-                        text: root.origin != "" ? root.origin : "Boot Manager";
+                        text: root.origin;
                         font-size: 12px;
                         color: Palette.accent;
                         overflow: elide;
