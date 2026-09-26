@@ -8,9 +8,11 @@ window on the host and as a page in a browser, both talking to the phone.
 
 **Status (2026-09-26):** RAM-booted on the dev unit with `fastboot boot`: it
 draws on the panel, the volume and power keys navigate it, the countdown
-stops on a key, and Remote UI switches on from the phone. Not yet tried on
-the phone: booting pmOS from it, the browser and host-window builds, the
-partition browser, telnet, and the power actions ("Reboot to bootloader"
+stops on a key, Remote UI switches on from the phone, touch works, the
+partition browser lists and browses the microSD card, and a live backend
+restart (`dev.sh backend`) kept the SSH session and the UI. Not yet tried on
+the phone: booting pmOS from it, the browser and host-window builds,
+telnet, and the power actions ("Reboot to bootloader"
 may not work, since the running tree shows no reboot-mode node). Without
 `RECOVERY=1` the stage is the same as before.
 
@@ -91,7 +93,8 @@ socket, `dev.restart {what: ui|backend}` does the same without an upload.
 
 Tested in the container: the re-exec keeps the PID and restores Telnet,
 Remote UI and Dev uploads. The UI process survives, is adopted, and can
-then be restarted. Not yet tried on the phone.
+then be restarted. On the phone (2026-09-26), `dev.sh backend` re-exec'd in
+place and adopted sshd and the UI; the SSH session stayed up.
 
 Dev uploads is a remote root code path with no authentication, like
 telnet. That is acceptable on a USB-only link, and it is off by default.
@@ -132,6 +135,12 @@ Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
 * **Slint 1.18 links fontconfig through fontique** unless
   `i-slint-common/fontconfig-dlopen` is on (see `Cargo.toml`). Linked, the
   binary cannot be static.
-* **Browsing never replays a journal.** Mounts are `ro` with `noload`
-  (ext4) or `norecovery` (f2fs), because a plain read-only ext4 mount still
-  writes a journal replay.
+* **`block.GetBlockDevices` never fills in `FSType`**, only the file system
+  UUID. u-root's own mounting tries every type instead. The backend reads
+  the type from the superblock (`mount.FSFromBlock`).
+* **The `noload` on browse mounts does not reach a partition the boot scan
+  already mounted.** A second mount shares the first one's superblock and
+  options, and u-root's scan mounts every partition plain `ro`. On those,
+  a dirty journal is replayed at the scan, as u-root's `boot` always
+  does. That is a write, but it is also what lets the scan read a current
+  `extlinux.conf`. `noload` only protects partitions the scan did not mount.

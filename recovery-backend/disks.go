@@ -12,14 +12,19 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/u-root/u-root/pkg/mount"
 	"github.com/u-root/u-root/pkg/mount/block"
 	"golang.org/x/sys/unix"
 )
 
-// Browsing is read-only by construction: every mount is MS_RDONLY, and
-// with the journal left alone (ext4 noload, f2fs norecovery), because a
-// plain ro mount still replays a dirty journal -- a write, to a partition
-// the user only asked to look at.
+// Browsing mounts are MS_RDONLY and ask for the journal to be left alone
+// (ext4 noload, f2fs norecovery): a plain ro mount still replays a dirty
+// journal, which is a write. That only holds for a partition nothing has
+// mounted yet. A second mount of a device shares the first one's
+// superblock and options, and the boot scan has already mounted every
+// partition it could, plain ro, so on those any replay happened there --
+// as it always has in u-root's boot, and as it must for the scan to read
+// a current extlinux.conf.
 const browseRoot = "/mnt/browse"
 
 type diskJSON struct {
@@ -54,14 +59,15 @@ func diskList([]byte) (any, error) {
 	}
 	out := []diskJSON{}
 	for _, d := range devs.FilterZeroSize() {
-		if d.FSType == "" {
+		fstype := fsType(d.Name)
+		if fstype == "" {
 			continue
 		}
 		size, _ := d.Size()
 		out = append(out, diskJSON{
 			Dev:    d.Name,
 			Name:   ueventValue(d.Name, "PARTNAME"),
-			FSType: d.FSType,
+			FSType: fstype,
 			Size:   size,
 		})
 	}
@@ -89,15 +95,15 @@ func mountForBrowse(dev string) (string, error) {
 	if strings.ContainsAny(dev, "/.") {
 		return "", fmt.Errorf("bad device %q", dev)
 	}
-	bd, err := block.Device(dev)
-	if err != nil {
+	if _, err := block.Device(dev); err != nil {
 		return "", err
 	}
-	if bd.FSType == "" {
+	fstype := fsType(dev)
+	if fstype == "" {
 		return "", fmt.Errorf("%s: no file system recognised", dev)
 	}
 	data := ""
-	switch bd.FSType {
+	switch fstype {
 	case "ext2", "ext3", "ext4":
 		data = "noload"
 	case "f2fs", "xfs":
@@ -108,8 +114,8 @@ func mountForBrowse(dev string) (string, error) {
 		return "", err
 	}
 	flags := uintptr(unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
-	if err := unix.Mount("/dev/"+dev, mp, bd.FSType, flags, data); err != nil {
-		return "", fmt.Errorf("mount %s (%s, ro): %w", dev, bd.FSType, err)
+	if err := unix.Mount("/dev/"+dev, mp, fstype, flags, data); err != nil {
+		return "", fmt.Errorf("mount %s (%s, ro): %w", dev, fstype, err)
 	}
 	browsed[dev] = mp
 	return mp, nil
@@ -230,4 +236,15 @@ func power(args []byte) (any, error) {
 		return nil, errno
 	}
 	return nil, unix.Reboot(cmd)
+}
+
+// fsType names the file system on /dev/<dev> from its superblock magic,
+// when the kernel supports it; "" otherwise. block.GetBlockDevices leaves
+// BlockDev.FSType empty -- u-root's own mounting tries every type instead.
+func fsType(dev string) string {
+	fs, _, err := mount.FSFromBlock("/dev/" + dev)
+	if err != nil {
+		return ""
+	}
+	return fs
 }
