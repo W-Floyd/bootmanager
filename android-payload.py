@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble what ABL would hand stock Android, for the Boot Manager to kexec.
 
-    python3 tools/linuxboot/bootmanager/android-payload.py OUTDIR
+    python3 android-payload.py OUTDIR
 
 OUTDIR gets kernel, initrd, dtb and cmdline, which `dev.sh kexec-android`
 uploads (bootmanager/dev.go, kexecTest). What goes in, and why each piece:
@@ -42,7 +42,8 @@ import sys
 import tempfile
 import zipfile
 
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# The fogona repo, which holds the stock images and the bugreport.
+REPO = os.environ.get("FOGONA", "/repo")
 OUT = sys.argv[1] if len(sys.argv) > 1 else sys.exit(__doc__)
 BOOT = os.path.join(REPO, "out/retus/boot.img")
 VENDOR_BOOT = os.path.join(REPO, "out/dump/vendor_boot_a.img")

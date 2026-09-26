@@ -1,9 +1,9 @@
 #!/bin/sh
 # Build postmarketOS Boot Manager's parts for the LinuxBoot stage into
-# OUTDIR; the stage build (tools/linuxboot/build.sh, BOOTMANAGER=1) runs
-# this and packs the result into the u-root initramfs.
+# OUTDIR; the fogona repo's stage build (tools/linuxboot/build.sh,
+# BOOTMANAGER=1) runs this and packs the result into the u-root initramfs.
 #
-#   sh tools/linuxboot/bootmanager/build.sh OUTDIR
+#   sh build.sh OUTDIR
 #
 # OUTDIR gets (and the UI and web build are also copied into
 # bootmanager/assets/, for the backend to embed):
@@ -16,7 +16,7 @@
 #
 # Cargo's target dir is on the named volume (default
 # ~/.cache/bootmanager-target), not under /repo: rustc mmaps its outputs,
-# and the macOS bind mount answers that with SIGBUS (TRAPS.md).
+# and the macOS bind mount answers that with SIGBUS (fogona's TRAPS.md).
 set -eu
 OUT=${1:?usage: build.sh OUTDIR}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -60,8 +60,8 @@ cp "$OUT/bootmanager-ui" "$A/"
 # gmobile's format and named by DT compatible, as gmobile installs them:
 # gmobile's own set, from the release pmOS builds (the overlay APKBUILD's
 # pkgver; pmbootstrap keeps the tarball in its distfiles), then fogona's
-# from the aports overlay on top until it is upstream.
-GM=/repo/aports/community/gmobile
+# from the fogona repo's aports overlay on top until it is upstream.
+GM=${FOGONA:-/repo}/aports/community/gmobile
 GMVER=$(sed -n 's/^pkgver=//p' "$GM/APKBUILD")
 GMOBILE_TARBALL=${GMOBILE_TARBALL:-$HOME/.local/var/pmbootstrap/cache_distfiles/gmobile-$GMVER.tar.xz}
 mkdir -p "$A/display-panels"

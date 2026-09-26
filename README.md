@@ -34,7 +34,7 @@ before.
 |---|---|---|
 | `bootmanager/` | Go, a u-root command. Owns every privileged action; serves them as JSON lines on `/tmp/bootmanager.sock`; starts and restarts the UI; runs the 10 s autoboot itself, so a UI that never draws still boots pmOS. **Embeds the UI and its web build** (`assets.go`): one binary is the whole boot manager, and the UI runs from a memfd | phone |
 | `bootmanager-ui/` | Rust + Slint 1.18. One list-driven screen (`ui/app.slint`); navigation in `src/app.rs`; transport-free protocol client in `src/proto.rs` | phone, host, browser |
-| `build.sh` | builds the UI (static) and its web build, copies both and the display-panel files into `bootmanager/assets/` for the embed, and writes the Go workspace for u-root; `../build.sh` calls it | container |
+| `build.sh` | builds the UI (static) and its web build, copies both and the display-panel files into `bootmanager/assets/` for the embed, and writes the Go workspace for u-root; the stage build calls it | container |
 | `dev.sh` | rebuilds the UI, backend or web build and swaps it into the running stage (below) | container |
 
 ```
@@ -49,12 +49,20 @@ asks for a password; the only network the stage has is the USB link.
 
 ## Build and try
 
+The stage is built by the fogona repo (`/repo`, `FOGONA` in the scripts
+here), which takes this checkout from `BOOTMANAGER_SRC` (default
+`~/bootmanager`). From `/repo`:
+
     BOOTMANAGER=1 sh tools/linuxboot/build.sh   # -> out/linuxboot/boot-linuxboot-bootmanager.img
     fastboot boot out/linuxboot/boot-linuxboot-bootmanager.img    # host, RAM only
 
 The image runs the same USB network and `/tmp/hold` as the plain stage
-(FLASHING.md, "LinuxBoot"). The one difference is that sshd belongs to
-the boot manager.
+(fogona's FLASHING.md, "LinuxBoot"). The one difference is that sshd
+belongs to the boot manager.
+
+Besides the stage, the build reads two things from the fogona repo:
+gmobile's version and fogona's display-panel file from its aports overlay
+(`build.sh`), and the stock images `android-payload.py` assembles.
 
 ## Keys
 
@@ -110,9 +118,9 @@ all 33 cutouts in gmobile 0.7.3 parse and land on their panels. Headless,
 Turn on **Remote UI** and **Dev uploads** on the phone, then from the
 container:
 
-    sh tools/linuxboot/bootmanager/dev.sh ui        # UI restarts with the new build
-    sh tools/linuxboot/bootmanager/dev.sh backend   # backend re-execs in place
-    sh tools/linuxboot/bootmanager/dev.sh web       # then reload the browser page
+    sh dev.sh ui        # UI restarts with the new build
+    sh dev.sh backend   # backend re-execs in place
+    sh dev.sh web       # then reload the browser page
 
 Each is a `PUT` to `:8080/dev/<name>`. The file is kept in `/tmp/dev`
 (RAM) and wins over the built-in copy until the stage reboots. So once the
@@ -139,9 +147,9 @@ telnet. That is acceptable on a USB-only link, and it is off by default.
 
 The Boot Manager can boot a kernel you upload, straight from RAM:
 
-    sh tools/linuxboot/bootmanager/dev.sh stage-hold    # from pmOS: reboot into the Boot Manager, held
-    sh tools/linuxboot/bootmanager/dev.sh kexec-stage   # build the stage, kexec into its Image
-    sh tools/linuxboot/bootmanager/dev.sh kexec-pmos    # build pmOS's kernel, boot the pmOS entry with it
+    sh dev.sh stage-hold    # from pmOS: reboot into the Boot Manager, held
+    sh dev.sh kexec-stage   # build the stage, kexec into its Image
+    sh dev.sh kexec-pmos    # build pmOS's kernel, boot the pmOS entry with it
 
 * **`stage-hold`** leaves a one-shot request on the boot partition
   (`linuxboot/dev-once`) and reboots. The stage's uinit consumes it, and
@@ -151,8 +159,8 @@ The Boot Manager can boot a kernel you upload, straight from RAM:
   carries its DTB and initramfs. The Boot Manager kexecs into it with the
   running tree and command line. Tested 2026-09-26: build to pmOS back in
   about 2 minutes, with the new stage's record in `backlight.log`.
-* **`kexec-pmos`** builds `Image.gz` as BUILD.md does, without packaging
-  it, and uploads it. The Boot Manager boots the first entry with only the
+* **`kexec-pmos`** builds `Image.gz` as fogona's BUILD.md does, without
+  packaging it, and uploads it. The Boot Manager boots the first entry with only the
   kernel replaced: the entry's initramfs, DTB and command line, and the
   rootfs's modules. So the release string (`uname -r`) must match the
   installed kernel's; `LOCALVERSION=` keeps it so. Tested 2026-09-26: a
@@ -166,14 +174,14 @@ the stage's first display power-up, needs a real reboot to test.
 **Stock Android, experimental and not working yet:** `dev.sh
 kexec-android` boots stock Android's own kernel from RAM, with what ABL
 would hand it (`android-payload.py` assembles it). It resets the SoC so
-far. [investigations/stock-android-kexec.md](../../../investigations/stock-android-kexec.md)
-has the payload, the attempts, the slot check and the next step.
+far. The fogona repo's `investigations/stock-android-kexec.md` has the
+payload, the attempts, the slot check and the next step.
 
 ## Other builds
 
 Host window, against a phone whose Remote UI is on:
 
-    cd tools/linuxboot/bootmanager/bootmanager-ui
+    cd bootmanager-ui
     cargo run --release --no-default-features --features desktop -- --connect 172.16.42.1:7777
 
 Browser: turn on Remote UI on the phone and open `http://172.16.42.1:8080`.

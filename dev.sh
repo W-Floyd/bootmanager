@@ -3,17 +3,21 @@
 # reflash: the backend saves the upload in /tmp/dev (RAM) and restarts what
 # it replaced (bootmanager/dev.go).
 #
-#   sh tools/linuxboot/bootmanager/dev.sh ui        # restart the UI with a new build
-#   sh tools/linuxboot/bootmanager/dev.sh backend   # re-exec the backend in place
-#   sh tools/linuxboot/bootmanager/dev.sh web       # new browser build; reload the page
+#   sh dev.sh ui        # restart the UI with a new build
+#   sh dev.sh backend   # re-exec the backend in place
+#   sh dev.sh web       # new browser build; reload the page
 #
 # Kernel tests, straight from RAM (dev.go, kexecTest):
 #
-#   sh tools/linuxboot/bootmanager/dev.sh kexec-stage  # build the stage, kexec into its Image
-#   sh tools/linuxboot/bootmanager/dev.sh kexec-pmos   # build pmOS's kernel, boot the pmOS
-#                                                      # entry with it (same version string)
-#   sh tools/linuxboot/bootmanager/dev.sh stage-hold   # from pmOS: reboot into the Boot
-#                                                      # Manager and stay there, ready for these
+#   sh dev.sh kexec-stage  # build the stage, kexec into its Image
+#   sh dev.sh kexec-pmos   # build pmOS's kernel, boot the pmOS entry
+#                          # with it (same version string)
+#   sh dev.sh stage-hold   # from pmOS: reboot into the Boot Manager and
+#                          # stay there, ready for these
+#
+# The stage build and android-payload.py's inputs are in the fogona repo
+# (FOGONA, default /repo); kexec-stage builds the stage with this checkout
+# in it.
 #
 # A kexec is not a cold boot: it cannot reproduce what depends on ABL's
 # hand-off (the stage's first display power-up), only what the kernel does.
@@ -67,14 +71,13 @@ backend)
 	;;
 kexec-stage)
 	# The whole stage build; the kernel Image carries its DTB and initramfs.
-	REPO=$(cd "$HERE/../../.." && pwd)
-	BOOTMANAGER=1 sh "$REPO/tools/linuxboot/build.sh"
+	BOOTMANAGER=1 BOOTMANAGER_SRC=$HERE sh "${FOGONA:-/repo}/tools/linuxboot/build.sh"
 	KOUT=${KOUT:-$HOME/exp-linuxboot/.output-host}
 	echo "-> kernel-stage (the phone kexecs into it)"
 	curl -fsS --max-time 300 -T "$KOUT/arch/arm64/boot/Image" "$URL/kernel-stage"
 	;;
 kexec-pmos)
-	# Built as BUILD.md builds the packaged kernel, but not packaged: only
+	# Built as fogona's BUILD.md builds the packaged kernel, but not packaged: only
 	# Image.gz goes over, and nothing on the phone is installed or changed.
 	KSRC=${KSRC:-$HOME/fogona-mainline}
 	(cd "$KSRC" && bash -c 'source /opt/pmbootstrap-src/helpers/envkernel.sh --gcc >/dev/null 2>&1 &&

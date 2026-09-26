@@ -34,7 +34,7 @@ import (
 //	curl -T bootmanager    http://172.16.42.1:8080/dev/bootmanager      # re-execs the backend
 //	curl -T index.html     http://172.16.42.1:8080/dev/web/index.html   # served next reload
 //
-// tools/linuxboot/bootmanager/dev.sh builds and sends them. Uploads live in
+// dev.sh, at the repo root, builds and sends them. Uploads live in
 // /tmp/dev, in RAM, and win over the built-in copies until the next boot.
 
 const (
