@@ -114,6 +114,7 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case name == "bootmanager-ui", name == "bootmanager":
 	case name == "kernel-stage", name == "kernel-pmos":
+	case name == "android-kernel", name == "android-initrd", name == "android-dtb", name == "kexec-android":
 	case strings.HasPrefix(name, "web/") && !strings.Contains(name[4:], "/"):
 	default:
 		http.Error(w, "upload bootmanager-ui, bootmanager, kernel-stage, kernel-pmos or web/<file>", http.StatusBadRequest)
@@ -141,7 +142,9 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("re-exec: %v", err)
 			}
 		}()
-	case "kernel-stage", "kernel-pmos":
+	case "android-kernel", "android-initrd", "android-dtb":
+		fmt.Fprintln(w, "saved; PUT the command line to kexec-android to boot it")
+	case "kernel-stage", "kernel-pmos", "kexec-android":
 		fmt.Fprintln(w, "kexec into it")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -195,9 +198,17 @@ func devOnce() {
 //     with only its kernel replaced: the entry's initramfs, DTB and
 //     command line, and the rootfs's modules, so its version string must
 //     match the installed kernel's.
+//   - kexec-android, stock Android: the android-kernel, android-initrd and
+//     android-dtb uploads and this upload's body as the command line, as
+//     android-payload.py assembles them from what ABL would hand it. The
+//     tree is the live stock one, so the loader keeps out of every region
+//     Android reserves (its /reserved-memory and /memreserve/).
 //
 // Nothing is written: a kernel that does not come up costs a reboot.
 func kexecTest(name string) error {
+	if name == "kexec-android" {
+		return kexecAndroid()
+	}
 	k, err := os.Open(filepath.Join(devDir, name))
 	if err != nil {
 		return err
@@ -231,6 +242,39 @@ func kexecTest(name string) error {
 		return handover(&test)
 	}
 	return fmt.Errorf("not a test kernel: %s", name)
+}
+
+func kexecAndroid() error {
+	open := func(n string) (*os.File, error) {
+		f, err := os.Open(filepath.Join(devDir, n))
+		if err != nil {
+			return nil, fmt.Errorf("%s not uploaded: %w", n, err)
+		}
+		return f, nil
+	}
+	k, err := open("android-kernel")
+	if err != nil {
+		return err
+	}
+	i, err := open("android-initrd")
+	if err != nil {
+		return err
+	}
+	d, err := open("android-dtb")
+	if err != nil {
+		return err
+	}
+	cmdline, err := os.ReadFile(filepath.Join(devDir, "kexec-android"))
+	if err != nil {
+		return err
+	}
+	return handover(&boot.LinuxImage{
+		Name:    "stock Android",
+		Kernel:  k,
+		Initrd:  i,
+		DTB:     d,
+		Cmdline: strings.TrimSpace(string(cmdline)),
+	})
 }
 
 func saveUpload(dst string, body io.Reader) error {

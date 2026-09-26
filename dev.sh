@@ -28,7 +28,7 @@
 # what runs; send those again too. A running UI is only replaced by
 # `dev.sh ui` (or dev.restart over the socket).
 set -eu
-WHAT=${1:?usage: dev.sh ui|backend|web|kexec-stage|kexec-pmos|stage-hold [HOST]}
+WHAT=${1:?usage: dev.sh ui|backend|web|kexec-stage|kexec-pmos|kexec-android|stage-hold [HOST]}
 HOST=${2:-172.16.42.1}
 HERE=$(cd "$(dirname "$0")" && pwd)
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/bootmanager-target}
@@ -84,6 +84,18 @@ kexec-pmos)
 	echo "-> kernel-pmos (the phone boots the pmOS entry with it)"
 	curl -fsS --max-time 300 -T "$KSRC/.output/arch/arm64/boot/Image.gz" "$URL/kernel-pmos"
 	;;
+kexec-android)
+	# Stock Android, from what ABL would hand it (android-payload.py says
+	# what and why); the phone boots it from RAM. The test is adb over USB,
+	# since stock runs with console=null and the display may not follow.
+	P=${ANDROID_PAYLOAD:-$HOME/.cache/android-kexec/payload}
+	python3 "$HERE/android-payload.py" "$P"
+	for f in kernel initrd dtb; do
+		put "$P/$f" "android-$f"
+	done
+	echo "-> kexec-android (the phone boots stock Android)"
+	curl -fsS --max-time 60 -T "$P/cmdline" "$URL/kexec-android"
+	;;
 stage-hold)
 	# From pmOS: leave a one-shot request on the boot partition, which the
 	# stage's uinit consumes (record_boot), and reboot. That boot stays in
@@ -93,7 +105,7 @@ stage-hold)
 	echo "rebooting into the Boot Manager, held"
 	;;
 *)
-	echo "usage: dev.sh ui|backend|web|kexec-stage|kexec-pmos|stage-hold [HOST]" >&2
+	echo "usage: dev.sh ui|backend|web|kexec-stage|kexec-pmos|kexec-android|stage-hold [HOST]" >&2
 	exit 2
 	;;
 esac

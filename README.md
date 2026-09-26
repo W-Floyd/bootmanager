@@ -163,6 +163,12 @@ Nothing is written, so a kernel that does not come up costs a reboot. **A
 kexec is not a cold boot**: anything that depends on ABL's hand-off, such as
 the stage's first display power-up, needs a real reboot to test.
 
+**Stock Android, experimental and not working yet:** `dev.sh
+kexec-android` boots stock Android's own kernel from RAM, with what ABL
+would hand it (`android-payload.py` assembles it). It resets the SoC so
+far. [investigations/stock-android-kexec.md](../../../investigations/stock-android-kexec.md)
+has the payload, the attempts, the slot check and the next step.
+
 ## Other builds
 
 Host window, against a phone whose Remote UI is on:
