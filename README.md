@@ -50,6 +50,7 @@ carry what differs between devices and stages:
 | `-hold` | `/tmp/hold` | no autoboot while it exists |
 | `-logs` | | files shown on the Log screen before the backend's (the uinit's log) |
 | `-autoboot` | `10` | seconds |
+| `-reboot-modes` | `bootloader,fastboot,recovery,download` | reboot modes offered when the device tree maps them; leave out any that strand the device (qcom's `edl` needs a long power-button press to leave) |
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
 | `-web` | `/usr/share/bootmanager-web` | the UI's web build |
@@ -100,7 +101,8 @@ link opens its screen. A file's screen offers Preview (the browser's own
 viewer, over the UI), a new tab and Download. Nothing there asks for a
 password, so:
 
-* it listens on `-listen` only;
+* it listens on `-listen` only, and answers only requests addressed to an
+  IP address (or `localhost`), so a DNS-rebinding page cannot pass as it;
 * the WebSocket refuses a cross-origin handshake, so no other page in the
   host's browser can drive the device;
 * files from partitions come from `:8081`, another origin, so nothing on a

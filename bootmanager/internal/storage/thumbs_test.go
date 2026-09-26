@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"image/gif"
+	"image/png"
 	"testing"
 )
 
@@ -29,5 +32,21 @@ func TestShrink(t *testing.T) {
 				t.Fatalf("%dx%d: pixel %d = %v", tc.sw, tc.sh, i/4, px[i:i+4])
 			}
 		}
+	}
+}
+
+func TestThumb(t *testing.T) {
+	var ok bytes.Buffer
+	png.Encode(&ok, image.NewNRGBA(image.Rect(0, 0, 200, 100)))
+	if th, err := thumb(bytes.NewReader(ok.Bytes()), 50); err != nil || th.Width != 50 || th.Height != 25 {
+		t.Errorf("200x100 png: %+v %v", th, err)
+	}
+	// A 0x0 GIF decodes to a 0x0 image, which shrink would divide by.
+	var empty bytes.Buffer
+	if err := gif.Encode(&empty, image.NewPaletted(image.Rect(0, 0, 0, 0), color.Palette{color.Black}), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thumb(bytes.NewReader(empty.Bytes()), 50); err == nil {
+		t.Error("0x0 gif: no error")
 	}
 }

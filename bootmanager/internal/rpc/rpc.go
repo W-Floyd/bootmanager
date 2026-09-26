@@ -10,12 +10,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -182,12 +184,19 @@ func (s *Server) serve(t transport) {
 	}
 }
 
-// ServeListener serves line-delimited connections from ln until it closes.
-func (s *Server) ServeListener(ln net.Listener) error {
+// ServeListener serves line-delimited connections from ln until it is
+// closed. Other accept errors (out of file descriptors, say) are passing:
+// it waits and goes on.
+func (s *Server) ServeListener(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
-			return err
+			log.Printf("rpc: accept: %v", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		go s.serve(newLineConn(conn))
 	}

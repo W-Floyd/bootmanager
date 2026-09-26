@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,23 @@ func (w *webServer) page(rw http.ResponseWriter, r *http.Request) {
 	http.ServeContent(rw, r, "index.html", st.ModTime(), f)
 }
 
+// ipHostOnly refuses a request whose Host is a name rather than an
+// address: a DNS-rebinding page, whose name has been pointed at the
+// device, would otherwise count as this server's own origin.
+func ipHostOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
+		if host != "localhost" && net.ParseIP(strings.Trim(host, "[]")) == nil {
+			http.Error(w, "use the device's address, not a name", http.StatusMisdirectedRequest)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // startRemote serves the UI to the host over the USB network. Nothing
 // here asks for a password, so it listens on -listen only.
 func (a *app) startRemote() (func(), error) {
@@ -77,7 +95,7 @@ func (a *app) startRemote() (func(), error) {
 			stop()
 			return nil, err
 		}
-		srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Handler: ipHostOnly(h), ReadHeaderTimeout: 10 * time.Second}
 		closers = append(closers, srv.Close)
 		go srv.Serve(ln)
 	}

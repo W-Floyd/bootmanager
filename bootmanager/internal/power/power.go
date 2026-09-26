@@ -13,17 +13,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Modes lists the reboot modes the running device tree maps: the "mode-*"
-// properties of reboot-mode nodes (syscon-reboot-mode, qcom's PON, nvmem
-// reboot-mode, …), without the prefix. A device without any cannot be
-// asked to reboot into its bootloader this way.
-func Modes() []string {
+// Modes lists the reboot modes in allowed that the running device tree
+// maps: the "mode-*" properties of reboot-mode nodes (syscon-reboot-mode,
+// qcom's PON, nvmem reboot-mode, …), without the prefix. A device without
+// any cannot be asked to reboot into its bootloader this way. allowed
+// keeps out modes that strand the device, such as qcom's edl, which only a
+// long power-button press leaves.
+func Modes(allowed []string) []string { return modesIn("/proc/device-tree", allowed) }
+
+func modesIn(dt string, allowed []string) []string {
 	modes := []string{}
-	filepath.WalkDir("/proc/device-tree", func(p string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(dt, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if m, ok := strings.CutPrefix(d.Name(), "mode-"); ok && m != "normal" && !slices.Contains(modes, m) {
+		if m, ok := strings.CutPrefix(d.Name(), "mode-"); ok && slices.Contains(allowed, m) && !slices.Contains(modes, m) {
 			modes = append(modes, m)
 		}
 		return nil
@@ -33,8 +37,8 @@ func Modes() []string {
 }
 
 // Check reports whether Reboot can be asked for mode.
-func Check(mode string) error {
-	if mode != "" && !slices.Contains(Modes(), mode) {
+func Check(mode string, allowed []string) error {
+	if mode != "" && !slices.Contains(Modes(allowed), mode) {
 		return fmt.Errorf("no reboot mode %q in the device tree", mode)
 	}
 	return nil

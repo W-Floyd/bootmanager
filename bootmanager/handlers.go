@@ -47,9 +47,11 @@ func (a *app) register() {
 	rpc.Handle(s, "fs.thumb", func(x fileArgs) (any, error) { return a.disks.Thumb(x.Dev, x.Path, x.Size) })
 	rpc.Handle(s, "display.info", func(none) (any, error) { return displayInfo() })
 	rpc.Handle(s, "log.tail", func(x struct{ Lines int }) (any, error) { return a.logTail(x.Lines), nil })
-	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(), nil })
+	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(allowedModes()), nil })
 	rpc.Handle(s, "power", a.power)
 }
+
+func allowedModes() []string { return strings.Split(*rebootModes, ",") }
 
 // model is the device tree's name for the device, "" without one.
 func model() string {
@@ -88,7 +90,7 @@ func (a *app) power(x struct{ Action, Mode string }) (any, error) {
 	var busy string
 	switch x.Action {
 	case "reboot":
-		if err := power.Check(x.Mode); err != nil {
+		if err := power.Check(x.Mode, allowedModes()); err != nil {
 			return nil, err
 		}
 		busy = "Rebooting…"

@@ -42,9 +42,16 @@ func (b *Browser) Thumb(dev, p string, size int) (Thumb, error) {
 	if st, err := f.Stat(); err != nil || st.Size() > maxThumbFile {
 		return Thumb{}, errors.New("too large for a thumbnail")
 	}
+	return thumb(f, size)
+}
+
+func thumb(f io.ReadSeeker, size int) (Thumb, error) {
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
 		return Thumb{}, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return Thumb{}, errors.New("an empty image")
 	}
 	if cfg.Width*cfg.Height > maxThumbPixels {
 		return Thumb{}, errors.New("too many pixels for a thumbnail")
