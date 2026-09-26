@@ -41,7 +41,7 @@ if command -v wasm-bindgen >/dev/null &&
 		--target wasm32-unknown-unknown --no-default-features --features web)
 	wasm-bindgen --target web --no-typescript --out-dir "$OUT/web" \
 		"$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/recovery_ui.wasm"
-	cp "$HERE/recovery-ui/web/index.html" "$OUT/web/"
+	cp "$HERE/recovery-ui/web/index.html" "$HERE/recovery-ui/web/favicon.svg" "$OUT/web/"
 else
 	echo "recovery: no wasm toolchain, building without the browser UI" >&2
 fi

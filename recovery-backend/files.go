@@ -93,7 +93,8 @@ func isBinary(b []byte) bool {
 // render, or as an attachment with ?download=1.
 //
 // The page on this origin drives the phone as root (/ws, /dev/), so a file
-// from the card must never run as it: every response is sandboxed by CSP
+// from the card must never run as it: every response but a PDF's (see
+// below) is sandboxed by CSP
 // (an opaque origin, no scripts), sniffing is off, and markup that a
 // browser would render live (HTML, SVG, XML) goes out as plain text.
 func filesHandler(w http.ResponseWriter, r *http.Request) {
@@ -121,14 +122,21 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 
 	name := filepath.Base(clean)
 	h := w.Header()
-	h.Set("Content-Security-Policy", "sandbox")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	if r.URL.Query().Get("download") != "" {
+		h.Set("Content-Security-Policy", "sandbox")
 		h.Set("Content-Type", "application/octet-stream")
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	} else {
-		h.Set("Content-Type", inlineType(f, name))
+		t := inlineType(f, name)
+		// Browsers refuse to show a PDF in a sandboxed document, and do not
+		// need it sandboxed: their PDF viewers run in their own isolated
+		// context, never as this origin's page.
+		if t != "application/pdf" {
+			h.Set("Content-Security-Policy", "sandbox")
+		}
+		h.Set("Content-Type", t)
 		h.Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 	}
 	http.ServeContent(w, r, "", st.ModTime(), f)

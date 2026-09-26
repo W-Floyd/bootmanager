@@ -30,6 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = { version = "0.2", optional = true }
 png = { version = "0.17", optional = true }
+base64 = "0.22"
 # Pinned to the wasm-bindgen CLI Alpine ships; the two must match exactly.
 wasm-bindgen = { version = "=0.2.128", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["WebSocket", "MessageEvent", "CloseEvent", "Window", "Location", "Document", "Element", "HtmlElement", "HtmlAnchorElement"] }

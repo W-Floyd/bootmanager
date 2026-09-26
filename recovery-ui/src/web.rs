@@ -2,6 +2,7 @@
 //! so the backend is the page's own host, at /ws. One text frame per JSON
 //! line each way.
 
+use crate::app::UrlMode;
 use crate::{with_app, AppWindow, APP};
 use slint::ComponentHandle;
 use wasm_bindgen::closure::Closure;
@@ -55,21 +56,62 @@ fn connect(url: String) {
     onclose.forget();
 }
 
-/// Views open in a new tab (the server sandboxes them); downloads go
+/// Preview fills index.html's #preview overlay: the file in a frame, shown
+/// by the browser's own viewer (the server sandboxes it). Downloads go
 /// through an `<a download>` click, which leaves this page alone even if
 /// the server answers with an error.
-fn open_url(url: &str, download: bool) {
+fn open_url(url: &str, mode: UrlMode) {
     let Some(window) = web_sys::window() else { return };
-    if !download {
-        let _ = window.open_with_url_and_target(url, "_blank");
-        return;
-    }
     let Some(doc) = window.document() else { return };
-    let Ok(el) = doc.create_element("a") else { return };
-    let a: web_sys::HtmlAnchorElement = el.unchecked_into();
-    a.set_href(&format!("{url}?download=1"));
-    a.set_download(url.rsplit('/').next().unwrap_or("file"));
-    a.click();
+    let name = url.rsplit('/').next().unwrap_or("file");
+    let download = format!("{url}?download=1");
+    match mode {
+        UrlMode::Tab => {
+            let _ = window.open_with_url_and_target(url, "_blank");
+        }
+        UrlMode::Download => {
+            let Ok(el) = doc.create_element("a") else { return };
+            let a: web_sys::HtmlAnchorElement = el.unchecked_into();
+            a.set_href(&download);
+            a.set_download(name);
+            a.click();
+        }
+        UrlMode::Preview => {
+            let set = |id: &str, attr: &str, val: &str| {
+                if let Some(el) = doc.get_element_by_id(id) {
+                    let _ = el.set_attribute(attr, val);
+                }
+            };
+            if let Some(el) = doc.get_element_by_id("preview-name") {
+                el.set_text_content(Some(&decode_name(name)));
+            }
+            set("preview-tab", "href", url);
+            set("preview-download", "href", &download);
+            set("preview-frame", "src", url);
+            if let Some(el) = doc.get_element_by_id("preview") {
+                let _ = el.remove_attribute("hidden");
+            }
+        }
+    }
+}
+
+/// Undoes the percent-encoding of a URL's last segment, for the title.
+fn decode_name(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn retry(url: String) {

@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <!-- The browser front end, served by the phone's Remote UI service next to
      the wasm build (recovery_ui.js, recovery_ui_bg.wasm). Slint draws into
-     the canvas with id "canvas"; src/web.rs connects to ws://<host>/ws. -->
+     the canvas with id "canvas"; src/web.rs connects to ws://<host>/ws.
+     #preview is the file viewer: src/web.rs fills in its links and frame
+     and unhides it; closing it is handled here. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fogona recovery</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
   /* The canvas fills the window. Slint first sizes the window to its
      preferred 360x800 and winit writes that into the canvas's inline
@@ -18,11 +21,48 @@
   canvas { display: block; outline: none; touch-action: none;
            width: 100vw !important; height: 100vh !important;
            height: 100dvh !important; }
+
+  /* The file preview: the browser's own viewer for the file (image,
+     video, audio, text, PDF) in a frame over the UI. */
+  #preview { position: fixed; inset: 0; display: flex; flex-direction: column;
+             background: #0c100e; font: 14px system-ui, sans-serif; color: #e8efe9; }
+  #preview[hidden] { display: none; }
+  #preview header { display: flex; align-items: center; gap: 16px;
+                    padding: 10px 16px; background: #141a17; }
+  #preview-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #preview a, #preview button { color: #3ec46d; background: none; border: 0;
+                                font: inherit; cursor: pointer; text-decoration: none; }
+  #preview iframe { flex: 1; width: 100%; border: 0; background: #ffffff; }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="0"></canvas>
+<div id="preview" hidden>
+  <header>
+    <span id="preview-name"></span>
+    <a id="preview-tab" target="_blank" rel="noopener">Open in a new tab</a>
+    <a id="preview-download" download>Download</a>
+    <button id="preview-close" title="Esc">Close</button>
+  </header>
+  <iframe id="preview-frame" title="File preview"></iframe>
+</div>
 <script type="module">
+  const preview = document.getElementById("preview");
+  const frame = document.getElementById("preview-frame");
+  function closePreview() {
+    if (preview.hidden) return;
+    preview.hidden = true;
+    frame.src = "about:blank";
+    document.getElementById("canvas").focus();
+  }
+  document.getElementById("preview-close").onclick = closePreview;
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !preview.hidden) {
+      e.stopPropagation();
+      closePreview();
+    }
+  }, true);
+
   import init from "./recovery_ui.js";
   await init();
   document.getElementById("canvas").focus();

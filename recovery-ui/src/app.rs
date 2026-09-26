@@ -6,8 +6,9 @@ use crate::proto::Client;
 use crate::{AppWindow, Row};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,8 +33,8 @@ enum Action {
     Dir(String),
     /// A file in the current directory: name, size.
     File(String, u64),
-    /// Hand a URL on this backend to the browser; true to download it.
-    Url(String, bool),
+    /// Hand a URL on this backend to the browser.
+    Url(String, UrlMode),
     Up,
     Power(&'static str),
     Refresh,
@@ -88,9 +89,18 @@ struct TextView {
     truncated: bool,
 }
 
-/// Opens a URL on the backend's HTTP server: (path, download). Only the
+/// Opens a URL on the backend's HTTP server. Only the
 /// web build has one; elsewhere the file screen offers the viewer alone.
-pub type UrlOpener = Box<dyn Fn(&str, bool)>;
+pub type UrlOpener = Box<dyn Fn(&str, UrlMode)>;
+
+/// What the browser should do with a file URL.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UrlMode {
+    /// In the page, in the browser's own viewer.
+    Preview,
+    Tab,
+    Download,
+}
 
 /// A request in flight or its failure, for screens whose data is loading.
 enum Load<T> {
@@ -109,6 +119,11 @@ struct State {
     files: Load<Listing>,
     log: Load<Vec<String>>,
     text: Load<TextView>,
+    /// Thumbnails by "dev:path"; None for a file that had none to give.
+    thumbs: HashMap<String, Option<Image>>,
+    /// Image files of the listing on screen still to fetch, one at a time.
+    thumb_queue: VecDeque<(String, String)>,
+    thumb_busy: bool,
     countdown: i64,
     countdown_label: String,
     error: String,
@@ -150,7 +165,7 @@ fn human_size(n: u64) -> String {
 }
 
 fn row(title: impl Into<SharedString>, detail: impl Into<SharedString>, kind: &str, on: bool) -> Row {
-    Row { title: title.into(), detail: detail.into(), kind: kind.into(), on }
+    Row { title: title.into(), detail: detail.into(), kind: kind.into(), on, thumb: Image::default() }
 }
 
 impl App {
@@ -170,6 +185,9 @@ impl App {
                 files: Load::Waiting,
                 log: Load::Waiting,
                 text: Load::Waiting,
+                thumbs: HashMap::new(),
+                thumb_queue: VecDeque::new(),
+                thumb_busy: false,
                 countdown: -1,
                 countdown_label: String::new(),
                 error: String::new(),
@@ -200,6 +218,46 @@ impl App {
         }
         app.render();
         app
+    }
+
+    /// Fetches the next queued thumbnail, one request at a time so a
+    /// directory of photos does not flood the backend; each reply starts
+    /// the next. Leaving the directory clears the queue (see load_screen).
+    fn pump_thumbs(self: &Rc<Self>) {
+        let next = {
+            let mut s = self.state.borrow_mut();
+            if s.thumb_busy {
+                return;
+            }
+            let cur = match &s.screen {
+                Screen::Files { dev, path, .. } => Some((dev.clone(), path.trim_end_matches('/').to_string())),
+                _ => None,
+            };
+            let on_dir = |dev: &str, p: &str| {
+                cur.as_ref().is_some_and(|(d, dir)| d == dev && p.rsplit_once('/').map(|x| x.0).unwrap_or("") == dir)
+            };
+            let mut next = None;
+            while let Some((dev, p)) = s.thumb_queue.pop_front() {
+                if on_dir(&dev, &p) {
+                    next = Some((dev, p));
+                    break;
+                }
+            }
+            s.thumb_busy = next.is_some();
+            next
+        };
+        let Some((dev, path)) = next else { return };
+        let key = thumb_key(&dev, &path);
+        // Physical pixels at the phone's scale: a 52 px image at 2x.
+        self.call("fs.thumb", json!({"dev": dev, "path": path, "size": 104}), move |a, r| {
+            let img = r.ok().and_then(|v| thumb_image(&v));
+            {
+                let mut s = a.state.borrow_mut();
+                s.thumbs.insert(key, img);
+                s.thumb_busy = false;
+            }
+            a.pump_thumbs();
+        });
     }
 
     /// Lets the file screen hand files to the browser (web build only).
@@ -306,15 +364,28 @@ impl App {
             Screen::Files { dev, path, .. } => {
                 self.state.borrow_mut().files = Load::Waiting;
                 let want = screen_key(&self.state.borrow().screen);
+                let (dir_dev, dir) = (dev.clone(), path.clone());
                 self.call("fs.list", json!({"dev": dev, "path": path}), move |a, r| {
                     // Ignore a listing for a directory we have already left.
                     if screen_key(&a.state.borrow().screen) != want {
                         return;
                     }
-                    a.state.borrow_mut().files = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                    let listing = r.and_then(|v| serde_json::from_value::<Listing>(v).map_err(|e| e.to_string()));
+                    if let Ok(l) = &listing {
+                        let mut s = a.state.borrow_mut();
+                        s.thumb_queue.clear();
+                        for f in l.entries.iter().filter(|f| !f.dir && f.link.is_empty() && is_image(&f.name)) {
+                            let p = format!("{}/{}", dir.trim_end_matches('/'), f.name);
+                            if !s.thumbs.contains_key(&thumb_key(&dir_dev, &p)) {
+                                s.thumb_queue.push_back((dir_dev.clone(), p));
+                            }
+                        }
+                    }
+                    a.state.borrow_mut().files = match listing {
                         Ok(v) => Load::Ready(v),
                         Err(e) => Load::Failed(e),
                     };
+                    a.pump_thumbs();
                 });
             }
             Screen::Log => {
@@ -425,9 +496,9 @@ impl App {
                     self.open(s);
                 }
             }
-            Action::Url(url, download) => {
+            Action::Url(url, mode) => {
                 if let Some(open) = &*self.open_url.borrow() {
-                    open(&url, download);
+                    open(&url, mode);
                 }
             }
             Action::Refresh => self.load_screen(),
@@ -473,6 +544,28 @@ impl App {
             ui.set_selected((n - 1).max(0));
         }
     }
+}
+
+fn thumb_key(dev: &str, path: &str) -> String {
+    format!("{dev}:{path}")
+}
+
+/// The formats the backend can make thumbnails of (Go's standard library).
+fn is_image(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [".jpg", ".jpeg", ".png", ".gif"].iter().any(|e| n.ends_with(e))
+}
+
+/// fs.thumb's reply -- width, height, base64 RGBA -- as an image.
+fn thumb_image(v: &Value) -> Option<Image> {
+    use base64::Engine;
+    let w = v["width"].as_u64()? as u32;
+    let h = v["height"].as_u64()? as u32;
+    let px = base64::engine::general_purpose::STANDARD.decode(v["rgba"].as_str()?).ok()?;
+    if w == 0 || h == 0 || px.len() != (w * h * 4) as usize {
+        return None;
+    }
+    Some(Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&px, w, h)))
 }
 
 fn screen_key(s: &Screen) -> String {
@@ -556,7 +649,7 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
                     }
                 }
             }
-            ("Partitions".into(), "Mounted read-only, journal untouched".into(), items)
+            ("Partitions".into(), "Mounted read-only".into(), items)
         }
         Screen::Files { dev, name, path } => {
             match &s.files {
@@ -569,10 +662,12 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
                         } else if !f.link.is_empty() {
                             items.push((row(f.name.clone(), format!("-> {}", f.link), "info", false), Action::None));
                         } else {
-                            items.push((
-                                row(f.name.clone(), human_size(f.size as u64), "nav", false),
-                                Action::File(f.name.clone(), f.size.max(0) as u64),
-                            ));
+                            let mut r = row(f.name.clone(), human_size(f.size as u64), "nav", false);
+                            let p = format!("{}/{}", path.trim_end_matches('/'), f.name);
+                            if let Some(Some(img)) = s.thumbs.get(&thumb_key(dev, &p)) {
+                                r.thumb = img.clone();
+                            }
+                            items.push((r, Action::File(f.name.clone(), f.size.max(0) as u64)));
                         }
                     }
                     if l.truncated {
@@ -586,12 +681,21 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
         }
         Screen::File { dev, path, size } => {
             let name = path.rsplit('/').next().unwrap_or(path).to_string();
-            items.push((row("View", "The start of it, as text", "nav", false), Action::Open(Screen::Text { dev: dev.clone(), path: path.clone() })));
+            let text = (
+                row(if web { "View as text" } else { "View" }, "The start of it, in this UI", "nav", false),
+                Action::Open(Screen::Text { dev: dev.clone(), path: path.clone() }),
+            );
             if web {
                 let url = format!("/files/{dev}{}", url_path(path));
-                items.push((row("Open in a new tab", "Text, images and PDFs show in the browser", "action", false), Action::Url(url.clone(), false)));
-                items.push((row("Download", human_size(*size), "action", false), Action::Url(url, true)));
+                items.push((
+                    row("Preview", "In the browser's own viewer: images, video, audio, text, PDF", "action", false),
+                    Action::Url(url.clone(), UrlMode::Preview),
+                ));
+                items.push((row("Open in a new tab", "", "action", false), Action::Url(url.clone(), UrlMode::Tab)));
+                items.push((row("Download", human_size(*size), "action", false), Action::Url(url, UrlMode::Download)));
+                items.push(text);
             } else {
+                items.push(text);
                 items.push((row(human_size(*size), "Download it from the browser UI (Remote UI)", "info", false), Action::None));
             }
             (name, format!("{dev}:{path}"), items)

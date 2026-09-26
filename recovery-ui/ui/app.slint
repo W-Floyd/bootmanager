@@ -15,6 +15,8 @@ export struct Row {
     // "nav" (opens a screen), "toggle", "action", "danger", "info", "back"
     kind: string,
     on: bool,
+    // A picture at the left (image files in a listing); empty for none.
+    thumb: image,
 }
 
 global Palette {
@@ -110,9 +112,18 @@ component MenuList inherits FocusScope {
                 background: #1d2420;
             }
 
-            VerticalLayout {
+            if row.thumb.width > 0: Image {
                 x: 18px;
-                width: parent.width - 18px - (row.kind == "toggle" ? 72px : row.kind == "nav" ? 40px : 16px);
+                y: 6px;
+                width: root.row-h - 12px;
+                height: root.row-h - 12px;
+                source: row.thumb;
+                image-fit: contain;
+            }
+
+            VerticalLayout {
+                x: row.thumb.width > 0 ? 18px + root.row-h : 18px;
+                width: parent.width - self.x - (row.kind == "toggle" ? 72px : row.kind == "nav" ? 40px : 16px);
                 alignment: center;
                 spacing: 3px;
                 Text {

@@ -111,18 +111,30 @@ The page fills the window and follows resizes.
 
 ### Files
 
-In Partitions, tapping a file opens a screen for it. **View** shows the
-start of it (256 KiB) as text in the UI, on the phone as well; binary files
-say so instead. In the browser there are also **Open in a new tab** (text,
-images, PDFs, audio and video render there) and **Download**. Both use
-`GET /files/<dev>/<path>` on the Remote UI port, with `?download=1` for
-an attachment.
+In Partitions, tapping a file opens a screen for it. What it offers:
+
+* **Preview** (browser): the file opens over the UI in the browser's own
+  viewer, for images, video, audio, text and PDF. `index.html`'s
+  `#preview` holds the frame.
+* **Open in a new tab** and **Download** (browser): both use
+  `GET /files/<dev>/<path>` on the Remote UI port, with `?download=1` for
+  an attachment.
+* **View as text** (everywhere, the phone too): shows the start of the
+  file, up to 256 KiB, in the UI. Binary files say so instead.
+
+JPEG, PNG and GIF files get **thumbnails** in the list, in every build.
+The backend makes them (`fs.thumb`, Go's standard decoders, with file and
+pixel caps checked before decoding). The UI fetches them one at a time for
+the directory on screen and caches them by path. The pmOS wallpaper takes
+one request on the phone.
 
 This page runs the phone as root (`/ws`, `/dev/`), so a file from the card
 must never run as part of it:
 
-* Every file response carries `Content-Security-Policy: sandbox`, which
-  gives it an opaque origin and no scripts, and `nosniff`.
+* Every file response but a PDF carries `Content-Security-Policy: sandbox`, which
+  gives it an opaque origin and no scripts, and all carry `nosniff`.
+  Browsers refuse to show a PDF in a sandboxed document. Their PDF viewers
+  run in their own isolated context, never as this page.
 * HTML, SVG and XML are served as plain text.
 * Paths resolve through an `os.Root` at the partition's mount point, so
   neither `..` nor a symlink on the card reaches the stage's own files
@@ -146,7 +158,7 @@ Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
 `{"event":E,"data":...}` with `autoboot`, `entries`, `services`, `busy` or
 `error`. The commands are `boot.list`, `boot.start {index}`,
 `autoboot.cancel`, `service.list`, `service.set {name, running}`,
-`disk.list`, `fs.list {dev, path}`, `fs.read {dev, path}`, `log.tail {lines}`,
+`disk.list`, `fs.list {dev, path}`, `fs.read {dev, path}`, `fs.thumb {dev, path, size}`, `log.tail {lines}`,
 `dev.restart {what}` and
 `power {action: reboot|bootloader|poweroff}`.
 

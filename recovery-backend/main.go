@@ -113,6 +113,7 @@ func init() {
 		"power":           power,
 		"dev.restart":     devRestart,
 		"fs.read":         fsRead,
+		"fs.thumb":        fsThumb,
 	}
 }
 

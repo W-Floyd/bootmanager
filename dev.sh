@@ -40,7 +40,7 @@ web)
 	rm -rf "$WORK/web"
 	wasm-bindgen --target web --no-typescript --out-dir "$WORK/web" \
 		"$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/recovery_ui.wasm"
-	cp "$HERE/recovery-ui/web/index.html" "$WORK/web/"
+	cp "$HERE/recovery-ui/web/index.html" "$HERE/recovery-ui/web/favicon.svg" "$WORK/web/"
 	for f in "$WORK"/web/*; do
 		put "$f" "web/${f##*/}"
 	done
