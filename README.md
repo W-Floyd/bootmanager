@@ -135,6 +135,34 @@ place and adopted sshd and the UI; the SSH session stayed up.
 Dev uploads is a remote root code path with no authentication, like
 telnet. That is acceptable on a USB-only link, and it is off by default.
 
+## Kernel tests by kexec, no flash, no install
+
+The Boot Manager can boot a kernel you upload, straight from RAM:
+
+    sh tools/linuxboot/bootmanager/dev.sh stage-hold    # from pmOS: reboot into the Boot Manager, held
+    sh tools/linuxboot/bootmanager/dev.sh kexec-stage   # build the stage, kexec into its Image
+    sh tools/linuxboot/bootmanager/dev.sh kexec-pmos    # build pmOS's kernel, boot the pmOS entry with it
+
+* **`stage-hold`** leaves a one-shot request on the boot partition
+  (`linuxboot/dev-once`) and reboots. The stage's uinit consumes it, and
+  that boot stays in the Boot Manager with no countdown, with Remote UI and
+  Dev uploads on, ready for an upload. The next boot autoboots as usual.
+* **`kexec-stage`** builds the whole stage and uploads its `Image`, which
+  carries its DTB and initramfs. The Boot Manager kexecs into it with the
+  running tree and command line. Tested 2026-09-26: build to pmOS back in
+  about 2 minutes, with the new stage's record in `backlight.log`.
+* **`kexec-pmos`** builds `Image.gz` as BUILD.md does, without packaging
+  it, and uploads it. The Boot Manager boots the first entry with only the
+  kernel replaced: the entry's initramfs, DTB and command line, and the
+  rootfs's modules. So the release string (`uname -r`) must match the
+  installed kernel's; `LOCALVERSION=` keeps it so. Tested 2026-09-26: a
+  build stamped `KBUILD_BUILD_VERSION=900` came up as `#900` with its
+  modules loaded.
+
+Nothing is written, so a kernel that does not come up costs a reboot. **A
+kexec is not a cold boot**: anything that depends on ABL's hand-off, such as
+the stage's first display power-up, needs a real reboot to test.
+
 ## Other builds
 
 Host window, against a phone whose Remote UI is on:

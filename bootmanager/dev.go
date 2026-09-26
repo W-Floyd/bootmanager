@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/u-root/u-root/pkg/boot"
 	"github.com/u-root/u-root/pkg/mount"
 )
 
@@ -112,9 +113,10 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/dev/")
 	switch {
 	case name == "bootmanager-ui", name == "bootmanager":
+	case name == "kernel-stage", name == "kernel-pmos":
 	case strings.HasPrefix(name, "web/") && !strings.Contains(name[4:], "/"):
 	default:
-		http.Error(w, "upload bootmanager-ui, bootmanager or web/<file>", http.StatusBadRequest)
+		http.Error(w, "upload bootmanager-ui, bootmanager, kernel-stage, kernel-pmos or web/<file>", http.StatusBadRequest)
 		return
 	}
 	dst := filepath.Join(devDir, name)
@@ -139,9 +141,96 @@ func devHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("re-exec: %v", err)
 			}
 		}()
+	case "kernel-stage", "kernel-pmos":
+		fmt.Fprintln(w, "kexec into it")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			if err := kexecTest(name); err != nil {
+				log.Printf("kexec %s: %v", name, err)
+				broadcast("error", map[string]string{"message": "kexec " + name + ": " + err.Error()})
+			}
+		}()
 	default:
 		fmt.Fprintln(w, "saved; reload the page")
 	}
+}
+
+// devOnce acts on a one-shot request the uinit found on the boot partition
+// (dev.sh stage-hold, from pmOS): /tmp/hold means stay here, so the
+// countdown is not even started, and /tmp/dev-once names the services to
+// switch on -- Remote UI and Dev uploads, so the next upload is accepted.
+func devOnce() {
+	if isFile("/tmp/hold") {
+		cdMu.Lock()
+		cancelled = true
+		cdMu.Unlock()
+		log.Printf("dev: held for kexec testing, no autoboot")
+	}
+	b, err := os.ReadFile("/tmp/dev-once")
+	if err != nil {
+		return
+	}
+	for _, name := range strings.Fields(string(b)) {
+		if name == "hold" {
+			continue
+		}
+		if _, err := setService(name, true); err != nil {
+			log.Printf("dev-once: %v", err)
+		}
+	}
+}
+
+// kexecTest boots an uploaded kernel straight from RAM, for testing a
+// kernel with no reflash and no install (dev.sh kexec-stage, kexec-pmos):
+//
+//   - kernel-stage, a LinuxBoot stage Image (its DTB and initramfs are
+//     built in), with this stage's command line. It is loaded with the
+//     running tree as its DTB, which takes the fork's kexec_load path --
+//     the one the pmOS handover proves on this SoC -- and the stage kernel
+//     uses its built-in tree regardless.
+//   - kernel-pmos, a pmOS Image or Image.gz, booted as the first boot entry
+//     with only its kernel replaced: the entry's initramfs, DTB and
+//     command line, and the rootfs's modules, so its version string must
+//     match the installed kernel's.
+//
+// Nothing is written: a kernel that does not come up costs a reboot.
+func kexecTest(name string) error {
+	k, err := os.Open(filepath.Join(devDir, name))
+	if err != nil {
+		return err
+	}
+	switch name {
+	case "kernel-stage":
+		dtb, err := os.Open("/sys/firmware/fdt")
+		if err != nil {
+			return err
+		}
+		cmdline, _ := os.ReadFile("/proc/cmdline")
+		return handover(&boot.LinuxImage{
+			Name:    "stage test kernel",
+			Kernel:  k,
+			DTB:     dtb,
+			Cmdline: strings.TrimSpace(string(cmdline)),
+		})
+	case "kernel-pmos":
+		bootMu.Lock()
+		var li *boot.LinuxImage
+		if len(images) > 0 {
+			li, _ = images[0].(*boot.LinuxImage)
+		}
+		bootMu.Unlock()
+		if li == nil {
+			return errors.New("no Linux boot entry to take the initramfs and DTB from")
+		}
+		test := *li
+		test.Name = li.Label() + " (test kernel)"
+		test.Kernel = k
+		return handover(&test)
+	}
+	return fmt.Errorf("not a test kernel: %s", name)
 }
 
 func saveUpload(dst string, body io.Reader) error {

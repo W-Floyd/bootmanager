@@ -188,6 +188,7 @@ func main() {
 		adoptUI = h.UIPid
 	} else {
 		startDefaultServices()
+		devOnce()
 	}
 	go scanAndCountdown()
 	switch {

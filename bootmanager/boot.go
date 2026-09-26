@@ -171,15 +171,23 @@ func bootStart(args []byte) (any, error) {
 // startEntry loads an entry and kexecs it; it returns only on failure.
 func startEntry(i int) error {
 	bootMu.Lock()
-	if booting {
-		bootMu.Unlock()
-		return errors.New("a boot is already in progress")
-	}
 	if i < 0 || i >= len(images) {
 		bootMu.Unlock()
 		return fmt.Errorf("no boot entry %d", i)
 	}
 	img := images[i]
+	bootMu.Unlock()
+	return handover(img)
+}
+
+// handover loads img and kexecs it, the one path every boot takes (entries
+// and dev.go's test kernels alike); it returns only on failure.
+func handover(img boot.OSImage) error {
+	bootMu.Lock()
+	if booting {
+		bootMu.Unlock()
+		return errors.New("a boot is already in progress")
+	}
 	booting = true
 	bootMu.Unlock()
 	defer func() {
