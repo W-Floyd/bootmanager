@@ -1,0 +1,107 @@
+# Recovery UI for the LinuxBoot stage (experiment)
+
+A TWRP-style screen for the stage: pick a boot entry, switch SSH, telnet
+and remote access on and off, browse partitions read-only, see the log,
+reboot / reboot to bootloader / power off. It runs on the phone's panel,
+driven by the volume and power keys. The same UI also runs as a
+window on the host and as a page in a browser, both talking to the phone.
+
+**Status (2026-09-26):** RAM-booted on the dev unit with `fastboot boot`: it
+draws on the panel, the volume and power keys navigate it, the countdown
+stops on a key, and Remote UI switches on from the phone. Not yet tried on
+the phone: booting pmOS from it, the browser and host-window builds, the
+partition browser, telnet, and the power actions ("Reboot to bootloader"
+may not work, since the running tree shows no reboot-mode node). Without
+`RECOVERY=1` the stage is the same as before.
+
+## Pieces
+
+| | what | where it runs |
+|---|---|---|
+| `recovery-backend/` | Go, a u-root command. Owns every privileged action; serves them as JSON lines on `/tmp/recovery.sock`; starts and restarts the UI; runs the 10 s autoboot itself, so a UI that never draws still boots pmOS | phone |
+| `recovery-ui/` | Rust + Slint 1.18. One list-driven screen (`ui/app.slint`); navigation in `src/app.rs`; transport-free protocol client in `src/proto.rs` | phone, host, browser |
+| `build.sh` | builds the UI (static), its web build, and the Go workspace for u-root; `../build.sh` calls it | container |
+
+```
+kernel -> u-root init -> gosh /etc/uinit.sh (USB net, as before)
+       -> recovery-backend ── /tmp/recovery.sock ── recovery-ui (fbdev + evdev)
+                           ├─ :7777 TCP        ── recovery-ui --connect (host window)
+                           └─ :8080 HTTP + /ws ── recovery-ui wasm (browser)
+```
+
+The last two listen only while **Services -> Remote UI** is on. Neither
+asks for a password; the only network the stage has is the USB link.
+
+## Build and try
+
+    RECOVERY=1 sh tools/linuxboot/build.sh   # -> out/linuxboot/boot-linuxboot-recovery.img
+    fastboot boot out/linuxboot/boot-linuxboot-recovery.img    # host, RAM only
+
+The image runs the same USB network and `/tmp/hold` as the plain stage
+(FLASHING.md, "LinuxBoot"). The one difference is that sshd belongs to
+the backend.
+
+## Keys
+
+| key | does |
+|---|---|
+| Vol+ / Vol- | up / down; the list wraps at both ends |
+| Power, short | select |
+| Power, held 600 ms | back |
+| any key or touch | stops the autoboot countdown |
+
+## Why a custom Slint platform on the phone
+
+Slint's own Linux backend (linuxkms) reads input through libinput, and
+libinput needs udev, which u-root does not have. The phone build therefore
+provides its own platform (`src/platform.rs`). It uses Slint's software
+renderer into RAM, copied to `/dev/fb0` (msm's fbdev emulation), and reads
+raw `/dev/input/event*`. It sets the console to `KD_GRAPHICS` so fbcon stops
+drawing over the UI, and puts it back to text mode on SIGTERM, which the
+backend sends before a kexec. Glyphs are rendered into the binary at build
+time (`build.rs`), at the phone's scale factor of 2, because the stage has
+no fonts. Only ASCII plus the UI's own strings are embedded, so other
+characters in file names do not render.
+
+Touch is handled but not available yet: the ICNL9916 driver is a module,
+and the stage loads none.
+
+## Other builds
+
+Host window, against a phone whose Remote UI is on:
+
+    cd tools/linuxboot/recovery/recovery-ui
+    cargo run --release --no-default-features --features desktop -- --connect 172.16.42.1:7777
+
+Browser: turn on Remote UI on the phone and open `http://172.16.42.1:8080`.
+
+Headless, for layout work in the container: run the backend against a
+directory holding an `extlinux/extlinux.conf`, and have the UI render a PNG
+after a key script:
+
+    recovery-backend -scan DIR -socket S -ui "" &
+    recovery-ui --socket S --screenshot out.png --keys down,enter
+
+## Protocol
+
+Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
+`{"id":N,"data":...}` or `{"id":N,"error":"..."}`. Pushed events are
+`{"event":E,"data":...}` with `autoboot`, `entries`, `services`, `busy` or
+`error`. The commands are `boot.list`, `boot.start {index}`,
+`autoboot.cancel`, `service.list`, `service.set {name, running}`,
+`disk.list`, `fs.list {dev, path}`, `log.tail {lines}` and
+`power {action: reboot|bootloader|poweroff}`.
+
+## Traps
+
+* **Cargo's target dir must not be under `/repo`.** rustc mmaps its outputs,
+  and the macOS bind mount answers with SIGBUS / `Bad address`. `build.sh`
+  uses `~/.cache/recovery-target`.
+* **u-root stops reading flags at the first package path**, so any `-files`
+  given after one is taken as a package and the build fails.
+* **Slint 1.18 links fontconfig through fontique** unless
+  `i-slint-common/fontconfig-dlopen` is on (see `Cargo.toml`). Linked, the
+  binary cannot be static.
+* **Browsing never replays a journal.** Mounts are `ro` with `noload`
+  (ext4) or `norecovery` (f2fs), because a plain read-only ext4 mount still
+  writes a journal replay.

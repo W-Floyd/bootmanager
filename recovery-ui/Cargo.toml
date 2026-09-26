@@ -1,0 +1,52 @@
+[package]
+name = "recovery-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Three builds of one UI, picked by feature; exactly one of them:
+#   fbdev    the phone: static musl binary, its own Slint platform (fbdev +
+#            evdev, src/platform.rs), because the stage has no udev for
+#            libinput and no GPU userspace. Default.
+#   desktop  a window on the host, talking to the phone's backend over TCP.
+#   web      wasm for a browser, served by the phone, over a WebSocket.
+[features]
+default = ["fbdev"]
+fbdev = ["slint/renderer-software", "dep:libc", "dep:png"]
+desktop = ["slint/backend-winit", "slint/renderer-femtovg", "slint/renderer-software"]
+web = ["slint/backend-winit", "slint/renderer-femtovg", "dep:wasm-bindgen", "dep:web-sys", "dep:console_error_panic_hook"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "recovery-ui"
+path = "src/main.rs"
+
+[dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = { version = "0.2", optional = true }
+png = { version = "0.17", optional = true }
+# Pinned to the wasm-bindgen CLI Alpine ships; the two must match exactly.
+wasm-bindgen = { version = "=0.2.128", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["WebSocket", "MessageEvent", "CloseEvent", "Window", "Location"] }
+console_error_panic_hook = { version = "0.1", optional = true }
+# Not used directly: turns on fontique's dlopen of fontconfig, which the
+# slint crate does not expose. Linked, fontconfig would stop the phone build
+# being static; dlopened, it simply fails there and the embedded glyphs are
+# used. Must match slint's version exactly.
+i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build = "1.18"
+i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

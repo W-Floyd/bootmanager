@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- The browser front end, served by the phone's Remote UI service next to
+     the wasm build (recovery_ui.js, recovery_ui_bg.wasm). Slint draws into
+     the canvas with id "canvas"; src/web.rs connects to ws://<host>/ws. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fogona recovery</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #050706; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { width: 360px; height: 800px; max-height: 100vh; outline: none;
+           box-shadow: 0 0 0 1px #1d2420, 0 12px 40px #000; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="0"></canvas>
+<script type="module">
+  import init from "./recovery_ui.js";
+  await init();
+  document.getElementById("canvas").focus();
+</script>
+</body>
+</html>

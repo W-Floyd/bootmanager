@@ -1,0 +1,268 @@
+// fogona recovery: one screen that is a header, a status line, a list and a
+// key hint. The list is the whole UI -- src/app.rs decides what is in it and
+// what each row does, so the same file serves the phone (three keys, maybe a
+// touchscreen), a desktop window and a browser tab.
+//
+// Sizes are logical pixels; the phone runs at scale factor 2 (720x1600 ->
+// 360x800), which build.rs also bakes into the embedded glyphs.
+
+import "DejaVuSans.ttf";
+import "DejaVuSans-Bold.ttf";
+
+export struct Row {
+    title: string,
+    detail: string,
+    // "nav" (opens a screen), "toggle", "action", "danger", "info"
+    kind: string,
+    on: bool,
+}
+
+global Palette {
+    out property <color> bg: #0c100e;
+    out property <color> panel: #141a17;
+    out property <color> text: #e8efe9;
+    out property <color> dim: #8a9a90;
+    out property <color> accent: #3ec46d;
+    out property <color> select: #1c3325;
+    out property <color> alert: #f0a030;
+    out property <color> danger: #ef5b5b;
+}
+
+component Switch inherits Rectangle {
+    in property <bool> on;
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: on ? Palette.accent : #3a423d;
+    Rectangle {
+        x: on ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #ffffff;
+    }
+}
+
+component MenuList inherits FocusScope {
+    in property <[Row]> rows;
+    in-out property <int> selected;
+    callback activated(int);
+    callback back();
+    callback activity();
+    // Compact rows for screens of plain lines (the log).
+    in property <bool> compact;
+    property <length> row-h: compact ? 30px : 64px;
+
+    public function show-selected() {
+        if (root.selected * root.row-h + flick.content-y < 0) {
+            flick.content-y = -root.selected * root.row-h;
+        } else if ((root.selected + 1) * root.row-h + flick.content-y > flick.height) {
+            flick.content-y = flick.height - (root.selected + 1) * root.row-h;
+        }
+    }
+
+    changed selected => {
+        self.show-selected();
+    }
+
+    // Wrapping at both ends: with only two volume keys, the far end of a
+    // long list is one press away.
+    key-pressed(event) => {
+        root.activity();
+        if (event.text == Key.UpArrow) {
+            root.selected = root.selected <= 0 ? root.rows.length - 1 : root.selected - 1;
+            return accept;
+        }
+        if (event.text == Key.DownArrow) {
+            root.selected = root.selected >= root.rows.length - 1 ? 0 : root.selected + 1;
+            return accept;
+        }
+        if (event.text == Key.Return || event.text == " ") {
+            if (root.rows.length > 0) {
+                root.activated(root.selected);
+            }
+            return accept;
+        }
+        if (event.text == Key.Escape || event.text == Key.Backspace || event.text == Key.LeftArrow) {
+            root.back();
+            return accept;
+        }
+        reject
+    }
+
+    flick := Flickable {
+        content-height: root.rows.length * root.row-h;
+        for row[i] in root.rows: Rectangle {
+            y: i * root.row-h;
+            height: root.row-h;
+            background: i == root.selected ? Palette.select : transparent;
+
+            Rectangle {
+                x: 0;
+                width: 4px;
+                background: i == root.selected ? Palette.accent : transparent;
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: #1d2420;
+            }
+
+            VerticalLayout {
+                x: 18px;
+                width: parent.width - 18px - (row.kind == "toggle" ? 72px : row.kind == "nav" ? 40px : 16px);
+                alignment: center;
+                spacing: 3px;
+                Text {
+                    text: row.title;
+                    font-size: root.compact ? 12px : 17px;
+                    color: row.kind == "danger" ? Palette.danger : row.kind == "info" ? Palette.dim : Palette.text;
+                    overflow: elide;
+                }
+
+                if row.detail != "": Text {
+                    text: row.detail;
+                    font-size: 13px;
+                    color: Palette.dim;
+                    overflow: elide;
+                }
+            }
+
+            if row.kind == "toggle": Switch {
+                x: parent.width - self.width - 18px;
+                y: (parent.height - self.height) / 2;
+                on: row.on;
+            }
+
+            if row.kind == "nav": Text {
+                x: parent.width - 30px;
+                y: (parent.height - self.height) / 2;
+                text: ">";
+                font-size: 17px;
+                color: Palette.dim;
+            }
+
+            TouchArea {
+                clicked => {
+                    root.activity();
+                    root.selected = i;
+                    root.focus();
+                    root.activated(i);
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    preferred-width: 360px;
+    preferred-height: 800px;
+    background: Palette.bg;
+    default-font-family: "DejaVu Sans";
+    title: "fogona recovery";
+
+    in property <string> heading: "Recovery";
+    // Where the backend is, when it is not this device: "remote: host:port".
+    in property <string> origin;
+    in property <bool> compact;
+    in property <string> subheading;
+    in property <string> status;
+    in property <bool> status-alert;
+    in property <string> busy;
+    in property <string> hint: "Vol ▲▼ move  ·  Power select  ·  hold Power: back";
+    in property <[Row]> rows;
+    in-out property <int> selected;
+    callback activated(int);
+    callback back();
+    callback activity();
+
+    forward-focus: list;
+
+    public function scroll-to-selected() {
+        list.show-selected();
+    }
+
+    VerticalLayout {
+        Rectangle {
+            background: Palette.panel;
+            VerticalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 14px;
+                padding-bottom: 12px;
+                spacing: 4px;
+                Text {
+                    text: "postmarketOS  ·  fogona recovery" + (root.origin != "" ? "  ·  " + root.origin : "");
+                    font-size: 12px;
+                    color: Palette.accent;
+                }
+
+                Text {
+                    text: root.heading;
+                    font-size: 22px;
+                    font-weight: 700;
+                    color: Palette.text;
+                    overflow: elide;
+                }
+
+                if root.subheading != "": Text {
+                    text: root.subheading;
+                    font-size: 13px;
+                    color: Palette.dim;
+                    overflow: elide;
+                }
+            }
+        }
+
+        if root.status != "": Rectangle {
+            background: root.status-alert ? #3a2a10 : #1a211d;
+            HorizontalLayout {
+                padding: 12px;
+                padding-left: 18px;
+                Text {
+                    text: root.status;
+                    font-size: 13px;
+                    color: root.status-alert ? Palette.alert : Palette.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        list := MenuList {
+            compact: root.compact;
+            vertical-stretch: 1;
+            rows: root.rows;
+            selected <=> root.selected;
+            activated(i) => { root.activated(i); }
+            back => { root.back(); }
+            activity => { root.activity(); }
+        }
+
+        Rectangle {
+            background: Palette.panel;
+            height: 40px;
+            Text {
+                text: root.hint;
+                font-size: 12px;
+                color: Palette.dim;
+            }
+        }
+    }
+
+    if root.busy != "": Rectangle {
+        background: #000000c8;
+        Text {
+            text: root.busy;
+            font-size: 20px;
+            font-weight: 700;
+            color: Palette.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            width: parent.width - 48px;
+        }
+        // Swallows touches while an action runs.
+        TouchArea { }
+    }
+}

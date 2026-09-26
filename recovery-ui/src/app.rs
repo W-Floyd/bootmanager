@@ -1,0 +1,518 @@
+//! What is on screen and what each row does. Every screen is a list; this
+//! builds the rows from the backend's data and turns an activated row into a
+//! request. The .slint side only draws.
+
+use crate::proto::Client;
+use crate::{AppWindow, Row};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+#[derive(Clone, Debug, PartialEq)]
+enum Screen {
+    Main,
+    Boot,
+    Services,
+    Disks,
+    Files { dev: String, name: String, path: String },
+    Log,
+}
+
+#[derive(Clone)]
+enum Action {
+    Open(Screen),
+    Boot(usize),
+    Service(String, bool),
+    Dir(String),
+    Up,
+    Power(&'static str),
+    Refresh,
+    None,
+}
+
+#[derive(Deserialize, Clone)]
+struct Entry {
+    label: String,
+    detail: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct Service {
+    name: String,
+    title: String,
+    detail: String,
+    running: bool,
+}
+
+#[derive(Deserialize, Clone)]
+struct Disk {
+    dev: String,
+    name: String,
+    fstype: String,
+    size: u64,
+}
+
+#[derive(Deserialize, Clone)]
+struct FileEntry {
+    name: String,
+    dir: bool,
+    #[serde(default)]
+    link: String,
+    size: i64,
+}
+
+#[derive(Deserialize, Clone)]
+struct Listing {
+    path: String,
+    entries: Vec<FileEntry>,
+    truncated: bool,
+}
+
+/// A request in flight or its failure, for screens whose data is loading.
+enum Load<T> {
+    Waiting,
+    Failed(String),
+    Ready(T),
+}
+
+struct State {
+    screen: Screen,
+    stack: Vec<(Screen, i32)>,
+    actions: Vec<Action>,
+    entries: Option<Vec<Entry>>,
+    services: Vec<Service>,
+    disks: Load<Vec<Disk>>,
+    files: Load<Listing>,
+    log: Load<Vec<String>>,
+    countdown: i64,
+    countdown_label: String,
+    error: String,
+    where_: String,
+}
+
+pub struct App {
+    ui: slint::Weak<AppWindow>,
+    pub client: Client,
+    state: RefCell<State>,
+}
+
+fn human_size(n: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < units.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", units[u])
+    }
+}
+
+fn row(title: impl Into<SharedString>, detail: impl Into<SharedString>, kind: &str, on: bool) -> Row {
+    Row { title: title.into(), detail: detail.into(), kind: kind.into(), on }
+}
+
+impl App {
+    /// `where_` names the backend in the header when it is not local, so a
+    /// remote window is never mistaken for the phone's own screen.
+    pub fn new(ui: &AppWindow, where_: &str) -> Rc<App> {
+        let app = Rc::new(App {
+            ui: ui.as_weak(),
+            client: Client::default(),
+            state: RefCell::new(State {
+                screen: Screen::Main,
+                stack: vec![],
+                actions: vec![],
+                entries: None,
+                services: vec![],
+                disks: Load::Waiting,
+                files: Load::Waiting,
+                log: Load::Waiting,
+                countdown: -1,
+                countdown_label: String::new(),
+                error: String::new(),
+                where_: where_.to_string(),
+            }),
+        });
+        let a = Rc::downgrade(&app);
+        ui.on_activated(move |i| {
+            if let Some(a) = a.upgrade() {
+                a.activate(i as usize)
+            }
+        });
+        let a = Rc::downgrade(&app);
+        ui.on_back(move || {
+            if let Some(a) = a.upgrade() {
+                a.back()
+            }
+        });
+        let a = Rc::downgrade(&app);
+        ui.on_activity(move || {
+            if let Some(a) = a.upgrade() {
+                a.activity()
+            }
+        });
+        if !where_.is_empty() {
+            ui.set_origin(format!("remote: {where_}").into());
+        }
+        app.render();
+        app
+    }
+
+    // --- transport hooks ---
+
+    pub fn connected(self: &Rc<Self>, send: Box<dyn Fn(String)>) {
+        self.client.set_sender(Some(send));
+        self.state.borrow_mut().error.clear();
+        self.refresh_boot();
+        self.refresh_services();
+        self.load_screen();
+    }
+
+    pub fn disconnected(self: &Rc<Self>) {
+        self.client.set_sender(None);
+        self.state.borrow_mut().countdown = -1;
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_busy("".into());
+        }
+        self.render();
+    }
+
+    pub fn line(self: &Rc<Self>, line: &str) {
+        let Some((event, data)) = self.client.handle_line(line) else { return };
+        match event.as_str() {
+            "autoboot" => {
+                let mut s = self.state.borrow_mut();
+                s.countdown = data["remaining"].as_i64().unwrap_or(-1);
+                s.countdown_label = data["label"].as_str().unwrap_or("").to_string();
+            }
+            "entries" => self.set_entries(&data),
+            "services" => {
+                if let Ok(v) = serde_json::from_value(data) {
+                    self.state.borrow_mut().services = v;
+                }
+            }
+            "busy" => {
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_busy(data["text"].as_str().unwrap_or("").into());
+                }
+            }
+            "error" => {
+                self.state.borrow_mut().error = data["message"].as_str().unwrap_or("").to_string();
+            }
+            _ => {}
+        }
+        self.render();
+    }
+
+    // --- requests ---
+
+    fn call(self: &Rc<Self>, cmd: &str, args: Value, done: impl FnOnce(&Rc<App>, Result<Value, String>) + 'static) {
+        let weak = Rc::downgrade(self);
+        self.client.call(cmd, args, move |r| {
+            if let Some(a) = weak.upgrade() {
+                done(&a, r);
+                a.render();
+            }
+        });
+    }
+
+    fn set_entries(&self, data: &Value) {
+        if data["scanning"].as_bool() == Some(true) {
+            return;
+        }
+        if let Ok(v) = serde_json::from_value(data["entries"].clone()) {
+            self.state.borrow_mut().entries = Some(v);
+        }
+    }
+
+    fn refresh_boot(self: &Rc<Self>) {
+        self.call("boot.list", json!({}), |a, r| match r {
+            Ok(v) => a.set_entries(&v),
+            Err(e) => a.state.borrow_mut().error = e,
+        });
+    }
+
+    fn refresh_services(self: &Rc<Self>) {
+        self.call("service.list", json!({}), |a, r| {
+            if let Ok(v) = r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                a.state.borrow_mut().services = v;
+            }
+        });
+    }
+
+    fn load_screen(self: &Rc<Self>) {
+        let screen = self.state.borrow().screen.clone();
+        match screen {
+            Screen::Boot => self.refresh_boot(),
+            Screen::Services => self.refresh_services(),
+            Screen::Disks => {
+                self.state.borrow_mut().disks = Load::Waiting;
+                self.call("disk.list", json!({}), |a, r| {
+                    a.state.borrow_mut().disks = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                        Ok(v) => Load::Ready(v),
+                        Err(e) => Load::Failed(e),
+                    };
+                });
+            }
+            Screen::Files { dev, path, .. } => {
+                self.state.borrow_mut().files = Load::Waiting;
+                let want = screen_key(&self.state.borrow().screen);
+                self.call("fs.list", json!({"dev": dev, "path": path}), move |a, r| {
+                    // Ignore a listing for a directory we have already left.
+                    if screen_key(&a.state.borrow().screen) != want {
+                        return;
+                    }
+                    a.state.borrow_mut().files = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                        Ok(v) => Load::Ready(v),
+                        Err(e) => Load::Failed(e),
+                    };
+                });
+            }
+            Screen::Log => {
+                self.state.borrow_mut().log = Load::Waiting;
+                self.call("log.tail", json!({"lines": 300}), |a, r| {
+                    a.state.borrow_mut().log = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                        Ok(v) => Load::Ready(v),
+                        Err(e) => Load::Failed(e),
+                    };
+                });
+            }
+            Screen::Main => {}
+        }
+    }
+
+    // --- input ---
+
+    fn activity(self: &Rc<Self>) {
+        let counting = self.state.borrow().countdown >= 0;
+        if counting {
+            self.state.borrow_mut().countdown = -1;
+            self.call("autoboot.cancel", json!({}), |_, _| {});
+            self.render();
+        }
+    }
+
+    fn open(self: &Rc<Self>, screen: Screen) {
+        let selected = self.ui.upgrade().map(|u| u.get_selected()).unwrap_or(0);
+        {
+            let mut s = self.state.borrow_mut();
+            let prev = std::mem::replace(&mut s.screen, screen);
+            s.stack.push((prev, selected));
+        }
+        self.render_at(0);
+        self.load_screen();
+    }
+
+    fn back(self: &Rc<Self>) {
+        let popped = self.state.borrow_mut().stack.pop();
+        if let Some((screen, selected)) = popped {
+            self.state.borrow_mut().screen = screen;
+            self.render_at(selected);
+            self.load_screen();
+        }
+    }
+
+    fn activate(self: &Rc<Self>, i: usize) {
+        let action = self.state.borrow().actions.get(i).cloned().unwrap_or(Action::None);
+        match action {
+            Action::Open(s) => self.open(s),
+            Action::Boot(i) => {
+                self.call("boot.start", json!({"index": i}), |a, r| {
+                    if let Err(e) = r {
+                        a.state.borrow_mut().error = e;
+                    }
+                });
+            }
+            Action::Service(name, on) => {
+                self.call("service.set", json!({"name": name, "running": on}), |a, r| match r {
+                    Ok(v) => {
+                        if let Ok(v) = serde_json::from_value(v) {
+                            a.state.borrow_mut().services = v;
+                        }
+                    }
+                    Err(e) => a.state.borrow_mut().error = e,
+                });
+            }
+            Action::Dir(name) => {
+                let next = match &self.state.borrow().screen {
+                    Screen::Files { dev, name: part, path } => Some(Screen::Files {
+                        dev: dev.clone(),
+                        name: part.clone(),
+                        path: format!("{}/{}", path.trim_end_matches('/'), name),
+                    }),
+                    _ => None,
+                };
+                if let Some(s) = next {
+                    self.open(s);
+                }
+            }
+            Action::Up => self.back(),
+            Action::Power(what) => {
+                self.call("power", json!({"action": what}), |a, r| {
+                    if let Err(e) = r {
+                        a.state.borrow_mut().error = e;
+                    }
+                });
+            }
+            Action::Refresh => self.load_screen(),
+            Action::None => {}
+        }
+    }
+
+    // --- drawing ---
+
+    fn render_at(&self, selected: i32) {
+        self.render();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_selected(selected);
+            ui.invoke_scroll_to_selected();
+        }
+    }
+
+    pub fn render(&self) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let mut s = self.state.borrow_mut();
+        let (heading, sub, items) = build(&s, self.client.connected());
+        let (rows, actions): (Vec<Row>, Vec<Action>) = items.into_iter().unzip();
+        s.actions = actions;
+
+        let (status, alert) = if !self.client.connected() {
+            (format!("Waiting for the backend{}…", if s.where_.is_empty() { String::new() } else { format!(" at {}", s.where_) }), true)
+        } else if s.countdown >= 0 {
+            (format!("Booting {} in {} s. Press any key to stay.", s.countdown_label, s.countdown), true)
+        } else if !s.error.is_empty() {
+            (s.error.clone(), true)
+        } else {
+            (String::new(), false)
+        };
+
+        let n = rows.len() as i32;
+        ui.set_compact(s.screen == Screen::Log);
+        ui.set_heading(heading.into());
+        ui.set_subheading(sub.into());
+        ui.set_status(status.into());
+        ui.set_status_alert(alert);
+        ui.set_rows(ModelRc::new(VecModel::from(rows)));
+        if ui.get_selected() >= n {
+            ui.set_selected((n - 1).max(0));
+        }
+    }
+}
+
+fn screen_key(s: &Screen) -> String {
+    format!("{s:?}")
+}
+
+fn build(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
+    let mut items = vec![];
+    let sub = String::new();
+    if !connected {
+        return ("Recovery".into(), sub, items);
+    }
+    match &s.screen {
+        Screen::Main => {
+            let boot_detail = match &s.entries {
+                None => "Looking for boot entries…".to_string(),
+                Some(e) if e.is_empty() => "No boot entries found".to_string(),
+                Some(e) => format!("Default: {}", e[0].label),
+            };
+            let svc: Vec<String> = s
+                .services
+                .iter()
+                .map(|v| format!("{} {}", v.title, if v.running { "on" } else { "off" }))
+                .collect();
+            items.push((row("Boot", boot_detail, "nav", false), Action::Open(Screen::Boot)));
+            items.push((row("Services", svc.join("  ·  "), "nav", false), Action::Open(Screen::Services)));
+            if let Some(r) = s.services.iter().find(|v| v.name == "remote" && v.running) {
+                items.push((row("Remote UI is on", r.detail.clone(), "info", false), Action::Open(Screen::Services)));
+            }
+            items.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks)));
+            items.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log)));
+            items.push((row("Reboot", "", "action", false), Action::Power("reboot")));
+            items.push((row("Reboot to bootloader", "ABL fastboot", "action", false), Action::Power("bootloader")));
+            items.push((row("Power off", "", "danger", false), Action::Power("poweroff")));
+            ("Recovery".into(), sub, items)
+        }
+        Screen::Boot => {
+            match &s.entries {
+                None => items.push((row("Scanning…", "", "info", false), Action::None)),
+                Some(e) if e.is_empty() => {
+                    items.push((row("No boot entries", "Nothing on any disk has an extlinux.conf", "info", false), Action::None))
+                }
+                Some(e) => {
+                    for (i, e) in e.iter().enumerate() {
+                        let title = if i == 0 { format!("{}  (default)", e.label) } else { e.label.clone() };
+                        items.push((row(title, e.detail.clone(), "action", false), Action::Boot(i)));
+                    }
+                }
+            }
+            ("Boot".into(), "Load the entry and kexec into it".into(), items)
+        }
+        Screen::Services => {
+            for v in &s.services {
+                items.push((row(v.title.clone(), v.detail.clone(), "toggle", v.running), Action::Service(v.name.clone(), !v.running)));
+            }
+            ("Services".into(), "Power toggles the selected service".into(), items)
+        }
+        Screen::Disks => {
+            match &s.disks {
+                Load::Waiting => items.push((row("Probing…", "", "info", false), Action::None)),
+                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
+                Load::Ready(d) if d.is_empty() => items.push((row("No file systems found", "", "info", false), Action::Refresh)),
+                Load::Ready(d) => {
+                    for d in d {
+                        let title = if d.name.is_empty() { d.dev.clone() } else { format!("{}  ·  {}", d.dev, d.name) };
+                        items.push((
+                            row(title, format!("{}  ·  {}", d.fstype, human_size(d.size)), "nav", false),
+                            Action::Open(Screen::Files { dev: d.dev.clone(), name: d.name.clone(), path: "/".into() }),
+                        ));
+                    }
+                }
+            }
+            ("Partitions".into(), "Mounted read-only, journal untouched".into(), items)
+        }
+        Screen::Files { dev, name, path } => {
+            items.push((row("..", "Up", "nav", false), Action::Up));
+            match &s.files {
+                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
+                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
+                Load::Ready(l) => {
+                    for f in &l.entries {
+                        if f.dir {
+                            items.push((row(format!("{}/", f.name), "", "nav", false), Action::Dir(f.name.clone())));
+                        } else if !f.link.is_empty() {
+                            items.push((row(f.name.clone(), format!("-> {}", f.link), "info", false), Action::None));
+                        } else {
+                            items.push((row(f.name.clone(), human_size(f.size as u64), "info", false), Action::None));
+                        }
+                    }
+                    if l.truncated {
+                        items.push((row("(listing truncated)", "", "info", false), Action::None));
+                    }
+                    let _ = &l.path;
+                }
+            }
+            let heading = if name.is_empty() { dev.clone() } else { name.clone() };
+            (heading, format!("{dev}:{path}"), items)
+        }
+        Screen::Log => {
+            match &s.log {
+                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
+                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
+                Load::Ready(lines) => {
+                    items.push((row("Refresh", "", "action", false), Action::Refresh));
+                    for l in lines.iter().rev() {
+                        items.push((row(l.clone(), "", "info", false), Action::None));
+                    }
+                }
+            }
+            ("Log".into(), "Newest first".into(), items)
+        }
+    }
+}
