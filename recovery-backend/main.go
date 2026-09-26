@@ -112,6 +112,7 @@ func init() {
 		"log.tail":        logTail,
 		"power":           power,
 		"dev.restart":     devRestart,
+		"fs.read":         fsRead,
 	}
 }
 

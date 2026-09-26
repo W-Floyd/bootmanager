@@ -13,6 +13,7 @@ pub fn run() {
     let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
     ui.set_hint("Arrow keys and Enter, Esc for back, or click".into());
     let app = crate::app::App::new(&ui, &host);
+    app.set_url_opener(Box::new(open_url));
     APP.with(|a| *a.borrow_mut() = Some(app));
     connect(format!("ws://{host}/ws"));
     ui.run().expect("run");
@@ -52,6 +53,23 @@ fn connect(url: String) {
     });
     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
     onclose.forget();
+}
+
+/// Views open in a new tab (the server sandboxes them); downloads go
+/// through an `<a download>` click, which leaves this page alone even if
+/// the server answers with an error.
+fn open_url(url: &str, download: bool) {
+    let Some(window) = web_sys::window() else { return };
+    if !download {
+        let _ = window.open_with_url_and_target(url, "_blank");
+        return;
+    }
+    let Some(doc) = window.document() else { return };
+    let Ok(el) = doc.create_element("a") else { return };
+    let a: web_sys::HtmlAnchorElement = el.unchecked_into();
+    a.set_href(&format!("{url}?download=1"));
+    a.set_download(url.rsplit('/').next().unwrap_or("file"));
+    a.click();
 }
 
 fn retry(url: String) {

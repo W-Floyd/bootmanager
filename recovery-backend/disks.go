@@ -144,23 +144,31 @@ func fsList(args []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	mp, err := mountForBrowse(a.Dev)
+	// Through the partition's os.Root (files.go): a symlinked directory on
+	// the card must not list the stage's own files.
+	dir, rel, err := openBrowsed(a.Dev, a.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Clean against "/" so no path climbs out of the mount.
-	rel := path.Clean("/" + a.Path)
-	ents, err := os.ReadDir(filepath.Join(mp, rel))
+	defer dir.Close()
+	ents, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, err
 	}
+	mp, _ := mountForBrowse(a.Dev)
+	root, err := os.OpenRoot(mp)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
 	files := []fileJSON{}
 	for _, e := range ents {
 		f := fileJSON{Name: e.Name(), Dir: e.IsDir()}
-		if info, err := e.Info(); err == nil {
+		p := strings.TrimPrefix(path.Join(rel, e.Name()), "/")
+		if info, err := root.Lstat(p); err == nil {
 			f.Size = info.Size()
 			if info.Mode()&os.ModeSymlink != 0 {
-				f.Link, _ = os.Readlink(filepath.Join(mp, rel, e.Name()))
+				f.Link, _ = root.Readlink(p)
 			}
 		}
 		files = append(files, f)

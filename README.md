@@ -107,6 +107,30 @@ Host window, against a phone whose Remote UI is on:
     cargo run --release --no-default-features --features desktop -- --connect 172.16.42.1:7777
 
 Browser: turn on Remote UI on the phone and open `http://172.16.42.1:8080`.
+The page fills the window and follows resizes.
+
+### Files
+
+In Partitions, tapping a file opens a screen for it. **View** shows the
+start of it (256 KiB) as text in the UI, on the phone as well; binary files
+say so instead. In the browser there are also **Open in a new tab** (text,
+images, PDFs, audio and video render there) and **Download**. Both use
+`GET /files/<dev>/<path>` on the Remote UI port, with `?download=1` for
+an attachment.
+
+This page runs the phone as root (`/ws`, `/dev/`), so a file from the card
+must never run as part of it:
+
+* Every file response carries `Content-Security-Policy: sandbox`, which
+  gives it an opaque origin and no scripts, and `nosniff`.
+* HTML, SVG and XML are served as plain text.
+* Paths resolve through an `os.Root` at the partition's mount point, so
+  neither `..` nor a symlink on the card reaches the stage's own files
+  (`/etc/ssh` holds the host key).
+* The cost: an absolute symlink on the card, such as `/bin/sh ->
+  /bin/busybox`, is refused rather than followed inside the partition.
+  Relative ones work.
+* `fs.list` goes through the same root.
 
 Headless, for layout work in the container: run the backend against a
 directory holding an `extlinux/extlinux.conf`, and have the UI render a PNG
@@ -122,7 +146,8 @@ Requests are `{"id":N,"cmd":C,"args":{...}}` and replies are
 `{"event":E,"data":...}` with `autoboot`, `entries`, `services`, `busy` or
 `error`. The commands are `boot.list`, `boot.start {index}`,
 `autoboot.cancel`, `service.list`, `service.set {name, running}`,
-`disk.list`, `fs.list {dev, path}`, `log.tail {lines}`, `dev.restart {what}` and
+`disk.list`, `fs.list {dev, path}`, `fs.read {dev, path}`, `log.tail {lines}`,
+`dev.restart {what}` and
 `power {action: reboot|bootloader|poweroff}`.
 
 ## Traps

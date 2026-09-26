@@ -8,10 +8,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fogona recovery</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #050706; }
-  body { display: flex; align-items: center; justify-content: center; }
-  canvas { width: 360px; height: 800px; max-height: 100vh; outline: none;
-           box-shadow: 0 0 0 1px #1d2420, 0 12px 40px #000; }
+  /* The canvas fills the window. Slint first sizes the window to its
+     preferred 360x800 and winit writes that into the canvas's inline
+     style; !important keeps this size instead, and winit's ResizeObserver
+     then reports it, so Slint lays out to the real size -- on every later
+     resize too. dvh keeps a mobile browser's collapsing address bar from
+     hiding the bottom. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0c100e; }
+  canvas { display: block; outline: none; touch-action: none;
+           width: 100vw !important; height: 100vh !important;
+           height: 100dvh !important; }
 </style>
 </head>
 <body>

@@ -39,6 +39,7 @@ func webHandler() http.Handler {
 		},
 	})
 	mux.HandleFunc("/dev/", devHandler)
+	mux.HandleFunc("/files/", filesHandler)
 	mux.Handle("/", http.FileServer(webFS()))
 	return mux
 }

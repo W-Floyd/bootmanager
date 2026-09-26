@@ -17,6 +17,10 @@ enum Screen {
     Services,
     Disks,
     Files { dev: String, name: String, path: String },
+    /// One file: what can be done with it.
+    File { dev: String, path: String, size: u64 },
+    /// A file's start, as text.
+    Text { dev: String, path: String },
     Log,
 }
 
@@ -26,6 +30,10 @@ enum Action {
     Boot(usize),
     Service(String, bool),
     Dir(String),
+    /// A file in the current directory: name, size.
+    File(String, u64),
+    /// Hand a URL on this backend to the browser; true to download it.
+    Url(String, bool),
     Up,
     Power(&'static str),
     Refresh,
@@ -70,6 +78,20 @@ struct Listing {
     truncated: bool,
 }
 
+#[derive(Deserialize, Clone)]
+struct TextView {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    binary: bool,
+    size: u64,
+    truncated: bool,
+}
+
+/// Opens a URL on the backend's HTTP server: (path, download). Only the
+/// web build has one; elsewhere the file screen offers the viewer alone.
+pub type UrlOpener = Box<dyn Fn(&str, bool)>;
+
 /// A request in flight or its failure, for screens whose data is loading.
 enum Load<T> {
     Waiting,
@@ -86,6 +108,7 @@ struct State {
     disks: Load<Vec<Disk>>,
     files: Load<Listing>,
     log: Load<Vec<String>>,
+    text: Load<TextView>,
     countdown: i64,
     countdown_label: String,
     error: String,
@@ -96,6 +119,19 @@ pub struct App {
     ui: slint::Weak<AppWindow>,
     pub client: Client,
     state: RefCell<State>,
+    open_url: RefCell<Option<UrlOpener>>,
+}
+
+/// Percent-encodes a partition path for /files/<dev><path>, keeping '/'.
+fn url_path(p: &str) -> String {
+    let mut out = String::new();
+    for b in p.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn human_size(n: u64) -> String {
@@ -133,11 +169,13 @@ impl App {
                 disks: Load::Waiting,
                 files: Load::Waiting,
                 log: Load::Waiting,
+                text: Load::Waiting,
                 countdown: -1,
                 countdown_label: String::new(),
                 error: String::new(),
                 where_: where_.to_string(),
             }),
+            open_url: RefCell::new(None),
         });
         let a = Rc::downgrade(&app);
         ui.on_activated(move |i| {
@@ -162,6 +200,11 @@ impl App {
         }
         app.render();
         app
+    }
+
+    /// Lets the file screen hand files to the browser (web build only).
+    pub fn set_url_opener(&self, open: UrlOpener) {
+        *self.open_url.borrow_mut() = Some(open);
     }
 
     // --- transport hooks ---
@@ -283,7 +326,16 @@ impl App {
                     };
                 });
             }
-            Screen::Main => {}
+            Screen::Text { dev, path } => {
+                self.state.borrow_mut().text = Load::Waiting;
+                self.call("fs.read", json!({"dev": dev, "path": path}), |a, r| {
+                    a.state.borrow_mut().text = match r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())) {
+                        Ok(v) => Load::Ready(v),
+                        Err(e) => Load::Failed(e),
+                    };
+                });
+            }
+            Screen::Main | Screen::File { .. } => {}
         }
     }
 
@@ -360,6 +412,24 @@ impl App {
                     }
                 });
             }
+            Action::File(name, size) => {
+                let next = match &self.state.borrow().screen {
+                    Screen::Files { dev, path, .. } => Some(Screen::File {
+                        dev: dev.clone(),
+                        path: format!("{}/{}", path.trim_end_matches('/'), name),
+                        size,
+                    }),
+                    _ => None,
+                };
+                if let Some(s) = next {
+                    self.open(s);
+                }
+            }
+            Action::Url(url, download) => {
+                if let Some(open) = &*self.open_url.borrow() {
+                    open(&url, download);
+                }
+            }
             Action::Refresh => self.load_screen(),
             Action::None => {}
         }
@@ -378,7 +448,7 @@ impl App {
     pub fn render(&self) {
         let Some(ui) = self.ui.upgrade() else { return };
         let mut s = self.state.borrow_mut();
-        let (heading, sub, items) = build(&s, self.client.connected());
+        let (heading, sub, items) = build(&s, self.client.connected(), self.open_url.borrow().is_some());
         let (rows, actions): (Vec<Row>, Vec<Action>) = items.into_iter().unzip();
         s.actions = actions;
 
@@ -393,7 +463,7 @@ impl App {
         };
 
         let n = rows.len() as i32;
-        ui.set_compact(s.screen == Screen::Log);
+        ui.set_compact(matches!(s.screen, Screen::Log | Screen::Text { .. }));
         ui.set_heading(heading.into());
         ui.set_subheading(sub.into());
         ui.set_status(status.into());
@@ -412,15 +482,15 @@ fn screen_key(s: &Screen) -> String {
 /// Every screen but the main one starts with a Back row: with three keys,
 /// an item is easier to find than a long press. `open` selects the row
 /// after it, so a stray Power press does not leave the screen.
-fn build(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
-    let (heading, sub, mut items) = build_screen(s, connected);
+fn build(s: &State, connected: bool, web: bool) -> (String, String, Vec<(Row, Action)>) {
+    let (heading, sub, mut items) = build_screen(s, connected, web);
     if connected && s.screen != Screen::Main {
         items.insert(0, (row("< Back", "", "back", false), Action::Up));
     }
     (heading, sub, items)
 }
 
-fn build_screen(s: &State, connected: bool) -> (String, String, Vec<(Row, Action)>) {
+fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(Row, Action)>) {
     let mut items = vec![];
     let sub = String::new();
     if !connected {
@@ -499,7 +569,10 @@ fn build_screen(s: &State, connected: bool) -> (String, String, Vec<(Row, Action
                         } else if !f.link.is_empty() {
                             items.push((row(f.name.clone(), format!("-> {}", f.link), "info", false), Action::None));
                         } else {
-                            items.push((row(f.name.clone(), human_size(f.size as u64), "info", false), Action::None));
+                            items.push((
+                                row(f.name.clone(), human_size(f.size as u64), "nav", false),
+                                Action::File(f.name.clone(), f.size.max(0) as u64),
+                            ));
                         }
                     }
                     if l.truncated {
@@ -510,6 +583,38 @@ fn build_screen(s: &State, connected: bool) -> (String, String, Vec<(Row, Action
             }
             let heading = if name.is_empty() { dev.clone() } else { name.clone() };
             (heading, format!("{dev}:{path}"), items)
+        }
+        Screen::File { dev, path, size } => {
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            items.push((row("View", "The start of it, as text", "nav", false), Action::Open(Screen::Text { dev: dev.clone(), path: path.clone() })));
+            if web {
+                let url = format!("/files/{dev}{}", url_path(path));
+                items.push((row("Open in a new tab", "Text, images and PDFs show in the browser", "action", false), Action::Url(url.clone(), false)));
+                items.push((row("Download", human_size(*size), "action", false), Action::Url(url, true)));
+            } else {
+                items.push((row(human_size(*size), "Download it from the browser UI (Remote UI)", "info", false), Action::None));
+            }
+            (name, format!("{dev}:{path}"), items)
+        }
+        Screen::Text { dev, path } => {
+            match &s.text {
+                Load::Waiting => items.push((row("Reading…", "", "info", false), Action::None)),
+                Load::Failed(e) => items.push((row("Failed", e.clone(), "info", false), Action::Refresh)),
+                Load::Ready(t) if t.binary => {
+                    items.push((row(format!("Binary, {}", human_size(t.size)), "Not shown as text", "info", false), Action::None))
+                }
+                Load::Ready(t) => {
+                    // Tabs as spaces: the list draws one line per row, no tab stops.
+                    for l in t.text.lines().take(5000) {
+                        items.push((row(l.replace('\t', "    "), "", "info", false), Action::None));
+                    }
+                    if t.truncated {
+                        items.push((row(format!("(first {} of {})", human_size(t.text.len() as u64), human_size(t.size)), "", "info", false), Action::None));
+                    }
+                }
+            }
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            (name, format!("{dev}:{path}"), items)
         }
         Screen::Log => {
             match &s.log {

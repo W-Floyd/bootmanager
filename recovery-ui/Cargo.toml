@@ -32,7 +32,7 @@ libc = { version = "0.2", optional = true }
 png = { version = "0.17", optional = true }
 # Pinned to the wasm-bindgen CLI Alpine ships; the two must match exactly.
 wasm-bindgen = { version = "=0.2.128", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["WebSocket", "MessageEvent", "CloseEvent", "Window", "Location"] }
+web-sys = { version = "0.3", optional = true, features = ["WebSocket", "MessageEvent", "CloseEvent", "Window", "Location", "Document", "Element", "HtmlElement", "HtmlAnchorElement"] }
 console_error_panic_hook = { version = "0.1", optional = true }
 # Not used directly: turns on fontique's dlopen of fontconfig, which the
 # slint crate does not expose. Linked, fontconfig would stop the phone build
