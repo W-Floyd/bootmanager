@@ -138,6 +138,9 @@ pub struct App {
     /// Lay out around the panel's cutout and corners (display.info): only
     /// when drawing on the phone's own panel.
     panel_shape: Cell<bool>,
+    /// The web build's URL sync (set_route_listener) and the last route told.
+    on_route: RefCell<Option<Box<dyn Fn(&str)>>>,
+    last_route: RefCell<String>,
 }
 
 /// Percent-encodes a partition path for /files/<dev><path>, keeping '/'.
@@ -198,6 +201,8 @@ impl App {
             }),
             open_url: RefCell::new(None),
             panel_shape: Cell::new(false),
+            on_route: RefCell::new(None),
+            last_route: RefCell::new("/".into()),
         });
         let a = Rc::downgrade(&app);
         ui.on_activated(move |i| {
@@ -578,7 +583,118 @@ impl App {
         if ui.get_selected() >= n {
             ui.set_selected((n - 1).max(0));
         }
+
+        let route = route_of(&s.screen);
+        drop(s);
+        if *self.last_route.borrow() != route {
+            *self.last_route.borrow_mut() = route.clone();
+            if let Some(f) = &*self.on_route.borrow() {
+                f(&route);
+            }
+        }
     }
+
+    // --- routes: the screen as a URL path, for the web build ---
+
+    /// Called with the new route whenever the screen changes.
+    pub fn set_route_listener(&self, f: Box<dyn Fn(&str)>) {
+        *self.on_route.borrow_mut() = Some(f);
+    }
+
+    /// Goes to the screen a route names, with the Back stack its path
+    /// implies (a directory's parents, then the file), and loads it. An
+    /// unknown route is the main screen.
+    pub fn navigate_to(self: &Rc<Self>, route: &str) {
+        let (stack, screen) = screens_of(route);
+        let selected = if screen == Screen::Main { 0 } else { 1 };
+        {
+            let mut s = self.state.borrow_mut();
+            s.stack = stack.into_iter().map(|sc| (sc, 1)).collect();
+            if let Some(first) = s.stack.first_mut() {
+                first.1 = 0;
+            }
+            s.screen = screen;
+        }
+        // The listener must not echo this back as a new history entry.
+        *self.last_route.borrow_mut() = route_of(&self.state.borrow().screen);
+        self.render_at(selected);
+        self.load_screen();
+    }
+}
+
+/// The screen's URL path. Directories and files are percent-encoded.
+fn route_of(s: &Screen) -> String {
+    match s {
+        Screen::Main => "/".into(),
+        Screen::Boot => "/boot".into(),
+        Screen::Services => "/services".into(),
+        Screen::Disks => "/partitions".into(),
+        Screen::Log => "/log".into(),
+        Screen::Files { dev, path, .. } => {
+            format!("/partitions/{dev}{}", url_path(path.trim_end_matches('/')))
+        }
+        Screen::File { dev, path, .. } => format!("/file/{dev}{}", url_path(path)),
+        Screen::Text { dev, path } => format!("/text/{dev}{}", url_path(path)),
+    }
+}
+
+/// A route's screen and the stack of screens Back walks from it.
+fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
+    let route = url_unpath(route);
+    let parts: Vec<&str> = route.split('/').filter(|p| !p.is_empty()).collect();
+    let dir_stack = |dev: &str, dirs: &[&str]| {
+        let mut st = vec![Screen::Main, Screen::Disks];
+        let mut p = String::new();
+        st.push(Screen::Files { dev: dev.into(), name: String::new(), path: "/".into() });
+        for d in dirs {
+            p.push('/');
+            p.push_str(d);
+            st.push(Screen::Files { dev: dev.into(), name: String::new(), path: p.clone() });
+        }
+        st
+    };
+    match parts.as_slice() {
+        ["boot"] => (vec![Screen::Main], Screen::Boot),
+        ["services"] => (vec![Screen::Main], Screen::Services),
+        ["log"] => (vec![Screen::Main], Screen::Log),
+        ["partitions"] => (vec![Screen::Main], Screen::Disks),
+        ["partitions", dev, rest @ ..] => {
+            let mut st = dir_stack(dev, rest);
+            let screen = st.pop().unwrap();
+            (st, screen)
+        }
+        [kind @ ("file" | "text"), dev, rest @ ..] if !rest.is_empty() => {
+            let path = format!("/{}", rest.join("/"));
+            let mut st = dir_stack(dev, &rest[..rest.len() - 1]);
+            let file = Screen::File { dev: dev.to_string(), path: path.clone(), size: 0 };
+            if *kind == "file" {
+                (st, file)
+            } else {
+                st.push(file);
+                (st, Screen::Text { dev: dev.to_string(), path })
+            }
+        }
+        _ => (vec![], Screen::Main),
+    }
+}
+
+/// Undoes url_path's percent-encoding.
+fn url_unpath(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn thumb_key(dev: &str, path: &str) -> String {
@@ -727,7 +843,9 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
                     Action::Url(url.clone(), UrlMode::Preview),
                 ));
                 items.push((row("Open in a new tab", "", "action", false), Action::Url(url.clone(), UrlMode::Tab)));
-                items.push((row("Download", human_size(*size), "action", false), Action::Url(url, UrlMode::Download)));
+                // A deep-linked file screen has no size (it comes from the listing).
+                let size = if *size > 0 { human_size(*size) } else { String::new() };
+                items.push((row("Download", size, "action", false), Action::Url(url, UrlMode::Download)));
                 items.push(text);
             } else {
                 items.push(text);
@@ -768,5 +886,42 @@ fn build_screen(s: &State, connected: bool, web: bool) -> (String, String, Vec<(
             }
             ("Log".into(), "Newest first".into(), items)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(dev: &str, path: &str) -> Screen {
+        Screen::Files { dev: dev.into(), name: String::new(), path: path.into() }
+    }
+
+    #[test]
+    fn routes_round_trip() {
+        let d = "mmcblk0p2";
+        for (route, stack_len, screen) in [
+            ("/", 0, Screen::Main),
+            ("/boot", 1, Screen::Boot),
+            ("/partitions", 1, Screen::Disks),
+            ("/partitions/mmcblk0p2", 2, files(d, "/")),
+            ("/partitions/mmcblk0p2/usr/share", 4, files(d, "/usr/share")),
+            ("/file/mmcblk0p2/etc/os-release", 4, Screen::File { dev: d.into(), path: "/etc/os-release".into(), size: 0 }),
+            ("/text/mmcblk0p2/etc/os-release", 5, Screen::Text { dev: d.into(), path: "/etc/os-release".into() }),
+            ("/file/mmcblk0p2/my%20photo%20%C3%A9.jpg", 3, Screen::File { dev: d.into(), path: "/my photo é.jpg".into(), size: 0 }),
+        ] {
+            let (stack, got) = screens_of(route);
+            assert_eq!(got, screen, "{route}");
+            assert_eq!(stack.len(), stack_len, "{route}: {stack:?}");
+            assert_eq!(route_of(&got), route, "{route} back to a route");
+        }
+        // The stack under a file is its directories, parent last.
+        let (stack, _) = screens_of("/text/mmcblk0p2/a/b/c.txt");
+        assert_eq!(stack[3], files(d, "/a"));
+        assert_eq!(stack[4], files(d, "/a/b"));
+        assert!(matches!(stack[5], Screen::File { .. }));
+        // Anything else is the main screen.
+        assert_eq!(screens_of("/nope/x").1, Screen::Main);
+        assert_eq!(screens_of("/file/mmcblk0p2").1, Screen::Main);
     }
 }

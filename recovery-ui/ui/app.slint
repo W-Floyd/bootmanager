@@ -98,7 +98,9 @@ component MenuList inherits FocusScope {
         for row[i] in root.rows: Rectangle {
             y: i * root.row-h;
             height: root.row-h;
-            background: ta.pressed ? #2a4a36 : i == root.selected ? Palette.select : transparent;
+            // Pressed, then selected, then hovered (a mouse or trackpad; a
+            // finger hovers only while down, and the platform ends it on lift).
+            background: ta.pressed ? #2a4a36 : i == root.selected ? Palette.select : ta.has-hover ? #16231b : transparent;
 
             Rectangle {
                 x: 0;
@@ -156,6 +158,7 @@ component MenuList inherits FocusScope {
             }
 
             ta := TouchArea {
+                mouse-cursor: row.kind == "info" ? MouseCursor.default : MouseCursor.pointer;
                 clicked => {
                     root.activity();
                     root.selected = i;

@@ -15,9 +15,32 @@ pub fn run() {
     ui.set_hint("Arrow keys and Enter, Esc for back, or click".into());
     let app = crate::app::App::new(&ui, &host);
     app.set_url_opener(Box::new(open_url));
+    sync_url(&app);
     APP.with(|a| *a.borrow_mut() = Some(app));
     connect(format!("ws://{host}/ws"));
     ui.run().expect("run");
+}
+
+/// The screen is the URL path (app.rs, route_of): each screen change is a
+/// history entry, so the browser's Back and Forward walk what was visited;
+/// a loaded or reloaded URL opens its screen, Back stack included; and the
+/// server answers any such path with this page.
+fn sync_url(app: &std::rc::Rc<crate::app::App>) {
+    let Some(window) = web_sys::window() else { return };
+    let path = || web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default();
+
+    if let Ok(history) = window.history() {
+        app.set_route_listener(Box::new(move |route| {
+            if path() != route {
+                let _ = history.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(route));
+            }
+        }));
+    }
+    app.navigate_to(&path());
+
+    let onpop = Closure::<dyn FnMut()>::new(move || with_app(|a| a.navigate_to(&path())));
+    let _ = window.add_event_listener_with_callback("popstate", onpop.as_ref().unchecked_ref());
+    onpop.forget();
 }
 
 fn connect(url: String) {

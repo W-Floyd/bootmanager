@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 
 	"golang.org/x/net/websocket"
@@ -40,6 +41,28 @@ func webHandler() http.Handler {
 	})
 	mux.HandleFunc("/dev/", devHandler)
 	mux.HandleFunc("/files/", filesHandler)
-	mux.Handle("/", http.FileServer(webFS()))
+	mux.Handle("/", pageFallback(webFS()))
 	return mux
+}
+
+// pageFallback serves the web build's files, and the page itself for any
+// other path: the UI keeps its screen in the URL (/partitions/mmcblk0p2/usr,
+// /file/..., /boot), so a reload or a pasted link has to load the page,
+// which then opens that screen. /ws, /dev/ and /files/ have their own
+// routes and never get here.
+func pageFallback(fsys http.FileSystem) http.Handler {
+	files := http.FileServer(fsys)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f, err := fsys.Open(path.Clean(r.URL.Path)); err == nil {
+			st, err := f.Stat()
+			f.Close()
+			if err == nil && !st.IsDir() {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		files.ServeHTTP(w, r2)
+	})
 }

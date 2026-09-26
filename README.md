@@ -130,7 +130,12 @@ Host window, against a phone whose Remote UI is on:
     cargo run --release --no-default-features --features desktop -- --connect 172.16.42.1:7777
 
 Browser: turn on Remote UI on the phone and open `http://172.16.42.1:8080`.
-The page fills the window and follows resizes.
+The page fills the window and follows resizes. The screen is in the URL
+(`/boot`, `/partitions/mmcblk0p2/usr/share`, `/file/<dev>/<path>`,
+`/text/<dev>/<path>`). Each screen change is a history entry, so the
+browser's Back and Forward walk what you visited. A reloaded or pasted
+link opens its screen with its Back stack, and the server answers any such
+path with the page. Rows tint on hover.
 
 ### Files
 

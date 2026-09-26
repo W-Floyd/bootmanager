@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fogona recovery</title>
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   /* The canvas fills the window. Slint first sizes the window to its
      preferred 360x800 and winit writes that into the canvas's inline
@@ -63,7 +63,8 @@
     }
   }, true);
 
-  import init from "./recovery_ui.js";
+  // Absolute: the page is also served at deep paths (/partitions/...).
+  import init from "/recovery_ui.js";
   await init();
   document.getElementById("canvas").focus();
 </script>
