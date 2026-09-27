@@ -308,6 +308,59 @@ pub enum Target {
     Memory,
 }
 
+/// Frame timings, logged once a second while frames are drawn: where a slow
+/// UI spends its time, and on which CPU at what clock.
+struct Timing {
+    since: Instant,
+    frames: u32,
+    render: Duration,
+    render_max: Duration,
+    present: Duration,
+    present_max: Duration,
+    damaged: u64,
+}
+
+impl Timing {
+    fn new() -> Timing {
+        Timing {
+            since: Instant::now(),
+            frames: 0,
+            render: Duration::ZERO,
+            render_max: Duration::ZERO,
+            present: Duration::ZERO,
+            present_max: Duration::ZERO,
+            damaged: 0,
+        }
+    }
+
+    fn add(&mut self, render: Duration, present: Duration, damaged: u64, screen: u64) {
+        self.frames += 1;
+        self.render += render;
+        self.render_max = self.render_max.max(render);
+        self.present += present;
+        self.present_max = self.present_max.max(present);
+        self.damaged += damaged;
+        let span = self.since.elapsed();
+        if span < Duration::from_secs(1) {
+            return;
+        }
+        let n = self.frames;
+        let cpu = unsafe { libc::sched_getcpu() };
+        let khz = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")).unwrap_or_default();
+        eprintln!(
+            "bootmanager-ui: timing {n} frames in {} ms: render avg {} max {} us, present avg {} max {} us, damaged avg {}%, cpu{cpu} {} MHz",
+            span.as_millis(),
+            (self.render / n).as_micros(),
+            self.render_max.as_micros(),
+            (self.present / n).as_micros(),
+            self.present_max.as_micros(),
+            self.damaged * 100 / (n as u64 * screen.max(1)),
+            khz.trim().parse::<u64>().map_or(0, |k| k / 1000),
+        );
+        *self = Timing::new();
+    }
+}
+
 pub struct FbPlatform {
     window: Rc<MinimalSoftwareWindow>,
     target: Target,
@@ -315,6 +368,8 @@ pub struct FbPlatform {
     shared: Arc<Shared>,
     wake: UnixStream,
     start: Instant,
+    /// Set in a dev stage (/etc/bootmanager/dev).
+    timing: Option<RefCell<Timing>>,
 }
 
 impl FbPlatform {
@@ -338,6 +393,7 @@ impl FbPlatform {
             shared: Arc::new(Shared { queue: Mutex::default(), wake: wake_w, quit: AtomicBool::new(false) }),
             wake,
             start: Instant::now(),
+            timing: std::path::Path::new("/etc/bootmanager/dev").exists().then(|| RefCell::new(Timing::new())),
         })
     }
 
@@ -378,10 +434,15 @@ impl FbPlatform {
             } else {
                 renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);
             }
+            let t0 = Instant::now();
             let region = renderer.render(&mut frame.px, w);
+            let t1 = Instant::now();
+            let (o, s) = (region.bounding_box_origin(), region.bounding_box_size());
             if let Target::Fb(fb) = &self.target {
-                let (o, s) = (region.bounding_box_origin(), region.bounding_box_size());
                 fb.present(&frame, o.x.max(0) as usize, o.y.max(0) as usize, s.width as usize, s.height as usize);
+            }
+            if let Some(t) = &self.timing {
+                t.borrow_mut().add(t1 - t0, t1.elapsed(), s.width as u64 * s.height as u64, (w * h) as u64);
             }
         });
     }
