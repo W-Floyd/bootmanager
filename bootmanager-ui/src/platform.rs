@@ -231,6 +231,38 @@ impl Fb {
     }
 }
 
+/// Keep this process on the CPUs with the highest cpu_capacity, where the
+/// big.LITTLE SoCs have them: the scheduler otherwise starts a frame after
+/// an idle spell on a little core, a hitch of several frames at the start
+/// of every swipe. Nothing changes where all CPUs are alike.
+pub fn pin_to_fastest_cpus() {
+    let cap: Vec<(usize, u32)> = (0..libc::CPU_SETSIZE as usize)
+        .map_while(|i| {
+            let d = format!("/sys/devices/system/cpu/cpu{i}");
+            std::path::Path::new(&d).exists().then(|| {
+                let c = std::fs::read_to_string(format!("{d}/cpu_capacity")).ok().and_then(|s| s.trim().parse().ok());
+                (i, c.unwrap_or(0))
+            })
+        })
+        .collect();
+    let max = cap.iter().map(|&(_, c)| c).max().unwrap_or(0);
+    if max == 0 || cap.iter().all(|&(_, c)| c == max) {
+        return;
+    }
+    let fast: Vec<usize> = cap.iter().filter(|&&(_, c)| c == max).map(|&(i, _)| i).collect();
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        for &i in &fast {
+            libc::CPU_SET(i, &mut set);
+        }
+        if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
+            eprintln!("bootmanager-ui: pinning to cpus {fast:?}: {}", std::io::Error::last_os_error());
+            return;
+        }
+    }
+    eprintln!("bootmanager-ui: pinned to cpus {fast:?} (capacity {max})");
+}
+
 // --- evdev ---
 
 const LONG_PRESS: Duration = Duration::from_millis(600);

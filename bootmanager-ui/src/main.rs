@@ -12,7 +12,7 @@
 //!         filmstrips of an animation: tick,shot,tick,shot,...)
 
 use bootmanager_ui::app::{App, Mode};
-use bootmanager_ui::platform::{Fb, FbPlatform, Frame, Target};
+use bootmanager_ui::platform::{self, Fb, FbPlatform, Frame, Target};
 use bootmanager_ui::{transport, AppWindow};
 use slint::ComponentHandle;
 use std::cell::RefCell;
@@ -48,6 +48,9 @@ fn main() {
             std::process::exit(1)
         })),
     };
+    if let Target::Fb(_) = target {
+        platform::pin_to_fastest_cpus();
+    }
     let mode = match &target {
         Target::Fb(f) => Mode::Panel { fb_width_mm: f.width_mm },
         Target::Memory => Mode::Headless,
