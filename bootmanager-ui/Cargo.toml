@@ -45,7 +45,10 @@ slint-build = "1.18"
 i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }
 
 [profile.release]
-opt-level = "s"
+# Not "s": the software renderer's per-pixel loops need inlining and
+# vectorising. 3 renders the carousel about 20% faster on the device and
+# presents in half the time, for 0.8 MB more binary.
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
