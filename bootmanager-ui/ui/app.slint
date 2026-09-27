@@ -78,6 +78,7 @@ export component AppWindow inherits Window {
     in-out property <int> selected;
     callback activated(int);
     callback back();
+    callback close-menu();
     callback activity();
 
     forward-focus: carousel;
@@ -223,11 +224,24 @@ export component AppWindow inherits Window {
 
     // --- the menu, sliding up over the carousel ---
 
-    // A sheet, tinted like the backdrop, its top corners rounded.
+    // A sheet, tinted like the backdrop, its top corners rounded, that
+    // the grip and heading drag down.
+    property <length> sheet-y: root.menu-open ? root.cutout-h / 2 : root.height;
+    animate sheet-y { duration: 450ms; easing: root.menu-open ? ease-out-quint : ease-in-out; }
+    property <length> pull;
+    // Only a pull let go short of closing eases back; a closing one stays
+    // put so the sheet slides on from where it was dropped.
+    property <bool> spring;
+    animate pull { duration: root.spring ? 300ms : 0ms; easing: ease-out; }
+    changed menu-open => {
+        if (root.menu-open) {
+            root.spring = false;
+            root.pull = 0;
+        }
+    }
     sheet := Rectangle {
-        y: root.menu-open ? root.cutout-h / 2 : root.height;
+        y: root.sheet-y + root.pull;
         height: root.height - root.cutout-h / 2;
-        animate y { duration: 450ms; easing: root.menu-open ? ease-out-quint : ease-in-out; }
         border-top-left-radius: 22px;
         border-top-right-radius: 22px;
         background: root.tint.mix(#0c0d14, 0.1);
@@ -241,7 +255,7 @@ export component AppWindow inherits Window {
         }
 
         VerticalLayout {
-            Rectangle {
+            head := Rectangle {
                 // Its content's height, no more.
                 vertical-stretch: 0;
                 VerticalLayout {
@@ -297,6 +311,34 @@ export component AppWindow inherits Window {
                     font-size: 12px;
                     color: Palette.dim;
                 }
+            }
+        }
+
+        // Over the heading only, so the list below still scrolls.
+        SwipeGestureHandler {
+            y: 0;
+            height: head.height;
+            handle-swipe-down: true;
+            // It sees only what a child would get: with none, nothing.
+            TouchArea { }
+            moved => {
+                root.activity();
+                root.spring = false;
+                // Positions are the handler's, and it moves with the sheet:
+                // add the pull it has already moved by.
+                root.pull = max(0, root.pull + self.current-position.y - self.pressed-position.y);
+            }
+            swiped => {
+                if (root.pull > root.height / 4) {
+                    root.close-menu();
+                } else {
+                    root.spring = true;
+                    root.pull = 0;
+                }
+            }
+            cancelled => {
+                root.spring = true;
+                root.pull = 0;
             }
         }
     }

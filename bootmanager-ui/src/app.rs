@@ -137,6 +137,7 @@ impl App {
             }
         };
         ui.on_back(on(|a| a.back()));
+        ui.on_close_menu(on(|a| a.close_menu()));
         ui.on_activity(on(|a| a.activity()));
         ui.on_open_menu(on(|a| a.open_menu()));
         let weak = Rc::downgrade(&app);
