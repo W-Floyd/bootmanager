@@ -10,6 +10,7 @@ import "DejaVuSans-Bold.ttf";
 import { Palette, Card, Row } from "theme.slint";
 import { MenuList } from "menu.slint";
 import { Carousel } from "carousel.slint";
+import { Splash } from "splash.slint";
 
 export { Card, Row }
 
@@ -111,21 +112,12 @@ export component AppWindow inherits Window {
         background: @linear-gradient(170deg, root.tint.mix(#10121c, 0.35) 0%, root.tint.mix(#0b0c14, 0.12) 50%, #07080c 100%);
     }
 
-    // The splash: the power mark (web/favicon.svg's), until the entrance.
-    Path {
-        width: 96px;
-        height: 96px;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        viewbox-width: 100;
-        viewbox-height: 100;
-        commands: "M 32 22 A 36 36 0 1 0 68 22 M 50 10 L 50 50";
-        stroke: #ffffffd8;
-        stroke-width: 9px;
-        stroke-line-cap: round;
-        opacity: root.revealed ? 0 : 1;
-        animate opacity { duration: 300ms; }
-        visible: self.opacity > 0;
+    // The splash until the entrance; gone once faded, so its animation
+    // stops asking for frames.
+    property <float> splash-o: root.revealed ? 0 : 1;
+    animate splash-o { duration: 500ms; }
+    if root.splash-o > 0: Splash {
+        opacity: root.splash-o;
     }
 
     // Behind everything: a touch anywhere stops the autoboot.

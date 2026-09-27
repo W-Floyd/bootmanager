@@ -1,0 +1,94 @@
+// The splash while the stage sets up: waves of overlapping circles, each
+// scallop rimmed by a lighter crescent, drifting and bobbing; and a
+// spinner of tapering crescent rings. Circles are what the software renderer fills
+// fastest (a span a row), and all of it is opaque, so nothing blends.
+
+export component Splash inherits Rectangle {
+    background: #06120b;
+
+    property <duration> tick: animation-tick();
+    // The waves move 30 times a second, each move repainting the screen;
+    // the comets, a small patch, every frame.
+    property <float> t: floor(root.tick / 33ms) * 0.033;
+
+    property <int> rows: 11;
+    property <length> gap: root.height / root.rows;
+    for r in root.rows + 1: row := Rectangle {
+        // 0 at the top, 1 at the bottom: deeper, lighter green.
+        property <float> k: r / root.rows;
+        property <color> tone: #1a5532.mix(#081a0f, self.k);
+        property <color> rim: self.tone.brighter(0.45);
+        property <length> rad: root.width * (0.10 + 0.035 * mod(r * 5, 3));
+        property <length> step: self.rad * 1.55;
+        property <length> base: r * root.gap;
+        // Alternate rows drift opposite ways, slower towards the top.
+        property <float> drift: root.t * (8 + 10 * self.k) * (mod(r, 2) == 0 ? 1 : -1);
+        property <float> shift: mod(mod(self.drift, self.step / 1px) + self.step / 1px, self.step / 1px);
+        // Below the scallops, down to the next row's.
+        Rectangle {
+            y: parent.base;
+            height: root.height - self.y;
+            background: parent.tone;
+        }
+        for i in 10: cell := Rectangle {
+            property <length> cx: (i - 1) * parent.step + parent.shift * 1px;
+            // Bob by position, not index, so the loop at a step is seamless.
+            property <length> bob: parent.rad * 0.14 * sin((root.t * 70 + self.cx / 1px * 1.3 + r * 40) * 1deg);
+            // The rim: the same circle a little higher, under it.
+            Rectangle {
+                x: cell.cx - row.rad;
+                y: row.base - row.rad * 0.55 + cell.bob - 3px;
+                width: row.rad * 2;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: row.rim;
+            }
+            Rectangle {
+                x: cell.cx - row.rad;
+                y: row.base - row.rad * 0.55 + cell.bob;
+                width: row.rad * 2;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: row.tone;
+            }
+        }
+    }
+
+    // The spinner: three thin rings, each a crescent tapering from full
+    // width to nothing, turning at their own pace and direction, easing in
+    // and out. A ring is a disc with a disc of the waves' colour there over
+    // it, off centre by nearly the difference: opaque circles only.
+    property <duration> spin: animation-tick();
+    property <float> lap: root.spin / 1800ms * 360;
+    // The middle row's green (the rows' mix at 5/11), behind the rings.
+    property <color> core: #10351f;
+    property <length> cx: root.width / 2;
+    property <length> cy: root.height / 2;
+    for ring in [
+        { r: 40px, w: 4px, turn: -0.45, ease: 30, lit: #2a9d58 },
+        { r: 30px, w: 3.5px, turn: 0.8, ease: 40, lit: #7fe0a3 },
+        { r: 20px, w: 3px, turn: 1.35, ease: 50, lit: #eafff2 },
+    ]: Rectangle {
+        property <float> a: root.lap * ring.turn;
+        property <angle> at: (self.a + ring.ease * sin(self.a * 1deg)) * 1deg;
+        // Inside the lit disc everywhere, touching it on the far side.
+        property <length> dark: ring.r - ring.w / 2 - 0.5px;
+        property <length> off: ring.w / 2;
+        Rectangle {
+            x: root.cx - ring.r;
+            y: root.cy - ring.r;
+            width: ring.r * 2;
+            height: ring.r * 2;
+            border-radius: ring.r;
+            background: ring.lit;
+        }
+        Rectangle {
+            x: root.cx - parent.dark - cos(parent.at) * parent.off;
+            y: root.cy - parent.dark - sin(parent.at) * parent.off;
+            width: parent.dark * 2;
+            height: parent.dark * 2;
+            border-radius: parent.dark;
+            background: root.core;
+        }
+    }
+}
