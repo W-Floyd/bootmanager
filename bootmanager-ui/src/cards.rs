@@ -1,0 +1,102 @@
+//! The carousel's cards: a boot entry's look, guessed from its label and
+//! command line, and the menu's card after them.
+
+use crate::proto::Entry;
+use crate::Card;
+use slint::Color;
+
+struct Look {
+    tag: &'static str,
+    icon: &'static str,
+    a: u32,
+    b: u32,
+}
+
+// Matched in order against the words of the label and command line,
+// lowercased, as prefixes ("lineage" finds "lineageos"); the first match
+// wins.
+const LOOKS: &[(&[&str], Look)] = &[
+    (&["recovery", "twrp", "rescue", "fallback"], Look { tag: "RECOVERY", icon: "recovery", a: 0xf0a030, b: 0x8a3a12 }),
+    (&["postmarketos", "pmos"], Look { tag: "POSTMARKETOS", icon: "pmos", a: 0x2fbf71, b: 0x0b4a5c }),
+    (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0b5a45 }),
+    (&["ubuntu"], Look { tag: "UBUNTU", icon: "linux", a: 0xe95420, b: 0x5a1f3f }),
+    (&["debian", "mobian"], Look { tag: "DEBIAN", icon: "linux", a: 0xd70a53, b: 0x4a0a2c }),
+    (&["fedora"], Look { tag: "FEDORA", icon: "linux", a: 0x3c6eb4, b: 0x1b2a55 }),
+    (&["arch"], Look { tag: "ARCH", icon: "linux", a: 0x1793d1, b: 0x0a3550 }),
+    (&["alpine"], Look { tag: "ALPINE", icon: "linux", a: 0x2a8fc4, b: 0x0a2f4a }),
+    (&["nixos"], Look { tag: "NIXOS", icon: "linux", a: 0x7ebae4, b: 0x2c3f86 }),
+];
+
+// Any other entry with a command line is Linux (u-root finds Linux images).
+const LINUX: Look = Look { tag: "LINUX", icon: "linux", a: 0xf7b733, b: 0x7a2e10 };
+const OTHER: Look = Look { tag: "SYSTEM", icon: "layers", a: 0x8a7cf0, b: 0x2a2466 };
+const MENU: Look = Look { tag: "MENU", icon: "gear", a: 0x6a6f9e, b: 0x1c1d30 };
+
+fn look(e: &Entry) -> &'static Look {
+    let text = format!("{} {}", e.label, e.detail).to_lowercase();
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let found = LOOKS.iter().find(|(keys, _)| keys.iter().any(|k| words.iter().any(|w| w.starts_with(k))));
+    match found {
+        Some((_, l)) => l,
+        None if !e.detail.is_empty() => &LINUX,
+        None => &OTHER,
+    }
+}
+
+fn rgb(c: u32) -> Color {
+    Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+/// What the entry boots from, briefly: its root= device.
+fn subtitle(cmdline: &str) -> String {
+    let Some(root) = cmdline.split_whitespace().find_map(|w| w.strip_prefix("root=")) else {
+        return String::new();
+    };
+    match root.split_once('=') {
+        // root=UUID=… / PARTUUID=…: the start of the id is enough to tell.
+        Some((kind, id)) => format!("{kind} {}…", &id[..id.len().min(8)]),
+        None => root.to_string(),
+    }
+}
+
+fn card(title: &str, subtitle: String, tag: &str, l: &Look, variant: i32) -> Card {
+    Card { title: title.into(), subtitle: subtitle.into(), tag: tag.into(), icon: l.icon.into(), a: rgb(l.a), b: rgb(l.b), variant }
+}
+
+/// A card per entry, the first marked the default, then the menu's.
+pub fn build(entries: &[Entry]) -> Vec<Card> {
+    let mut cards: Vec<Card> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let l = look(e);
+            card(&e.label, subtitle(&e.detail), if i == 0 { "DEFAULT" } else { l.tag }, l, (i % 3) as i32)
+        })
+        .collect();
+    cards.push(card("Tools", "Services, partitions, log, power".into(), MENU.tag, &MENU, 2));
+    cards
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(label: &str, detail: &str) -> Entry {
+        Entry { label: label.into(), detail: detail.into() }
+    }
+
+    #[test]
+    fn looks() {
+        assert_eq!(look(&entry("postmarketOS", "root=/dev/mmcblk0p2")).icon, "pmos");
+        assert_eq!(look(&entry("LineageOS 21", "")).icon, "android");
+        assert_eq!(look(&entry("pmos (recovery)", "")).icon, "recovery");
+        assert_eq!(look(&entry("Something", "quiet")).icon, "linux");
+        assert_eq!(look(&entry("Something", "")).icon, "layers");
+        assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
+        assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
+        let cards = build(&[entry("a", ""), entry("b", "")]);
+        assert_eq!(cards.len(), 3);
+        assert_eq!(cards[0].tag, "DEFAULT");
+        assert_eq!(cards[2].icon, "gear");
+    }
+}

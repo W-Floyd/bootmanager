@@ -1,0 +1,401 @@
+// The boot carousel: a card per boot entry, the one in the middle large,
+// the others smaller and dimmer the further out, all positioned from one
+// animated number (pos), so a move, a swipe and a tap all glide the same
+// way, with a little overshoot.
+//
+// The software renderer has no transforms, drop shadows or rounded clips:
+// cards scale by their geometry, shadows are stacked translucent shapes,
+// and the artwork keeps clear of the rounded corners by itself.
+
+import { Palette, Card } from "theme.slint";
+import { Icon } from "icons.slint";
+
+// A landscape in the card's colours: sky, sun, three ridges. Gradients
+// are drawn unrounded, so they stay off the rounded corners: solid rounded
+// bands top and bottom, gradients between.
+component Scene inherits Rectangle {
+    in property <color> a;
+    in property <color> b;
+    in property <int> variant;
+    in property <length> radius;
+
+    property <color> sky-top: root.a.brighter(0.3);
+    property <color> ground: root.b.darker(0.55);
+    border-radius: root.radius;
+    background: root.sky-top;
+    Rectangle {
+        y: root.radius;
+        height: root.height - root.radius * 2;
+        background: @linear-gradient(180deg, root.sky-top 0%, root.a 40%, root.b 100%);
+    }
+
+    property <length> sun: root.width * 0.2;
+    property <length> sun-x: root.width * (root.variant == 1 ? 0.16 : 0.62);
+    for ring[k] in [1.8, 1.35, 1.0]: Rectangle {
+        width: root.sun * ring;
+        height: self.width;
+        x: root.sun-x + (root.sun - self.width) / 2;
+        y: root.height * 0.15 + (root.sun - self.height) / 2;
+        border-radius: self.width / 2;
+        background: #ffffff;
+        opacity: k == 2 ? 0.6 : k == 1 ? 0.12 : 0.06;
+    }
+
+    // Ridges stop short of the bottom corners; the band below rounds them.
+    property <length> land: root.height - root.radius;
+    Path {
+        width: 100%;
+        height: root.land;
+        viewbox-width: 100;
+        viewbox-height: 140;
+        fill: root.b.brighter(0.15).transparentize(0.35);
+        commands: root.variant == 1
+            ? "M 0 84 L 12 70 L 22 78 L 36 58 L 48 74 L 60 64 L 76 80 L 90 66 L 100 72 L 100 140 L 0 140 Z"
+            : root.variant == 2
+            ? "M 0 90 C 16 80 30 86 44 82 C 60 78 74 70 100 80 L 100 140 L 0 140 Z"
+            : "M 0 88 L 14 72 L 26 82 L 42 60 L 58 80 L 70 70 L 86 84 L 100 74 L 100 140 L 0 140 Z";
+    }
+    Path {
+        width: 100%;
+        height: root.land;
+        viewbox-width: 100;
+        viewbox-height: 140;
+        fill: root.b.darker(0.25);
+        commands: root.variant == 1
+            ? "M 0 98 L 16 88 L 30 96 L 50 82 L 66 98 L 84 88 L 100 96 L 100 140 L 0 140 Z"
+            : root.variant == 2
+            ? "M 0 102 C 20 94 34 100 50 96 C 66 92 82 98 100 94 L 100 140 L 0 140 Z"
+            : "M 0 100 L 18 86 L 34 98 L 52 80 L 72 100 L 88 90 L 100 98 L 100 140 L 0 140 Z";
+    }
+    Path {
+        width: 100%;
+        height: root.land;
+        viewbox-width: 100;
+        viewbox-height: 140;
+        fill: root.ground;
+        commands: root.variant == 1
+            ? "M 0 116 C 18 106 36 108 52 116 C 68 124 84 112 100 108 L 100 140 L 0 140 Z"
+            : root.variant == 2
+            ? "M 0 112 C 14 108 26 114 40 112 C 58 108 76 116 100 110 L 100 140 L 0 140 Z"
+            : "M 0 112 C 20 100 40 104 56 112 C 72 120 86 108 100 104 L 100 140 L 0 140 Z";
+    }
+    // A scrim under the text, ending in the bottom band at its darkest.
+    Rectangle {
+        y: root.height * 0.52;
+        height: root.land - self.y;
+        background: @linear-gradient(180deg, #00000000 0%, #00000088 100%);
+    }
+    Rectangle {
+        y: root.land;
+        height: root.radius;
+        border-bottom-left-radius: root.radius;
+        border-bottom-right-radius: root.radius;
+        background: root.ground.mix(#000000, 0.47);
+    }
+}
+
+export component CardView {
+    in property <Card> card;
+    // 0 in the middle, 1 for a neighbour: how much to recede.
+    in property <float> far;
+    in property <bool> current;
+    // Seconds left on the countdown, shown on this card; -1 for none.
+    in property <int> remaining: -1;
+    in property <int> total: 10;
+    // How far this card has gone to launch, 0 to 1: at 1 it is the whole
+    // screen, with note (what the backend is doing) under its name.
+    in property <float> launch;
+    in property <string> note;
+    callback clicked();
+    property <bool> launching: self.launch > 0;
+
+    property <length> radius: self.width * 0.07 * (1 - root.launch);
+
+    // A soft shadow from stacked, shrinking layers.
+    for s[k] in [0, 1, 2]: Rectangle {
+        x: 6px - k * 3px;
+        y: 14px + k * 6px;
+        width: root.width - self.x * 2;
+        height: root.height - 10px;
+        border-radius: root.radius + 6px;
+        background: #000000;
+        opacity: 0.14 * (1 - root.launch) * (1 - root.far * 0.5);
+    }
+
+    scene := Scene {
+        width: 100%;
+        height: 100%;
+        a: root.card.a;
+        b: root.card.b;
+        variant: root.card.variant;
+        radius: root.radius;
+    }
+
+    // The icon: a badge while choosing, the centre of the screen at launch.
+    Icon {
+        name: root.card.icon;
+        width: min(root.width, root.height * 0.7) * 0.3;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: root.height * (0.3 + 0.08 * root.launch);
+        color: #ffffffe8;
+    }
+
+    // Tag, title, subtitle, at the bottom left, lifted over the countdown
+    // while there is one. Only the lift animates: the position follows the
+    // card's size, which changes on every move of the carousel.
+    property <length> pad: root.width * 0.08;
+    property <float> lift: root.remaining >= 0 ? 1 : 0;
+    animate lift { duration: 350ms; easing: ease-out-back; }
+    VerticalLayout {
+        x: root.pad;
+        y: root.height - self.height - root.pad * (1 + 0.9 * root.lift);
+        width: root.width - root.pad * 2;
+        height: self.preferred-height;
+        spacing: root.width * 0.025;
+        opacity: max(0, 1 - root.launch * 3);
+
+        HorizontalLayout {
+            alignment: start;
+            Rectangle {
+                background: #ffffff33;
+                border-radius: self.height / 2;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+                    Text {
+                        text: root.card.tag;
+                        font-size: max(8px, root.width * 0.042);
+                        font-weight: 700;
+                        letter-spacing: 1.5px;
+                        color: #ffffff;
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.card.title;
+            font-size: max(12px, root.width * 0.085);
+            font-weight: 700;
+            color: #ffffff;
+            wrap: word-wrap;
+            max-height: root.height * 0.28;
+            overflow: elide;
+        }
+        if root.card.subtitle != "": Text {
+            text: root.card.subtitle;
+            font-size: max(9px, root.width * 0.05);
+            color: #ffffffb8;
+            overflow: elide;
+        }
+    }
+
+    // The countdown: seconds and a bar that runs down smoothly.
+    if root.remaining >= 0 && !root.launching: Rectangle {
+        x: root.pad;
+        y: root.height - root.pad * 1.25;
+        width: root.width - root.pad * 2;
+        height: root.pad * 0.8;
+        Text {
+            x: 0;
+            y: 0;
+            text: "Starting in " + root.remaining + " s";
+            font-size: max(9px, root.width * 0.045);
+            color: #ffffffd0;
+        }
+        Rectangle {
+            y: parent.height - 3px;
+            height: 3px;
+            border-radius: 1.5px;
+            background: #ffffff30;
+            // The fraction runs down, not the width, which follows the card.
+            property <float> left: max(0, root.remaining - 1) / max(1, root.total);
+            animate left { duration: 1000ms; }
+            Rectangle {
+                x: 0;
+                width: parent.width * parent.left;
+                border-radius: 1.5px;
+                background: #ffffff;
+            }
+        }
+    }
+
+    // Launch: the name at the centre under the icon, what is happening,
+    // and a sweep that says it is still happening.
+    VerticalLayout {
+        y: root.height * 0.58;
+        width: root.width;
+        height: self.preferred-height;
+        spacing: 8px;
+        opacity: max(0, root.launch * 3 - 2);
+        Text {
+            horizontal-alignment: center;
+            text: root.card.title;
+            font-size: 24px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+        Text {
+            horizontal-alignment: center;
+            text: root.note;
+            font-size: 14px;
+            color: #ffffffb0;
+        }
+    }
+    if root.launch >= 1: Rectangle {
+        x: root.width * 0.3;
+        y: root.height * 0.72;
+        width: root.width * 0.4;
+        height: 3px;
+        border-radius: 1.5px;
+        background: #ffffff26;
+        property <float> sweep: 0;
+        init => { self.sweep = 1; }
+        animate sweep { duration: 1100ms; easing: ease-in-out; iteration-count: -1; }
+        Rectangle {
+            width: parent.width * 0.3;
+            x: (parent.width - self.width) * parent.sweep;
+            border-radius: 1.5px;
+            background: #ffffff;
+        }
+    }
+
+    // Receding cards dim; the current one is outlined.
+    Rectangle {
+        border-radius: root.radius;
+        background: #000000;
+        opacity: min(1, root.far) * 0.45;
+    }
+    Rectangle {
+        border-radius: root.radius;
+        border-width: 2px;
+        border-color: #ffffff;
+        opacity: root.current ? 0.7 * (1 - root.launch) : 0;
+        animate opacity { duration: 200ms; }
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Carousel inherits FocusScope {
+    in property <[Card]> cards;
+    in-out property <int> selected;
+    // Before the first reveal the cards wait below the screen.
+    in property <bool> revealed;
+    // The card being booted, or -1.
+    in property <int> launching: -1;
+    in property <int> remaining: -1;
+    in property <int> total: 10;
+    in property <string> note;
+    callback activated(int);
+    callback activity();
+    callback menu();
+
+    // The band the cards sit in; the carousel itself is the whole window,
+    // for a launched card to fill.
+    in property <length> band-y;
+    in property <length> band-h: root.height;
+    // Card size from the space there is: tall on a phone, capped on a desktop.
+    property <length> card-w: min(root.width * 0.7, root.band-h * 0.66, 320px);
+    property <length> card-h: root.card-w * 1.42;
+    // How far apart the cards sit, in card widths: overlapping on a phone,
+    // side by side with gaps where the window is wide enough.
+    property <float> spread: max(0.43, min(1.1, (root.width - root.card-w) / 2 / root.card-w));
+
+    // Where the carousel is, in cards: glides to selected, with overshoot.
+    property <float> pos: root.selected;
+    animate pos { duration: 650ms; easing: cubic-bezier(0.3, 1.45, 0.55, 1); }
+    // A swipe in progress, in cards; springs back when it ends.
+    property <float> drag: swipe.swiping ? -(swipe.current-position.x - swipe.pressed-position.x) / (root.card-w * 0.55) : 0;
+    animate drag { duration: swipe.swiping ? 0ms : 450ms; easing: ease-out-back; }
+
+    function go(i: int) {
+        root.selected = max(0, min(root.cards.length - 1, i));
+    }
+
+    key-pressed(event) => {
+        root.activity();
+        if (root.launching >= 0) {
+            return accept;
+        }
+        if (event.text == Key.UpArrow || event.text == Key.LeftArrow) {
+            root.go(root.selected - 1);
+            return accept;
+        }
+        if (event.text == Key.DownArrow || event.text == Key.RightArrow) {
+            root.go(root.selected + 1);
+            return accept;
+        }
+        if (event.text == Key.Return || event.text == " ") {
+            root.activated(root.selected);
+            return accept;
+        }
+        if (event.text == Key.Escape || event.text == Key.Backspace) {
+            root.menu();
+            return accept;
+        }
+        reject
+    }
+
+    swipe := SwipeGestureHandler {
+        enabled: root.launching < 0;
+        handle-swipe-left: true;
+        handle-swipe-right: true;
+        swiped => {
+            root.activity();
+            root.go(root.selected + round(root.drag));
+        }
+
+        for card[i] in root.cards: CardView {
+            property <float> d: i - root.pos - root.drag;
+            property <float> ad: abs(self.d);
+            property <float> side: self.d < 0 ? -1 : 1;
+            property <float> scale: max(0.6, 1 - 0.19 * self.ad);
+            // Launch progress: this card's to the full screen, the others'
+            // off to their sides.
+            property <float> lt: i == root.launching ? 1 : 0;
+            animate lt { duration: 600ms; easing: ease-in-out-quint; }
+            property <float> ft: root.launching >= 0 && i != root.launching ? 1 : 0;
+            animate ft { duration: 450ms; easing: ease-in-back; }
+            // Before the reveal: below, later cards further down.
+            property <length> rise: root.revealed ? 0 : root.height * 0.55 + i * 60px;
+            animate rise { duration: 900ms; easing: ease-out-back; delay: 120ms + i * 90ms; }
+
+            property <length> w0: root.card-w * self.scale;
+            property <length> h0: root.card-h * self.scale;
+            property <length> x0: (root.width - self.w0) / 2 + self.side * root.card-w * root.spread * (min(self.ad, 1) + 0.72 * max(self.ad - 1, 0));
+            property <length> y0: root.band-y + (root.band-h - self.h0) / 2 + self.rise;
+
+            card: card;
+            far: min(1.5, self.ad) * (1 - self.lt);
+            current: i == root.selected;
+            remaining: i == 0 ? root.remaining : -1;
+            total: root.total;
+            launch: self.lt;
+            note: root.note;
+            z: self.lt > 0 ? 100 : -self.ad;
+
+            width: self.w0 + (root.width - self.w0) * self.lt;
+            height: self.h0 + (root.height - self.h0) * self.lt;
+            x: self.x0 * (1 - self.lt) + self.side * root.width * self.ft;
+            y: self.y0 * (1 - self.lt);
+            // Clamped: the renderer does not clamp opacity, and over 1 it
+            // brightens every translucent layer inside.
+            opacity: (root.revealed ? 1 : 0) * (1 - self.ft) * max(0, min(1, 2.4 - self.ad + self.lt));
+            animate opacity { duration: 600ms; }
+
+            clicked => {
+                root.activity();
+                if (i == root.selected) {
+                    root.activated(i);
+                } else {
+                    root.go(i);
+                }
+            }
+        }
+    }
+}

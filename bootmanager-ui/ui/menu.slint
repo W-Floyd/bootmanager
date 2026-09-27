@@ -1,0 +1,183 @@
+// The menu: a list whose rows src/screens.rs decides, for three keys, a
+// touchscreen, or a keyboard and mouse.
+
+import { Palette, Row } from "theme.slint";
+
+component Switch inherits Rectangle {
+    in property <bool> on;
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: on ? Palette.accent : #3a423d;
+    animate background { duration: 150ms; }
+    Rectangle {
+        x: on ? parent.width - self.width - 3px : 3px;
+        animate x { duration: 150ms; easing: ease-out; }
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #ffffff;
+    }
+}
+
+export component MenuList inherits FocusScope {
+    in property <[Row]> rows;
+    in-out property <int> selected;
+    callback activated(int);
+    callback back();
+    callback activity();
+    // Compact rows for screens of plain lines (the log).
+    in property <bool> compact;
+    property <length> row-h: compact ? 30px : 64px;
+    // Keys ease the list to the selected row; a finger moves it directly.
+    property <bool> ease-scroll;
+
+    public function show-selected() {
+        // Before the first layout the list has no height: nothing to scroll.
+        if (flick.height <= 0) {
+            return;
+        }
+        if (root.selected * root.row-h + flick.content-y < 0) {
+            flick.content-y = -root.selected * root.row-h;
+        } else if ((root.selected + 1) * root.row-h + flick.content-y > flick.height) {
+            flick.content-y = flick.height - (root.selected + 1) * root.row-h;
+        }
+    }
+
+    changed selected => {
+        self.show-selected();
+    }
+
+    // Wrapping at both ends: with only two volume keys, the far end of a
+    // long list is one press away.
+    key-pressed(event) => {
+        root.activity();
+        root.ease-scroll = true;
+        if (event.text == Key.UpArrow) {
+            root.selected = root.selected <= 0 ? root.rows.length - 1 : root.selected - 1;
+            return accept;
+        }
+        if (event.text == Key.DownArrow) {
+            root.selected = root.selected >= root.rows.length - 1 ? 0 : root.selected + 1;
+            return accept;
+        }
+        if (event.text == Key.Return || event.text == " ") {
+            if (root.rows.length > 0) {
+                root.activated(root.selected);
+            }
+            return accept;
+        }
+        if (event.text == Key.Escape || event.text == Key.Backspace || event.text == Key.LeftArrow) {
+            root.back();
+            return accept;
+        }
+        reject
+    }
+
+    flick := Flickable {
+        content-height: root.rows.length * root.row-h;
+        animate content-y { duration: root.ease-scroll ? 150ms : 0ms; easing: ease-out; }
+        for row[i] in root.rows: Rectangle {
+            y: i * root.row-h;
+            height: root.row-h;
+            // Pressed, then selected, then hovered (a mouse or trackpad; a
+            // finger hovers only while down, and the platform ends it on lift).
+            background: ta.pressed ? #ffffff26 : i == root.selected ? #ffffff1a : ta.has-hover ? #ffffff0d : transparent;
+            animate background { duration: 100ms; }
+
+            Rectangle {
+                x: 0;
+                width: 4px;
+                background: i == root.selected ? #ffffff : transparent;
+                animate background { duration: 100ms; }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: #ffffff10;
+            }
+
+            if row.thumb.width > 0: Image {
+                x: 18px;
+                y: 6px;
+                width: root.row-h - 12px;
+                height: root.row-h - 12px;
+                source: row.thumb;
+                image-fit: contain;
+            }
+
+            // A left arrow before Back.
+            if row.kind == "back": Path {
+                x: 16px;
+                y: (parent.height - self.height) / 2;
+                width: 20px;
+                height: 20px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M 20 12 L 4.5 12 M 11 5 L 4 12 L 11 19";
+                stroke: #ffffff;
+                stroke-width: 2px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+
+            VerticalLayout {
+                x: row.thumb.width > 0 ? 18px + root.row-h : row.kind == "back" ? 46px : 18px;
+                width: parent.width - self.x - (row.kind == "toggle" ? 72px : row.kind == "nav" ? 40px : 16px);
+                alignment: center;
+                spacing: 3px;
+                Text {
+                    text: row.title;
+                    font-size: root.compact ? 12px : 17px;
+                    color: row.kind == "danger" ? Palette.danger : row.kind == "info" ? #ffffff80 : #ffffff;
+                    overflow: elide;
+                }
+
+                if row.detail != "": Text {
+                    text: row.detail;
+                    font-size: 13px;
+                    color: #ffffff90;
+                    overflow: elide;
+                }
+            }
+
+            if row.kind == "toggle": Switch {
+                x: parent.width - self.width - 18px;
+                y: (parent.height - self.height) / 2;
+                on: row.on;
+            }
+
+            // A chevron on rows that open a screen.
+            if row.kind == "nav": Path {
+                x: parent.width - 34px;
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M 9 4.5 L 16.5 12 L 9 19.5";
+                stroke: #ffffff80;
+                stroke-width: 2px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+
+            ta := TouchArea {
+                mouse-cursor: row.kind == "info" ? MouseCursor.default : MouseCursor.pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.ease-scroll = false;
+                    }
+                }
+                clicked => {
+                    root.activity();
+                    root.selected = i;
+                    root.focus();
+                    root.activated(i);
+                }
+            }
+        }
+    }
+}

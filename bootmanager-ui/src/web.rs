@@ -14,6 +14,7 @@ pub fn run() {
     let ui = AppWindow::new().expect("create window");
     let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
     ui.set_hint("Arrow keys and Enter, Esc for back, or click".into());
+    ui.set_home_hint("◀ ▶ choose  ·  Enter start  ·  Esc menu  ·  or click".into());
     let app = App::install(&ui, Mode::Browser { host: host.clone() });
     app.set_url_opener(Box::new(open_url));
     sync_url(&app);

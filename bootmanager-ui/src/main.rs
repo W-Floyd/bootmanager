@@ -7,12 +7,16 @@
 //! keys, against any backend (bootmanager -scan DIR -compatible C works).
 //! The picture takes the panel's size, else --size's:
 //!     bootmanager-ui --socket S --screenshot out.png [--keys down,down,enter] [--size 720x1600]
-//!         keys: up down enter back wait (each step 400 ms apart)
+//!         keys: up down enter back wait (each step 400 ms apart), and
+//!         shot (save the frame as out-N.png) or tick (100 ms, for
+//!         filmstrips of an animation: tick,shot,tick,shot,...)
 
 use bootmanager_ui::app::{App, Mode};
 use bootmanager_ui::platform::{Fb, FbPlatform, Frame, Target};
 use bootmanager_ui::{transport, AppWindow};
 use slint::ComponentHandle;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() {
     let mut socket = "/tmp/bootmanager.sock".to_string();
@@ -58,7 +62,7 @@ fn main() {
 
     if let Some(out) = &screenshot {
         let steps: Vec<String> = keys.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
-        run_script(ui.as_weak(), steps, 0);
+        run_script(ui.as_weak(), steps, 0, frame.clone(), out.clone());
         ui.show().unwrap();
         slint::run_event_loop().unwrap();
         save_png(out, &frame.borrow());
@@ -72,10 +76,16 @@ fn usage() -> ! {
     std::process::exit(2)
 }
 
-fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize) {
+fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize, frame: Rc<RefCell<Frame>>, out: String) {
     use slint::platform::{Key, WindowEvent};
-    // The first step waits for the connection and the first replies.
-    let delay = if i == 0 { 800 } else { 400 };
+    // The first step waits for the connection and the first replies; a
+    // shot is taken of the frame drawn so far, at once.
+    let delay = match (i, steps.get(i).map(String::as_str)) {
+        (0, _) => 800,
+        (_, Some("shot")) => 0,
+        (_, Some("tick")) => 100,
+        _ => 400,
+    };
     slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
         let Some(u) = ui.upgrade() else { return };
         let Some(step) = steps.get(i) else {
@@ -94,7 +104,11 @@ fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize) {
             u.window().dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
             u.window().dispatch_event(WindowEvent::KeyReleased { text });
         }
-        run_script(ui, steps, i + 1);
+        if step == "shot" {
+            let n = steps[..i].iter().filter(|s| *s == "shot").count();
+            save_png(&format!("{}-{n}.png", out.trim_end_matches(".png")), &frame.borrow());
+        }
+        run_script(ui, steps, i + 1, frame, out);
     });
 }
 

@@ -1,0 +1,38 @@
+// Colours and the shapes shared between the carousel and the menu.
+
+export global Palette {
+    out property <color> bg: #0c100e;
+    out property <color> panel: #141a17;
+    out property <color> text: #e8efe9;
+    out property <color> dim: #8a9a90;
+    out property <color> accent: #3ec46d;
+    out property <color> select: #1c3325;
+    out property <color> alert: #f0a030;
+    out property <color> danger: #ef5b5b;
+}
+
+// One card of the boot carousel: a boot entry, or the menu.
+export struct Card {
+    title: string,
+    subtitle: string,
+    // The pill over the title: "DEFAULT", or the system's kind.
+    tag: string,
+    // icons.slint's names: pmos, android, linux, recovery, layers, gear.
+    icon: string,
+    // The artwork's two colours, sky to ground.
+    a: color,
+    b: color,
+    // Which landscape the artwork draws.
+    variant: int,
+}
+
+// A menu row: src/screens.rs decides what is in it and what it does.
+export struct Row {
+    title: string,
+    detail: string,
+    // "nav" (opens a screen), "toggle", "action", "danger", "info", "back"
+    kind: string,
+    on: bool,
+    // A picture at the left (image files in a listing); empty for none.
+    thumb: image,
+}

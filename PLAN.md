@@ -15,8 +15,6 @@ distro-neutral (not just fogona-neutral). Where it differs from below:
   build's entry point; `dev.sh` calls it), no CI (no host for it yet).
 - The u-root fork is documented, not replaced.
 
-What is left is in TODO.md.
-
 Goals: device-agnostic, idiomatic, more secure, less to maintain, smarter
 gmobile panel bundling (driving shape, size and scale), less complexity.
 

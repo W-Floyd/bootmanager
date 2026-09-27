@@ -14,7 +14,7 @@ pub fn encode(p: &str) -> String {
 
 pub fn route_of(s: &Screen) -> String {
     match s {
-        Screen::Main => "/".into(),
+        Screen::Main => "/menu".into(),
         Screen::Boot => "/boot".into(),
         Screen::Services => "/services".into(),
         Screen::Disks(_) => "/partitions".into(),
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn routes_round_trip() {
         for (route, stack_len) in [
-            ("/", 0),
+            ("/menu", 0),
             ("/boot", 1),
             ("/partitions", 1),
             ("/partitions/mmcblk0p2", 2),

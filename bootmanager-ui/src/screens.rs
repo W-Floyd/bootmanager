@@ -99,13 +99,11 @@ fn pending<T>(l: &Load<T>, waiting: &str) -> Option<(Row, Action)> {
 }
 
 /// The heading, subheading and rows of the screen on show. Every screen
-/// but the main one starts with a Back row: with three keys, a row is
-/// easier to find than a long press.
+/// starts with a Back row (the menu's first, back to the carousel): with
+/// three keys, a row is easier to find than a long press.
 pub fn build(s: &State) -> (String, String, Vec<(Row, Action)>) {
     let (heading, sub, mut rows) = screen(s);
-    if !matches!(s.screen, Screen::Main) {
-        rows.insert(0, (row("< Back", "", "back", false), Action::Back));
-    }
+    rows.insert(0, (row("Back", "", "back", false), Action::Back));
     (heading, sub, rows)
 }
 
@@ -132,7 +130,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 rows.push((row(format!("Reboot to {m}"), "", "action", false), Action::Reboot(m.clone())));
             }
             rows.push((row("Power off", "", "danger", false), Action::PowerOff));
-            ("Boot Manager".into(), String::new(), rows)
+            ("Tools".into(), String::new(), rows)
         }
         Screen::Boot => {
             match &s.entries {

@@ -4,7 +4,7 @@
 use crate::proto::{self, Client, DisplayInfo, Event, Hello, Panel, Service, Thumb};
 use crate::routes::{route_of, screens_of};
 use crate::screens::{self, is_image, join, Action, Load, Screen, UrlMode};
-use crate::{AppWindow, Row};
+use crate::{cards, AppWindow, Card, Row};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use slint::platform::WindowEvent;
@@ -69,8 +69,19 @@ pub struct State {
     thumb_queue: VecDeque<(String, String)>,
     thumb_busy: bool,
     countdown: i64,
+    /// The countdown's length, for its bar: the largest remaining seen.
+    countdown_total: i64,
     countdown_label: String,
     error: String,
+    /// The menu is up over the carousel.
+    menu_open: bool,
+    /// The card being booted, or -1.
+    launching: i32,
+    /// The carousel has made its entrance.
+    revealed: bool,
+    /// What the carousel shows, to replace its model only on a change:
+    /// a new model restarts its cards' animations.
+    cards: Vec<Card>,
 }
 
 pub struct App {
@@ -103,8 +114,13 @@ impl App {
                 thumb_queue: VecDeque::new(),
                 thumb_busy: false,
                 countdown: -1,
+                countdown_total: 0,
                 countdown_label: String::new(),
                 error: String::new(),
+                menu_open: false,
+                launching: -1,
+                revealed: false,
+                cards: vec![],
             }),
             mode,
             open_url: RefCell::new(None),
@@ -122,15 +138,50 @@ impl App {
         };
         ui.on_back(on(|a| a.back()));
         ui.on_activity(on(|a| a.activity()));
+        ui.on_open_menu(on(|a| a.open_menu()));
         let weak = Rc::downgrade(&app);
         ui.on_activated(move |i| {
             if let Some(a) = weak.upgrade() {
                 a.activate(i as usize)
             }
         });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_activated(move |i| {
+            if let Some(a) = weak.upgrade() {
+                a.activate_card(i as usize)
+            }
+        });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
         app.render();
+        // The entrance waits for the boot entries, but not for ever.
+        let weak = Rc::downgrade(&app);
+        slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+            if let Some(a) = weak.upgrade() {
+                a.reveal()
+            }
+        });
         app
+    }
+
+    /// Plays the carousel's entrance, once its cards are in the window.
+    fn reveal(self: &Rc<Self>) {
+        if std::mem::replace(&mut self.state.borrow_mut().revealed, true) {
+            return;
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_revealed(true);
+        }
+    }
+
+    /// Reveals once the entries are in: a frame later, so the cards exist
+    /// to make their entrance.
+    fn entries_arrived(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
+            if let Some(a) = weak.upgrade() {
+                a.reveal()
+            }
+        });
     }
 
     // --- transport hooks ---
@@ -163,7 +214,11 @@ impl App {
 
     pub fn disconnected(self: &Rc<Self>) {
         self.client.set_sender(None);
-        self.state.borrow_mut().countdown = -1;
+        {
+            let mut s = self.state.borrow_mut();
+            s.countdown = -1;
+            s.launching = -1;
+        }
         if let Some(ui) = self.ui.upgrade() {
             ui.set_busy("".into());
         }
@@ -174,12 +229,30 @@ impl App {
         let Some(event) = self.client.handle_line(line) else { return };
         let mut s = self.state.borrow_mut();
         match event {
-            Event::Autoboot(a) => (s.countdown, s.countdown_label) = (a.remaining, a.label),
-            Event::Entries(e) if !e.scanning => s.entries = Some(e.entries),
+            Event::Autoboot(a) => {
+                (s.countdown, s.countdown_label) = (a.remaining, a.label);
+                s.countdown_total = s.countdown_total.max(a.remaining);
+            }
+            Event::Entries(e) if !e.scanning => {
+                s.entries = Some(e.entries);
+                drop(s);
+                self.entries_arrived();
+                s = self.state.borrow_mut();
+            }
             Event::Entries(_) => {}
             Event::Services(v) => s.services = v,
             Event::Error(e) => s.error = e,
             Event::Busy(text) => {
+                // A boot the UI did not start (the autoboot): launch its card
+                // too. A busy that ends without a handover is a failed boot.
+                if text.is_empty() {
+                    s.launching = -1;
+                } else if s.launching < 0 {
+                    if let Some(i) = s.entries.iter().flatten().position(|e| text == format!("Loading {}…", e.label)) {
+                        s.launching = i as i32;
+                        s.menu_open = false;
+                    }
+                }
                 if let Some(ui) = self.ui.upgrade() {
                     ui.set_busy(text.into());
                 }
@@ -227,7 +300,10 @@ impl App {
 
     fn refresh_boot(self: &Rc<Self>) {
         self.call("boot.list", json!({}), |a, r: Result<proto::Entries, _>| match r {
-            Ok(e) if !e.scanning => a.state.borrow_mut().entries = Some(e.entries),
+            Ok(e) if !e.scanning => {
+                a.state.borrow_mut().entries = Some(e.entries);
+                a.entries_arrived();
+            }
             Ok(_) => {}
             Err(e) => a.state.borrow_mut().error = e,
         });
@@ -375,11 +451,69 @@ impl App {
         self.show(screen, 1);
     }
 
+    /// Back a screen; from the menu's first, back to the carousel.
     fn back(self: &Rc<Self>) {
         let popped = self.state.borrow_mut().stack.pop();
-        if let Some((screen, selected)) = popped {
-            self.show(screen, selected);
+        match popped {
+            Some((screen, selected)) => self.show(screen, selected),
+            None => self.close_menu(),
         }
+    }
+
+    fn open_menu(self: &Rc<Self>) {
+        {
+            let mut s = self.state.borrow_mut();
+            if s.launching >= 0 {
+                return;
+            }
+            s.menu_open = true;
+            s.stack.clear();
+        }
+        self.show(Screen::Main, 1);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.invoke_focus_menu();
+        }
+    }
+
+    fn close_menu(self: &Rc<Self>) {
+        self.state.borrow_mut().menu_open = false;
+        self.render();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.invoke_focus_home();
+        }
+    }
+
+    /// A card chosen on the carousel: boot its entry, or open the menu.
+    fn activate_card(self: &Rc<Self>, i: usize) {
+        let entries = self.state.borrow().entries.as_ref().map_or(0, |e| e.len());
+        if i < entries {
+            self.launch(i);
+        } else {
+            self.open_menu();
+        }
+    }
+
+    /// Boots entry i, its card taking the screen until the handover; a
+    /// failure puts it back.
+    fn launch(self: &Rc<Self>, i: usize) {
+        {
+            let mut s = self.state.borrow_mut();
+            if s.launching >= 0 {
+                return;
+            }
+            (s.launching, s.menu_open, s.countdown) = (i as i32, false, -1);
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_card_selected(i as i32);
+            ui.invoke_focus_home();
+        }
+        self.render();
+        self.call("boot.start", json!({"index": i}), |a, r: Result<Value, _>| {
+            if let Err(e) = r {
+                let mut s = a.state.borrow_mut();
+                (s.launching, s.error) = (-1, e);
+            }
+        });
     }
 
     fn activate(self: &Rc<Self>, i: usize) {
@@ -388,7 +522,7 @@ impl App {
             Action::Open(s) => self.open(s),
             Action::Back => self.back(),
             Action::Refresh => self.load_screen(),
-            Action::Boot(i) => self.call("boot.start", json!({"index": i}), App::report),
+            Action::Boot(i) => self.launch(i),
             Action::Service(name, on) => self.call("service.set", json!({"name": name, "running": on}), |a, r| match r {
                 Ok(v) => a.state.borrow_mut().services = v,
                 Err(e) => a.state.borrow_mut().error = e,
@@ -410,6 +544,17 @@ impl App {
         let Some(ui) = self.ui.upgrade() else { return };
         let connected = self.client.connected();
         let mut s = self.state.borrow_mut();
+        let cards = cards::build(s.entries.as_deref().unwrap_or_default());
+        if cards != s.cards {
+            ui.set_cards(ModelRc::new(VecModel::from(cards.clone())));
+            s.cards = cards;
+        }
+        ui.set_menu_open(s.menu_open);
+        ui.set_launching(s.launching);
+        ui.set_remaining(if connected { s.countdown as i32 } else { -1 });
+        ui.set_total(s.countdown_total.max(1) as i32);
+        ui.set_toast(if !connected { "Waiting for the backend…".into() } else { s.error.clone().into() });
+
         let (heading, sub, items) = if connected { screens::build(&s) } else { ("Boot Manager".into(), String::new(), vec![]) };
         let (rows, actions): (Vec<Row>, Vec<Action>) = items.into_iter().unzip();
         s.actions = actions;
@@ -431,7 +576,7 @@ impl App {
             ui.set_selected((n - 1).max(0));
         }
         let more_thumbs = !s.thumb_busy && !s.thumb_queue.is_empty();
-        let route = route_of(&s.screen);
+        let route = if s.menu_open { route_of(&s.screen) } else { "/".to_string() };
         drop(s);
         if *self.last_route.borrow() != route {
             *self.last_route.borrow_mut() = route.clone();
@@ -459,6 +604,9 @@ impl App {
     /// implies, and loads it.
     pub fn navigate_to(self: &Rc<Self>, route: &str) {
         let (stack, screen) = screens_of(route);
+        // Anything that is not a menu screen is the carousel.
+        let home = matches!(screen, Screen::Main) && route != "/menu";
+        self.state.borrow_mut().menu_open = !home;
         let selected = if matches!(screen, Screen::Main) { 0 } else { 1 };
         {
             let mut s = self.state.borrow_mut();
@@ -467,8 +615,15 @@ impl App {
             s.stack = stack.into_iter().enumerate().map(|(i, sc)| (sc, if i == 0 { 0 } else { 1 })).collect();
         }
         // The listener must not echo this back as a new history entry.
-        *self.last_route.borrow_mut() = route_of(&screen);
+        *self.last_route.borrow_mut() = if home { "/".into() } else { route_of(&screen) };
         self.show(screen, selected);
+        if let Some(ui) = self.ui.upgrade() {
+            if home {
+                ui.invoke_focus_home();
+            } else {
+                ui.invoke_focus_menu();
+            }
+        }
     }
 }
 

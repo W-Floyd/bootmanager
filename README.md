@@ -60,15 +60,23 @@ kexec handover on some arm64 devices needs u-root changes not upstream
 yet (a DTB passed with kexec_load, `/memory` from the running system, a
 gzip Image); use a u-root with them there.
 
-## Keys
+## The screen
 
-| key | does |
-|---|---|
-| Vol+ / Vol-, arrows | up / down; the list wraps at both ends |
-| Power (short), Enter | select |
-| Power held 600 ms, Esc | back (every screen but the main one also starts with a Back row) |
-| tap a row | select it (drag to scroll) |
-| any key or touch | stops the autoboot countdown |
+It opens on a carousel: a card per boot entry, its look (colours, icon,
+landscape) guessed from the entry's label and command line, the default
+first with the countdown on it, and a last card, Tools, for the menu:
+services, partitions, the log, reboot and power off. Starting an entry
+grows its card to the whole screen until the handover; a failed boot
+puts it back.
+
+| key | carousel | menu |
+|---|---|---|
+| Vol+ / Vol-, arrows | previous / next card | up / down; the list wraps |
+| Power (short), Enter | start the entry (or open Tools) | select |
+| Power held 600 ms, Esc | open the menu | back (each screen also starts with a Back row; the first one's leads back to the carousel) |
+| tap | a side card: bring it to the middle; the middle one: start it | select a row (drag to scroll) |
+| swipe | move through the cards | |
+| any key or touch | stops the autoboot countdown | |
 
 ## Panel shape and scale
 
@@ -152,6 +160,9 @@ The picture takes the named panel's size and scale:
 
     bootmanager -scan DIR -socket S -ui "" -compatible fairphone,fp4 &
     bootmanager-ui --socket S --screenshot out.png --keys down,enter
+
+For an animation, `shot` saves the frame so far as `out-N.png` and `tick`
+waits 100 ms: `--keys enter,tick,shot,tick,shot,...` is a filmstrip.
 
 ## Protocol
 
