@@ -125,6 +125,104 @@ pub struct Fb {
     yoffset: usize,
     bytes: usize,
     rgb: [FbBitfield; 3],
+    /// The display mode's refresh rate in Hz, when DRM says.
+    refresh: Option<f64>,
+}
+
+// --- DRM (drm/drm_mode.h), only to learn the refresh rate: fbdev emulation
+// reports pixclock 0 ---
+
+const DRM_IOCTL_MODE_GETRESOURCES: libc::c_ulong = 0xc040_64a0;
+const DRM_IOCTL_MODE_GETCRTC: libc::c_ulong = 0xc068_64a1;
+
+#[repr(C)]
+#[derive(Default)]
+struct DrmModeCardRes {
+    fb_id_ptr: u64,
+    crtc_id_ptr: u64,
+    connector_id_ptr: u64,
+    encoder_id_ptr: u64,
+    count_fbs: u32,
+    count_crtcs: u32,
+    count_connectors: u32,
+    count_encoders: u32,
+    min_width: u32,
+    max_width: u32,
+    min_height: u32,
+    max_height: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct DrmModeModeinfo {
+    clock: u32, // kHz
+    hdisplay: u16,
+    hsync_start: u16,
+    hsync_end: u16,
+    htotal: u16,
+    hskew: u16,
+    vdisplay: u16,
+    vsync_start: u16,
+    vsync_end: u16,
+    vtotal: u16,
+    vscan: u16,
+    vrefresh: u32,
+    flags: u32,
+    type_: u32,
+    name: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct DrmModeCrtc {
+    set_connectors_ptr: u64,
+    count_connectors: u32,
+    crtc_id: u32,
+    fb_id: u32,
+    x: u32,
+    y: u32,
+    gamma_size: u32,
+    mode_valid: u32,
+    mode: DrmModeModeinfo,
+}
+
+/// The refresh rate, in Hz, of the mode scanning out a width x height
+/// picture on any DRM card, from the mode's timings (59.94, not 60).
+fn drm_refresh(width: usize, height: usize) -> Option<f64> {
+    let mut found = None;
+    for i in 0..8 {
+        let Ok(card) = std::fs::File::open(format!("/dev/dri/card{i}")) else { continue };
+        let fd = card.as_raw_fd();
+        let mut res = DrmModeCardRes::default();
+        if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES as _, &mut res) } < 0 || res.count_crtcs == 0 {
+            continue;
+        }
+        let mut ids = vec![0u32; res.count_crtcs as usize];
+        res = DrmModeCardRes { crtc_id_ptr: ids.as_mut_ptr() as u64, count_crtcs: res.count_crtcs, ..Default::default() };
+        if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES as _, &mut res) } < 0 {
+            continue;
+        }
+        for &id in ids.iter().take(res.count_crtcs as usize) {
+            let mut crtc = DrmModeCrtc { crtc_id: id, ..Default::default() };
+            if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_GETCRTC as _, &mut crtc) } < 0 || crtc.mode_valid == 0 {
+                continue;
+            }
+            let m = &crtc.mode;
+            let total = m.htotal as f64 * m.vtotal as f64;
+            let hz = if m.clock > 0 && total > 0.0 { m.clock as f64 * 1000.0 / total } else { m.vrefresh as f64 };
+            if hz <= 0.0 {
+                continue;
+            }
+            // The one showing our framebuffer, else the first lit at all.
+            if (m.hdisplay as usize, m.vdisplay as usize) == (width, height) {
+                return Some(hz);
+            }
+            found.get_or_insert(hz);
+        }
+    }
+    found
 }
 
 static TTY_FD: AtomicI32 = AtomicI32::new(-1);
@@ -178,9 +276,10 @@ impl Fb {
             yoffset: var.yoffset as usize,
             bytes: var.bits_per_pixel as usize / 8,
             rgb: [var.red, var.green, var.blue],
+            refresh: drm_refresh(var.xres as usize, var.yres as usize),
         };
         eprintln!(
-            "bootmanager-ui: {} {}x{} ({} mm) {} bpp, rgb at {}/{}/{}, stride {}",
+            "bootmanager-ui: {} {}x{} ({} mm) {} bpp, rgb at {}/{}/{}, stride {}, {}",
             fb_name(),
             fb.xres,
             fb.yres,
@@ -189,7 +288,8 @@ impl Fb {
             fb.rgb[0].offset,
             fb.rgb[1].offset,
             fb.rgb[2].offset,
-            fb.stride
+            fb.stride,
+            fb.refresh.map_or("refresh unknown, 60 Hz assumed".to_string(), |hz| format!("{hz:.2} Hz"))
         );
 
         if let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty0") {
@@ -455,7 +555,8 @@ impl FbPlatform {
         LogicalPosition::new(px / scale, py / scale)
     }
 
-    fn draw(&self) {
+    /// Whether there was anything to draw.
+    fn draw(&self) -> bool {
         self.window.draw_if_needed(|renderer| {
             let size = self.window.size();
             let mut frame = self.frame.borrow_mut();
@@ -476,7 +577,7 @@ impl FbPlatform {
             if let Some(t) = &self.timing {
                 t.borrow_mut().add(t1 - t0, t1.elapsed(), s.width as u64 * s.height as u64, (w * h) as u64);
             }
-        });
+        })
     }
 }
 
@@ -502,8 +603,20 @@ impl Platform for FbPlatform {
         let mut last_scan = Instant::now();
         let mut power_down: Option<Instant> = None;
         let mut power_fired = false;
+        // An animation frame: one refresh of the panel, 60 Hz where DRM
+        // does not say (or says something implausible).
+        let hz = match &self.target {
+            Target::Fb(fb) => fb.refresh.filter(|hz| (20.0..=500.0).contains(hz)).unwrap_or(60.0),
+            Target::Memory => 60.0,
+        };
+        let frame = Duration::from_secs_f64(1.0 / hz);
+        // When the last frame was started: at most one is drawn per
+        // refresh, however often input asks (a touch panel reports faster
+        // than the display shows, and a drag moves the cards on each report).
+        let mut last_frame = Instant::now() - frame;
 
         loop {
+            let frame_start = Instant::now();
             slint::platform::update_timers_and_animations();
             let jobs: Vec<_> = self.shared.queue.lock().unwrap().drain(..).collect();
             for job in jobs {
@@ -512,14 +625,23 @@ impl Platform for FbPlatform {
             if self.shared.quit.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            self.draw();
+            if last_frame.elapsed() >= frame && self.draw() {
+                last_frame = frame_start;
+            }
 
-            // How long poll may sleep: the next Slint timer, an animation
+            // How long poll may sleep: the next Slint timer, the rest of the
             // frame, the long-press deadline, or the input rescan (a device
-            // whose driver probes late shows up within 3 s).
+            // whose driver probes late shows up within 3 s). The frame is
+            // timed from its start, not from the end of drawing it: a fixed
+            // 16 ms after a 13 ms frame ran animations at 35 fps. Until the
+            // frame is over a redraw may be waiting, so poll wakes for it;
+            // after that, only an animation needs the next one.
             let mut timeout = Duration::from_secs(3);
-            if self.window.has_active_animations() {
-                timeout = Duration::from_millis(16);
+            let since = last_frame.elapsed();
+            if since < frame {
+                timeout = frame - since;
+            } else if self.window.has_active_animations() {
+                timeout = frame;
             }
             if let Some(t) = slint::platform::duration_until_next_timer_update() {
                 timeout = timeout.min(t);
@@ -532,7 +654,9 @@ impl Platform for FbPlatform {
                 .chain(inputs.iter().map(|d| d.dev.as_raw_fd()))
                 .map(|fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
                 .collect();
-            let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+            // Rounded up: rounded down, the last millisecond of a frame
+            // would spin through poll(0).
+            let ms = timeout.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, ms) };
 
             if fds[0].revents != 0 {
