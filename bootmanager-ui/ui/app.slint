@@ -123,6 +123,10 @@ export component AppWindow inherits Window {
     home := Rectangle {
         opacity: root.menu-open ? 0.2 : 1;
         animate opacity { duration: 350ms; }
+        // Hidden under the open sheet: nothing there to see, and the
+        // software renderer, repainting a row, draws the translucent
+        // cards past the damaged area and over the sheet.
+        visible: sheet.y > root.cutout-h / 2;
 
         header := VerticalLayout {
             y: root.chrome ? 0 : -30px;
@@ -220,7 +224,7 @@ export component AppWindow inherits Window {
     // --- the menu, sliding up over the carousel ---
 
     // A sheet, tinted like the backdrop, its top corners rounded.
-    Rectangle {
+    sheet := Rectangle {
         y: root.menu-open ? root.cutout-h / 2 : root.height;
         height: root.height - root.cutout-h / 2;
         animate y { duration: 450ms; easing: root.menu-open ? ease-out-quint : ease-in-out; }
