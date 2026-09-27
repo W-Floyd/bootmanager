@@ -127,7 +127,6 @@ impl App {
             on_route: RefCell::new(None),
             last_route: RefCell::new("/".into()),
         });
-        ui.set_glow(glow());
         let weak = Rc::downgrade(&app);
         let on = move |f: fn(&Rc<App>)| {
             let weak = weak.clone();
@@ -627,14 +626,6 @@ impl App {
             }
         }
     }
-}
-
-include!(concat!(env!("OUT_DIR"), "/glow.rs"));
-
-/// The backdrop's glow, from build.rs.
-fn glow() -> Image {
-    let px = include_bytes!(concat!(env!("OUT_DIR"), "/glow.rgba"));
-    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(px, GLOW_SIZE, GLOW_SIZE))
 }
 
 /// fs.thumb's reply as an image.
