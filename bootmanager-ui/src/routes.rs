@@ -20,7 +20,8 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Disks(_) => "/partitions".into(),
         Screen::Log(_) => "/log".into(),
         Screen::Files { dev, path, .. } => format!("/partitions/{dev}{}", encode(path.trim_end_matches('/'))),
-        Screen::File { dev, path, .. } => format!("/file/{dev}{}", encode(path)),
+        // The browser previews images itself; the viewer is the panel's.
+        Screen::File { dev, path, .. } | Screen::Image { dev, path, .. } => format!("/file/{dev}{}", encode(path)),
         Screen::Text { dev, path, .. } => format!("/text/{dev}{}", encode(path)),
     }
 }

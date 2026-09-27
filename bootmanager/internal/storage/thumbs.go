@@ -17,6 +17,7 @@ import (
 const (
 	maxThumbFile   = 32 << 20
 	maxThumbPixels = 40_000_000
+	maxThumbSide   = 4096
 )
 
 var thumbSlots = make(chan struct{}, 2)
@@ -29,10 +30,11 @@ type Thumb struct {
 	RGBA []byte `json:"rgba"`
 }
 
-// Thumb decodes a JPEG, PNG or GIF and shrinks it to fit size x size.
-func (b *Browser) Thumb(dev, p string, size int) (Thumb, error) {
-	if size <= 0 || size > 512 {
-		size = 96
+// Thumb decodes a JPEG, PNG or GIF and shrinks it to fit w x h: a row's
+// picture, or the whole screen for the image viewer.
+func (b *Browser) Thumb(dev, p string, w, h int) (Thumb, error) {
+	if w <= 0 || h <= 0 || w > maxThumbSide || h > maxThumbSide {
+		w, h = 96, 96
 	}
 	f, err := b.Open(dev, p)
 	if err != nil {
@@ -42,10 +44,10 @@ func (b *Browser) Thumb(dev, p string, size int) (Thumb, error) {
 	if st, err := f.Stat(); err != nil || st.Size() > maxThumbFile {
 		return Thumb{}, errors.New("too large for a thumbnail")
 	}
-	return thumb(f, size)
+	return thumb(f, w, h)
 }
 
-func thumb(f io.ReadSeeker, size int) (Thumb, error) {
+func thumb(f io.ReadSeeker, w, h int) (Thumb, error) {
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
 		return Thumb{}, err
@@ -65,19 +67,19 @@ func thumb(f io.ReadSeeker, size int) (Thumb, error) {
 	if err != nil {
 		return Thumb{}, err
 	}
-	dst := shrink(img, size)
+	dst := shrink(img, w, h)
 	return Thumb{dst.Rect.Dx(), dst.Rect.Dy(), dst.Pix}, nil
 }
 
-// shrink fits img into size x size, keeping its aspect ratio; it never
+// shrink fits img into bw x bh, keeping its aspect ratio; it never
 // enlarges.
-func shrink(img image.Image, size int) *image.NRGBA {
+func shrink(img image.Image, bw, bh int) *image.NRGBA {
 	sw, sh := img.Bounds().Dx(), img.Bounds().Dy()
-	w, h := size, size
-	if sw >= sh {
-		h = max(1, sh*size/sw)
+	w, h := bw, bh
+	if sw*bh >= sh*bw {
+		h = max(1, sh*bw/sw)
 	} else {
-		w = max(1, sw*size/sh)
+		w = max(1, sw*bh/sh)
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, min(w, sw), min(h, sh)))
 	draw.BiLinear.Scale(dst, dst.Rect, img, img.Bounds(), draw.Src, nil)

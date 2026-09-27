@@ -20,7 +20,8 @@ type none struct{}
 type fileArgs struct {
 	Dev  string
 	Path string
-	Size int
+	// fs.thumb's box: Size square, or Width x Height.
+	Size, Width, Height int
 }
 
 func (a *app) register() {
@@ -44,7 +45,12 @@ func (a *app) register() {
 	rpc.Handle(s, "disk.list", func(none) (any, error) { return a.disks.Disks() })
 	rpc.Handle(s, "fs.list", func(x fileArgs) (any, error) { return a.disks.List(x.Dev, x.Path) })
 	rpc.Handle(s, "fs.read", func(x fileArgs) (any, error) { return a.disks.Read(x.Dev, x.Path) })
-	rpc.Handle(s, "fs.thumb", func(x fileArgs) (any, error) { return a.disks.Thumb(x.Dev, x.Path, x.Size) })
+	rpc.Handle(s, "fs.thumb", func(x fileArgs) (any, error) {
+		if x.Width == 0 && x.Height == 0 {
+			x.Width, x.Height = x.Size, x.Size
+		}
+		return a.disks.Thumb(x.Dev, x.Path, x.Width, x.Height)
+	})
 	rpc.Handle(s, "display.info", func(none) (any, error) { return displayInfo() })
 	rpc.Handle(s, "log.tail", func(x struct{ Lines int }) (any, error) { return a.logTail(x.Lines), nil })
 	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(allowedModes()), nil })

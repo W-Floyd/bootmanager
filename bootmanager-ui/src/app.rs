@@ -347,6 +347,20 @@ impl App {
                     *text = l
                 }
             }),
+            Screen::Image { dev, path, .. } => {
+                let Some(ui) = self.ui.upgrade() else { return };
+                let size = ui.window().size();
+                let args = json!({"dev": dev, "path": path, "width": size.width, "height": size.height});
+                self.fetch("fs.thumb", args, |s, l: Load<Thumb>| {
+                    if let Screen::Image { picture, .. } = &mut s.screen {
+                        *picture = match l {
+                            Load::Ready(t) => thumb_image(&t).map_or(Load::Failed("Not an image".into()), Load::Ready),
+                            Load::Failed(e) => Load::Failed(e),
+                            Load::Waiting => Load::Waiting,
+                        };
+                    }
+                })
+            }
             Screen::Log(_) => self.fetch("log.tail", json!({"lines": 300}), |s, l| {
                 if let Screen::Log(log) = &mut s.screen {
                     *log = l
@@ -437,6 +451,12 @@ impl App {
         if let Some(ui) = self.ui.upgrade() {
             ui.set_selected(selected);
             ui.invoke_scroll_to_selected();
+            let s = self.state.borrow();
+            if matches!(s.screen, Screen::Image { .. }) {
+                ui.invoke_focus_viewer();
+            } else if s.menu_open {
+                ui.invoke_focus_menu();
+            }
         }
         self.load_screen();
     }
@@ -569,6 +589,15 @@ impl App {
         };
         let n = rows.len() as i32;
         ui.set_compact(matches!(s.screen, Screen::Log(_) | Screen::Text { .. }));
+        let (viewing, picture, note) = match &s.screen {
+            Screen::Image { picture: Load::Ready(img), .. } => (true, img.clone(), String::new()),
+            Screen::Image { picture: Load::Failed(e), .. } => (true, Image::default(), e.clone()),
+            Screen::Image { .. } => (true, Image::default(), "Loading…".into()),
+            _ => (false, Image::default(), String::new()),
+        };
+        ui.set_viewing(viewing);
+        ui.set_picture(picture);
+        ui.set_picture_note(note.into());
         ui.set_heading(heading.into());
         ui.set_subheading(sub.into());
         ui.set_status(status.into());

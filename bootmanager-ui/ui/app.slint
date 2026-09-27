@@ -81,12 +81,21 @@ export component AppWindow inherits Window {
     callback close-menu();
     callback activity();
 
+    // The image viewer, over the menu: an image fitted to the screen, or
+    // why there is none yet.
+    in property <bool> viewing;
+    in property <image> picture;
+    in property <string> picture-note;
+
     forward-focus: carousel;
     public function focus-home() {
         carousel.focus();
     }
     public function focus-menu() {
         list.focus();
+    }
+    public function focus-viewer() {
+        viewer.focus();
     }
     public function scroll-to-selected() {
         list.show-selected();
@@ -329,6 +338,38 @@ export component AppWindow inherits Window {
             cancelled => {
                 root.spring = true;
                 root.pull = 0;
+            }
+        }
+    }
+
+    // Any key or a tap goes back to the file.
+    viewer := FocusScope {
+        visible: root.viewing;
+        key-pressed(event) => {
+            root.activity();
+            root.back();
+            accept
+        }
+        Rectangle { background: #000000; }
+        // Sized, or it takes the picture's pixels as logical ones.
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.picture;
+            image-fit: contain;
+        }
+        Text {
+            text: root.picture-note;
+            font-size: 15px;
+            color: Palette.dim;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            width: parent.width - 48px;
+        }
+        TouchArea {
+            clicked => {
+                root.activity();
+                root.back();
             }
         }
     }

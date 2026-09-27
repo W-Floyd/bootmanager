@@ -31,6 +31,8 @@ pub enum Screen {
     File { dev: String, path: String, size: u64 },
     /// A file's start, as text.
     Text { dev: String, path: String, text: Load<Text> },
+    /// An image, fitted to the screen, over everything (app.slint's viewer).
+    Image { dev: String, path: String, picture: Load<Image> },
     Log(Load<Vec<String>>),
 }
 
@@ -203,6 +205,10 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 rows.push((row("Download", size, "action", false), action(UrlMode::Download)));
                 rows.push((row("View as text", "The start of it, in this UI", "nav", false), Action::Open(text)));
             } else {
+                if is_image(path) {
+                    let view = Screen::Image { dev: dev.clone(), path: path.clone(), picture: Load::Waiting };
+                    rows.push((row("View image", "On this screen", "nav", false), Action::Open(view)));
+                }
                 rows.push((row("View", "The start of it, as text", "nav", false), Action::Open(text)));
                 rows.push(info(human_size(*size), "Preview or download it from the browser (Remote UI)"));
             }
@@ -223,6 +229,8 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             (base_name(path), format!("{dev}:{path}"), rows)
         }
+        // The viewer covers the list.
+        Screen::Image { dev, path, .. } => (base_name(path), format!("{dev}:{path}"), rows),
         Screen::Log(log) => {
             rows.extend(pending(log, "Reading…"));
             if let Load::Ready(lines) = log {
