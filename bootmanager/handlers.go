@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -29,11 +30,18 @@ func (a *app) register() {
 	rpc.Handle(s, "hello", func(none) (any, error) {
 		return map[string]any{"version": protocolVersion, "files_port": filesPort, "model": model()}, nil
 	})
+	rpc.Handle(s, "stage.ready", func(none) (any, error) {
+		if !a.isReady() {
+			log.Printf("stage.ready")
+		}
+		a.markReady()
+		return nil, nil
+	})
 	rpc.Handle(s, "boot.list", func(none) (any, error) { return a.boot.List(), nil })
 	rpc.Handle(s, "boot.start", func(x struct{ Index int }) (any, error) { return nil, a.boot.Start(x.Index) })
 	rpc.Handle(s, "autoboot.cancel", func(none) (any, error) { a.boot.Cancel(); return nil, nil })
 	rpc.Handle(s, "service.list", func(none) (any, error) { return a.svcs.List(), nil })
-	rpc.Handle(s, "service.set", func(x struct {
+	rpc.Handle(s, "service.set", afterReady(a, func(x struct {
 		Name    string
 		Running bool
 	}) (any, error) {
@@ -41,20 +49,31 @@ func (a *app) register() {
 		list := a.svcs.List()
 		s.Broadcast("services", list)
 		return list, err
-	})
-	rpc.Handle(s, "disk.list", func(none) (any, error) { return a.disks.Disks() })
-	rpc.Handle(s, "fs.list", func(x fileArgs) (any, error) { return a.disks.List(x.Dev, x.Path) })
-	rpc.Handle(s, "fs.read", func(x fileArgs) (any, error) { return a.disks.Read(x.Dev, x.Path) })
-	rpc.Handle(s, "fs.thumb", func(x fileArgs) (any, error) {
+	}))
+	rpc.Handle(s, "disk.list", afterReady(a, func(none) (any, error) { return a.disks.Disks() }))
+	rpc.Handle(s, "fs.list", afterReady(a, func(x fileArgs) (any, error) { return a.disks.List(x.Dev, x.Path) }))
+	rpc.Handle(s, "fs.read", afterReady(a, func(x fileArgs) (any, error) { return a.disks.Read(x.Dev, x.Path) }))
+	rpc.Handle(s, "fs.thumb", afterReady(a, func(x fileArgs) (any, error) {
 		if x.Width == 0 && x.Height == 0 {
 			x.Width, x.Height = x.Size, x.Size
 		}
 		return a.disks.Thumb(x.Dev, x.Path, x.Width, x.Height)
-	})
+	}))
 	rpc.Handle(s, "display.info", func(none) (any, error) { return displayInfo() })
 	rpc.Handle(s, "log.tail", func(x struct{ Lines int }) (any, error) { return a.logTail(x.Lines), nil })
 	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(allowedModes()), nil })
 	rpc.Handle(s, "power", a.power)
+}
+
+// afterReady refuses f until stage.ready: the disks are the card the stage
+// still has mounted read-write, and the services need its keys and usb0.
+func afterReady[A any](a *app, f func(A) (any, error)) func(A) (any, error) {
+	return func(x A) (any, error) {
+		if !a.isReady() {
+			return nil, errNotReady
+		}
+		return f(x)
+	}
 }
 
 func allowedModes() []string { return strings.Split(*rebootModes, ",") }

@@ -12,15 +12,23 @@
 // -scan DIR parses DIR's extlinux.conf instead of probing block devices,
 // so the backend runs anywhere for UI work; -compatible then stands in
 // for the device tree's compatibles.
+//
+// -wait-ready lets the stage start this first, for the UI's splash to be
+// up while the stage sets itself up: the UI and the socket start at once,
+// and what needs that setup (the card, the keys, usb0) waits for
+// `bootmanager -send stage.ready`, or readyTimeout.
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"log"
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"bootmanager.local/bootmanager/internal/boot"
 	"bootmanager.local/bootmanager/internal/rpc"
@@ -44,7 +52,12 @@ var (
 	compatible  = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
 	sshKeys     = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
 	sshHostKey  = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
+	waitReady   = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
+	sendCmd     = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
 )
+
+// readyTimeout: a stage that never sends stage.ready still boots.
+const readyTimeout = 20 * time.Second
 
 type app struct {
 	rpc      *rpc.Server
@@ -54,20 +67,42 @@ type app struct {
 	disks    *storage.Browser
 	ui       *uiproc.Supervisor
 	web      *webServer
+
+	ready     chan struct{} // closed once the stage is set up
+	readyOnce sync.Once
 }
+
+// markReady is stage.ready: idempotent, and a no-op without -wait-ready.
+func (a *app) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
+
+func (a *app) isReady() bool {
+	select {
+	case <-a.ready:
+		return true
+	default:
+		return false
+	}
+}
+
+// errNotReady refuses what needs the stage's setup until it is done.
+var errNotReady = errors.New("the stage is still starting")
 
 // devExt is the dev build's extension (dev.go): live restarts and test
 // kernels. nil in a normal build.
 var devExt interface {
 	// register adds the dev service, routes and commands.
 	register(*app)
-	// resume takes over what an exec'd predecessor left running, or
-	// applies the stage's one-shot requests; resumed reports the former.
+	// resume takes over what an exec'd predecessor left running.
 	resume(*app) (resumed bool, uiPid int)
+	// oneShot applies the stage's one-shot requests (-dev-once).
+	oneShot(*app)
 }
 
 func main() {
 	flag.Parse()
+	if *sendCmd != "" {
+		os.Exit(send(*socketPath, *sendCmd))
+	}
 	logOut := io.Writer(os.Stderr)
 	if f, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 		logOut = io.MultiWriter(os.Stderr, f)
@@ -76,7 +111,10 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("bootmanager starting")
 
-	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser()}
+	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser(), ready: make(chan struct{})}
+	if !*waitReady {
+		a.markReady()
+	}
 	a.boot = boot.New(boot.Config{
 		ScanDir:  *scanDir,
 		Autoboot: *autoboot,
@@ -121,7 +159,30 @@ func main() {
 	if devExt != nil {
 		resumed, uiPid = devExt.resume(a)
 	}
+	if resumed {
+		// An exec in place: the stage was set up before, and argv still
+		// says -wait-ready.
+		a.markReady()
+	}
+	if *uiPath != "" || uiPid > 0 {
+		go a.ui.Run(uiPid)
+	} else {
+		log.Printf("-ui empty, running headless")
+	}
+	// Nothing closes the socket, so this does not return; if it ever did,
+	// the countdown and the Remote UI still need this process.
+	go a.rpc.ServeListener(ln)
+
+	select {
+	case <-a.ready:
+	case <-time.After(readyTimeout):
+		log.Printf("no stage.ready in %v; going ahead", readyTimeout)
+		a.markReady()
+	}
 	if !resumed {
+		if devExt != nil {
+			devExt.oneShot(a)
+		}
 		// On at boot, as it was before the UI existed: it is how the stage
 		// is reached when the panel does not come up.
 		if err := a.svcs.Set("ssh", true); err != nil {
@@ -129,15 +190,6 @@ func main() {
 		}
 	}
 	go a.boot.Run()
-	if *uiPath != "" || uiPid > 0 {
-		go a.ui.Run(uiPid)
-	} else {
-		log.Printf("-ui empty, running headless")
-	}
-
-	// Nothing closes the socket, so this does not return; if it ever did,
-	// the countdown and the Remote UI still need this process.
-	a.rpc.ServeListener(ln)
 	select {}
 }
 

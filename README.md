@@ -40,8 +40,11 @@ reading flags at the first):
 
     -files OUT/bootmanager-ui:bin/bootmanager-ui -files OUT/web:usr/share/bootmanager-web ... <this checkout>/bootmanager
 
-and run `bootmanager` from the uinit once the network is up. The flags
-carry what differs between devices and stages:
+and run `bootmanager` from the uinit once the network is up, or first
+thing with `-wait-ready`: the UI's splash is then up while the stage sets
+itself up, and the uinit ends that with `bootmanager -send stage.ready`
+(after 20 s the backend goes ahead without it). The flags carry what
+differs between devices and stages:
 
 | flag | default | |
 |---|---|---|
@@ -54,6 +57,8 @@ carry what differs between devices and stages:
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
 | `-web` | `/usr/share/bootmanager-web` | the UI's web build |
+| `-wait-ready` | off | start the UI and socket at once; hold the boot scan and countdown, disks, SSH, Remote UI and `-dev-once` until `stage.ready` |
+| `-send CMD` | | a client: send CMD to `-socket` (retrying 5 s for it to appear), print the reply, exit non-zero on an error |
 
 `UROOT` names the u-root checkout for `go.work` (default `~/u-root`). The
 kexec handover on some arm64 devices needs u-root changes not upstream
@@ -171,13 +176,15 @@ or `{"id":N,"error":"..."}`. Pushed events are `{"event":E,"data":...}`:
 `autoboot`, `entries`, `services`, `busy`, `error`. The commands:
 `hello`, `boot.list`, `boot.start {index}`, `autoboot.cancel`,
 `service.list`, `service.set {name, running}`, `disk.list`,
-`fs.list {dev, path}`, `fs.read {dev, path}`, `fs.thumb {dev, path, size}`,
+`fs.list {dev, path}`, `fs.read {dev, path}`,
+`fs.thumb {dev, path, size | width, height}`, `stage.ready`,
 `display.info`, `log.tail {lines}`, `power.modes`,
 `power {action: reboot|poweroff, mode}`, and in dev builds
 `dev.restart {what: ui|backend}`. `hello` carries the protocol version,
-which the UI and page check.
+which the UI and page check. Under `-wait-ready`, `service.set`,
+`disk.list` and `fs.*` answer an error until `stage.ready`.
 
-Over SSH: `netcat -U /tmp/bootmanager.sock`. u-root's netcat quits when
+From a script: `bootmanager -send CMD`. Over SSH: `netcat -U /tmp/bootmanager.sock`. u-root's netcat quits when
 its stdin ends, so keep it open until the reply:
 `(echo '{"id":1,"cmd":"disk.list"}'; sleep 2) | netcat -U /tmp/bootmanager.sock`.
 

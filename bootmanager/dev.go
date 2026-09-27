@@ -94,14 +94,12 @@ func (dev) register(a *app) {
 func (dev) resume(a *app) (bool, int) {
 	b, err := os.ReadFile(statePath)
 	if err != nil {
-		applyDevOnce(a)
 		return false, 0
 	}
 	os.Remove(statePath)
 	var h handoff
 	if err := json.Unmarshal(b, &h); err != nil {
 		log.Printf("handoff: %v", err)
-		applyDevOnce(a)
 		return false, 0
 	}
 	log.Printf("restarted in place: ui pid %d, services %v", h.UIPid, h.Services)
@@ -124,9 +122,9 @@ func (dev) resume(a *app) (bool, int) {
 	return true, h.UIPid
 }
 
-// applyDevOnce switches on the services a one-shot request names: Remote
-// UI and Dev uploads, so the next upload is accepted.
-func applyDevOnce(a *app) {
+// oneShot switches on the services a one-shot request names: Remote UI
+// and Dev uploads, so the next upload is accepted.
+func (dev) oneShot(a *app) {
 	if *devOnce == "" {
 		return
 	}

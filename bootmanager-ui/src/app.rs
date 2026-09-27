@@ -154,9 +154,18 @@ impl App {
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
         app.render();
-        // The entrance waits for the boot entries, but not for ever.
+        // Up from black once there is a first frame to fade to.
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_started(true);
+            }
+        });
+        // The splash waits for the boot entries, which a -wait-ready backend
+        // holds until the stage is set up (20 s at most), but not for ever:
+        // without a backend, the carousel says it is waiting for one.
         let weak = Rc::downgrade(&app);
-        slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+        slint::Timer::single_shot(std::time::Duration::from_secs(25), move || {
             if let Some(a) = weak.upgrade() {
                 a.reveal()
             }
