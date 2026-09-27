@@ -225,8 +225,11 @@ export component AppWindow inherits Window {
 
     // A sheet, tinted like the backdrop, its top corners rounded, that
     // the grip and heading drag down.
-    property <length> sheet-y: root.menu-open ? root.cutout-h / 2 : root.height;
-    animate sheet-y { duration: 450ms; easing: root.menu-open ? ease-out-quint : ease-in-out; }
+    // The fraction open animates, not the position: a window taking its
+    // size (the page loading) moves a closed sheet without a slide.
+    property <float> open-t: root.menu-open ? 1 : 0;
+    animate open-t { duration: 450ms; easing: root.menu-open ? ease-out-quint : ease-in-out; }
+    property <length> sheet-y: root.height - (root.height - root.cutout-h / 2) * root.open-t;
     property <length> pull;
     // Only a pull let go short of closing eases back; a closing one stays
     // put so the sheet slides on from where it was dropped.
