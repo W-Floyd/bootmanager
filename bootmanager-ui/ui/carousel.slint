@@ -109,12 +109,14 @@ export component CardView {
 
     property <length> radius: self.width * 0.07 * (1 - root.launch);
 
-    // A soft shadow from stacked, shrinking layers.
+    // A soft shadow from stacked, shrinking layers. Only their bottoms
+    // show below the card, so each is just that: tall enough for its
+    // rounded corners, not a card-sized blend hidden under the card.
     for s[k] in [0, 1, 2]: Rectangle {
         x: 6px - k * 3px;
-        y: 14px + k * 6px;
         width: root.width - self.x * 2;
-        height: root.height - 10px;
+        height: (root.radius + 6px) * 2;
+        y: root.height + 4px + k * 6px - self.height;
         border-radius: root.radius + 6px;
         background: #000000;
         opacity: 0.14 * (1 - root.launch) * (1 - root.far * 0.5);
