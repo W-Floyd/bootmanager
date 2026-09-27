@@ -133,7 +133,7 @@ export component AppWindow inherits Window {
 
         header := VerticalLayout {
             y: root.chrome ? 0 : -30px;
-            animate y { duration: 700ms; easing: ease-out-back; }
+            animate y { duration: 700ms; easing: cubic-bezier(0.34, 1.2, 0.64, 1); }
             opacity: root.chrome ? 1 : 0;
             animate opacity { duration: 500ms; }
             padding-left: root.side-pad;
@@ -161,7 +161,7 @@ export component AppWindow inherits Window {
             property <bool> shown: root.toast != "" && root.launching < 0;
             x: (parent.width - self.width) / 2;
             y: header.height + (self.shown ? 12px : -12px);
-            animate y { duration: 450ms; easing: ease-out-back; }
+            animate y { duration: 450ms; easing: cubic-bezier(0.34, 1.2, 0.64, 1); }
             width: min(parent.width - 32px, toast-text.preferred-width + 32px);
             height: toast-text.preferred-height + 16px;
             border-radius: self.height / 2;
@@ -205,7 +205,7 @@ export component AppWindow inherits Window {
             animate opacity { duration: 500ms; delay: 300ms; }
             for c[i] in root.cards: Rectangle {
                 width: i == root.card-selected ? 22px : 8px;
-                animate width { duration: 450ms; easing: ease-out-back; }
+                animate width { duration: 450ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
                 border-radius: 4px;
                 background: i == root.card-selected ? #ffffff : #ffffff55;
                 animate background { duration: 300ms; }

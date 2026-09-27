@@ -1,7 +1,8 @@
 // The boot carousel: a card per boot entry, the one in the middle large,
 // the others smaller and dimmer the further out, all positioned from one
 // animated number (pos), so a move, a swipe and a tap all glide the same
-// way, with a little overshoot.
+// way. What the user steers lands without overshoot; only the entrance and
+// small flourishes overshoot, and lightly.
 //
 // The software renderer has no transforms, drop shadows or rounded clips:
 // cards scale by their geometry, shadows are stacked translucent shapes,
@@ -146,7 +147,7 @@ export component CardView {
     // card's size, which changes on every move of the carousel.
     property <length> pad: root.width * 0.08;
     property <float> lift: root.remaining >= 0 ? 1 : 0;
-    animate lift { duration: 350ms; easing: ease-out-back; }
+    animate lift { duration: 350ms; easing: cubic-bezier(0.34, 1.2, 0.64, 1); }
     VerticalLayout {
         x: root.pad;
         y: root.height - self.height - root.pad * (1 + 0.9 * root.lift);
@@ -306,12 +307,12 @@ export component Carousel inherits FocusScope {
     // side by side with gaps where the window is wide enough.
     property <float> spread: max(0.43, min(1.1, (root.width - root.card-w) / 2 / root.card-w));
 
-    // Where the carousel is, in cards: glides to selected, with overshoot.
+    // Where the carousel is, in cards: glides to selected.
     property <float> pos: root.selected;
-    animate pos { duration: 650ms; easing: cubic-bezier(0.3, 1.45, 0.55, 1); }
+    animate pos { duration: 500ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
     // A swipe in progress, in cards; springs back when it ends.
     property <float> drag: swipe.swiping ? -(swipe.current-position.x - swipe.pressed-position.x) / (root.card-w * 0.55) : 0;
-    animate drag { duration: swipe.swiping ? 0ms : 450ms; easing: ease-out-back; }
+    animate drag { duration: swipe.swiping ? 0ms : 450ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
 
     function go(i: int) {
         root.selected = max(0, min(root.cards.length - 1, i));
@@ -363,7 +364,7 @@ export component Carousel inherits FocusScope {
             animate ft { duration: 450ms; easing: ease-in-back; }
             // Before the reveal: below, later cards further down.
             property <length> rise: root.revealed ? 0 : root.height * 0.55 + i * 60px;
-            animate rise { duration: 900ms; easing: ease-out-back; delay: 120ms + i * 90ms; }
+            animate rise { duration: 900ms; easing: cubic-bezier(0.34, 1.2, 0.64, 1); delay: 120ms + i * 90ms; }
 
             property <length> w0: root.card-w * self.scale;
             property <length> h0: root.card-h * self.scale;
