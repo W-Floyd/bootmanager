@@ -10,80 +10,77 @@
 import { Palette, Card } from "theme.slint";
 import { Icon } from "icons.slint";
 
-// A landscape in the card's colours: sky, sun, three ridges. Gradients
-// are drawn unrounded, so they stay off the rounded corners: solid rounded
-// bands top and bottom, gradients between.
+// A landscape in the card's colours: sky, a halo round the icon, two
+// hills. Only shapes the software renderer fills a row at a time: vertical
+// gradients, rectangles and circles (rounded rectangles), no paths.
+// Gradients are drawn unrounded, so they stay off the rounded corners:
+// solid rounded bands top and bottom, the rest clipped between.
 component Scene inherits Rectangle {
     in property <color> a;
     in property <color> b;
     in property <int> variant;
     in property <length> radius;
+    // The icon's centre and size, for the halo.
+    in property <length> halo-x;
+    in property <length> halo-y;
+    in property <length> halo;
 
     property <color> sky-top: root.a.brighter(0.3);
     property <color> ground: root.b.darker(0.55);
+    property <length> land: root.height - root.radius;
+    property <float> lean: root.variant == 1 ? -1 : root.variant == 2 ? 0 : 1;
     border-radius: root.radius;
     background: root.sky-top;
+
+    // Clipped, so the hills' circles can reach past the sides.
     Rectangle {
         y: root.radius;
-        height: root.height - root.radius * 2;
+        height: root.land - root.radius;
+        clip: true;
         background: @linear-gradient(180deg, root.sky-top 0%, root.a 40%, root.b 100%);
-    }
 
-    property <length> sun: root.width * 0.2;
-    property <length> sun-x: root.width * (root.variant == 1 ? 0.16 : 0.62);
-    for ring[k] in [1.8, 1.35, 1.0]: Rectangle {
-        width: root.sun * ring;
-        height: self.width;
-        x: root.sun-x + (root.sun - self.width) / 2;
-        y: root.height * 0.15 + (root.sun - self.height) / 2;
-        border-radius: self.width / 2;
-        background: #ffffff;
-        opacity: k == 2 ? 0.6 : k == 1 ? 0.12 : 0.06;
-    }
+        for ring[k] in [2.8, 2.0, 1.4]: Rectangle {
+            width: root.halo * ring;
+            height: self.width;
+            x: root.halo-x - self.width / 2;
+            y: root.halo-y - root.radius - self.height / 2;
+            border-radius: self.width / 2;
+            background: #ffffff;
+            opacity: k == 2 ? 0.12 : k == 1 ? 0.07 : 0.04;
+        }
 
-    // Ridges stop short of the bottom corners; the band below rounds them.
-    property <length> land: root.height - root.radius;
-    Path {
-        width: 100%;
-        height: root.land;
-        viewbox-width: 100;
-        viewbox-height: 140;
-        fill: root.b.brighter(0.15).transparentize(0.35);
-        commands: root.variant == 1
-            ? "M 0 84 L 12 70 L 22 78 L 36 58 L 48 74 L 60 64 L 76 80 L 90 66 L 100 72 L 100 140 L 0 140 Z"
-            : root.variant == 2
-            ? "M 0 90 C 16 80 30 86 44 82 C 60 78 74 70 100 80 L 100 140 L 0 140 Z"
-            : "M 0 88 L 14 72 L 26 82 L 42 60 L 58 80 L 70 70 L 86 84 L 100 74 L 100 140 L 0 140 Z";
-    }
-    Path {
-        width: 100%;
-        height: root.land;
-        viewbox-width: 100;
-        viewbox-height: 140;
-        fill: root.b.darker(0.25);
-        commands: root.variant == 1
-            ? "M 0 98 L 16 88 L 30 96 L 50 82 L 66 98 L 84 88 L 100 96 L 100 140 L 0 140 Z"
-            : root.variant == 2
-            ? "M 0 102 C 20 94 34 100 50 96 C 66 92 82 98 100 94 L 100 140 L 0 140 Z"
-            : "M 0 100 L 18 86 L 34 98 L 52 80 L 72 100 L 88 90 L 100 98 L 100 140 L 0 140 Z";
-    }
-    Path {
-        width: 100%;
-        height: root.land;
-        viewbox-width: 100;
-        viewbox-height: 140;
-        fill: root.ground;
-        commands: root.variant == 1
-            ? "M 0 116 C 18 106 36 108 52 116 C 68 124 84 112 100 108 L 100 140 L 0 140 Z"
-            : root.variant == 2
-            ? "M 0 112 C 14 108 26 114 40 112 C 58 108 76 116 100 110 L 100 140 L 0 140 Z"
-            : "M 0 112 C 20 100 40 104 56 112 C 72 120 86 108 100 104 L 100 140 L 0 140 Z";
-    }
-    // A scrim under the text, ending in the bottom band at its darkest.
-    Rectangle {
-        y: root.height * 0.52;
-        height: root.land - self.y;
-        background: @linear-gradient(180deg, #00000000 0%, #00000088 100%);
+        // Hills: circles much wider than the card, only their tops showing,
+        // placed apart by variant.
+        Rectangle {
+            width: root.width * 2.4;
+            height: self.width;
+            x: (root.width - self.width) / 2 + root.lean * root.width * 0.45;
+            y: root.height * 0.6 - root.radius;
+            border-radius: self.width / 2;
+            background: root.b.brighter(0.15).transparentize(0.35);
+        }
+        Rectangle {
+            width: root.width * 2.8;
+            height: self.width;
+            x: (root.width - self.width) / 2 - root.lean * root.width * 0.55;
+            y: root.height * 0.7 - root.radius;
+            border-radius: self.width / 2;
+            background: root.b.darker(0.25);
+        }
+        Rectangle {
+            width: root.width * 3.2;
+            height: self.width;
+            x: (root.width - self.width) / 2 + root.lean * root.width * 0.3;
+            y: root.height * 0.8 - root.radius;
+            border-radius: self.width / 2;
+            background: root.ground;
+        }
+        // A scrim under the text, ending in the bottom band at its darkest.
+        Rectangle {
+            y: root.height * 0.52 - root.radius;
+            height: parent.height - self.y;
+            background: @linear-gradient(180deg, #00000000 0%, #00000088 100%);
+        }
     }
     Rectangle {
         y: root.land;
@@ -129,10 +126,13 @@ export component CardView {
         b: root.card.b;
         variant: root.card.variant;
         radius: root.radius;
+        halo-x: icon.x + icon.width / 2;
+        halo-y: icon.y + icon.height / 2;
+        halo: icon.width;
     }
 
     // The icon: a badge while choosing, the centre of the screen at launch.
-    Icon {
+    icon := Icon {
         name: root.card.icon;
         width: min(root.width, root.height * 0.7) * 0.3;
         height: self.width;
