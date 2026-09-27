@@ -83,9 +83,11 @@ component Scene inherits Rectangle {
             background: @linear-gradient(180deg, #00000000 0%, #00000088 100%);
         }
     }
+    // Overlapping the middle a pixel: two anti-aliased edges meeting at a
+    // fraction of one leave a line of the sky showing through.
     Rectangle {
-        y: root.land;
-        height: root.radius;
+        y: root.land - 1px;
+        height: root.radius + 1px;
         border-bottom-left-radius: root.radius;
         border-bottom-right-radius: root.radius;
         background: root.ground.mix(#000000, 0.47);
