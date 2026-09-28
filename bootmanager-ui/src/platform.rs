@@ -121,17 +121,26 @@ impl TargetPixelBuffer for Canvas<'_> {
     }
 }
 
-/// Entries in a gradient's lookup table: finer than 8 bits can show along
-/// any line on this screen, so the table adds nothing the dither can see.
+/// Entries in a translucent gradient's lookup table: finer than 8 bits can
+/// show along any line on this screen, so the table adds nothing the dither
+/// can see.
 const LUT_LEN: usize = 2048;
 
-/// A linear gradient ready to fill. Along the gradient line it is a table of
-/// premultiplied colour and of what survives of the pixel underneath, in 8.8
-/// fixed point, so a pixel costs a lookup, the dither and a shift: 8 bits of
-/// colour plus 8 below them for the dither to spread.
+/// A linear gradient ready to fill, in fixed point with 8 bits of colour
+/// plus the fraction below them that the dither spreads.
+///
+/// Opaque: along a row each stop segment is linear in x, so a run is a
+/// 16.16 start and step per channel, filled eight pixels at a time (which
+/// vectorises). Values are taken from the row's x = 0, so a partial repaint
+/// computes the same integers as a whole one.
+///
+/// Translucent: a table along the gradient line of premultiplied colour and
+/// of what survives of the pixel underneath, in 8.8.
 struct Gradient {
+    /// Opaque only: t range [lo, hi), colour at t = 0, d colour / dt.
+    segs: Vec<(f64, f64, [f64; 3], [f64; 3])>,
+    /// Translucent only.
     lut: Vec<[u32; 4]>,
-    opaque: bool,
     // t = base + x * tx + y * ty, at the pixel's centre.
     base: f64,
     tx: f64,
@@ -142,22 +151,38 @@ impl Gradient {
     /// CSS: the gradient line runs through the centre of the rectangle at
     /// the angle (0deg up, clockwise), long enough to reach the corners.
     fn new(stops: &[(f32, [f32; 4])], angle: f32, (x, y, w, h): (f32, f32, f32, f32)) -> Self {
-        let lut = (0..LUT_LEN)
-            .map(|i| {
-                let c = colour_at(stops, i as f32 / (LUT_LEN - 1) as f32);
-                let keep = 1. - c[3] / 255.;
-                // Colour in 8.8; keep as a 16-bit fraction, so under * keep
-                // >> 8 is 8.8 too.
-                [(c[0] * 256.) as u32, (c[1] * 256.) as u32, (c[2] * 256.) as u32, (keep * 65536.) as u32]
-            })
-            .collect();
-        let opaque = stops.iter().all(|s| s.1[3] >= 255.);
+        let (mut segs, mut lut) = (vec![], vec![]);
+        if stops.iter().all(|s| s.1[3] >= 255.) {
+            let c = |s: &(f32, [f32; 4])| [s.1[0] as f64, s.1[1] as f64, s.1[2] as f64];
+            let (first, last) = (stops[0], stops[stops.len() - 1]);
+            segs.push((f64::NEG_INFINITY, first.0 as f64, c(&first), [0.; 3]));
+            for w in stops.windows(2) {
+                let (p0, p1) = (w[0].0 as f64, w[1].0 as f64);
+                if p1 <= p0 {
+                    continue;
+                }
+                let (c0, c1) = (c(&w[0]), c(&w[1]));
+                let d: [f64; 3] = std::array::from_fn(|j| (c1[j] - c0[j]) / (p1 - p0));
+                segs.push((p0, p1, std::array::from_fn(|j| c0[j] - p0 * d[j]), d));
+            }
+            segs.push((last.0 as f64, f64::INFINITY, c(&last), [0.; 3]));
+        } else {
+            lut = (0..LUT_LEN)
+                .map(|i| {
+                    let c = colour_at(stops, i as f32 / (LUT_LEN - 1) as f32);
+                    let keep = 1. - c[3] / 255.;
+                    // Colour in 8.8; keep as a 16-bit fraction, so under *
+                    // keep >> 8 is 8.8 too.
+                    [(c[0] * 256.) as u32, (c[1] * 256.) as u32, (c[2] * 256.) as u32, (keep * 65536.) as u32]
+                })
+                .collect();
+        }
         let (sin, cos) = (angle as f64).to_radians().sin_cos();
         let len = (w as f64 * sin).abs() + (h as f64 * cos).abs();
         let (cx, cy) = (x as f64 + w as f64 / 2., y as f64 + h as f64 / 2.);
         let (tx, ty) = (sin / len, -cos / len);
         let base = 0.5 + (0.5 - cx) * tx + (0.5 - cy) * ty;
-        Gradient { lut, opaque, base, tx, ty }
+        Gradient { segs, lut, base, tx, ty }
     }
 
     /// Fills [x0, x1) x [y0, y1) of the frame, dithered on the pixel's
@@ -166,28 +191,85 @@ impl Gradient {
         if x0 >= x1 || y0 >= y1 {
             return;
         }
-        let last = (LUT_LEN - 1) as i64;
-        let scale = last as f64 * 65536.;
-        let dti = (self.tx * scale).round() as i64;
         for y in y0..y1 {
-            let row = &mut f.px[y as usize * f.width..][x0 as usize..x1 as usize];
-            let bayer = &BAYER[y as usize & 7];
-            let mut ti = ((self.base + x0 as f64 * self.tx + y as f64 * self.ty) * scale).round() as i64;
-            if dti == 0 && self.opaque {
-                // Vertical: one colour along the row, so eight pixels, repeated.
-                let e = &self.lut[(ti >> 16).clamp(0, last) as usize];
-                let pat: [u32; 8] = std::array::from_fn(|k| opaque_px(e, dither(bayer[k])));
-                for (i, p) in row.iter_mut().enumerate() {
-                    p.0 = pat[(x0 as usize + i) & 7];
+            let row = &mut f.px[y as usize * f.width..][..x1 as usize];
+            if self.segs.is_empty() {
+                self.blend_row(row, x0, y);
+            } else {
+                self.opaque_row(row, x0, y);
+            }
+        }
+    }
+
+    /// row[x0..] of row y, which starts at x = 0.
+    fn opaque_row(&self, row: &mut [Px], x0: i32, y: i32) {
+        const ONE: f64 = 65536.;
+        let x1 = row.len() as f64;
+        let t0 = self.base + y as f64 * self.ty;
+        let bayer = &BAYER[y as usize & 7];
+        for &(lo, hi, c0, d) in &self.segs {
+            // The pixels whose t is in [lo, hi).
+            let (a, b) = if self.tx > 0. {
+                (((lo - t0) / self.tx).ceil(), ((hi - t0) / self.tx).ceil())
+            } else if self.tx < 0. {
+                (((hi - t0) / self.tx).floor() + 1., ((lo - t0) / self.tx).floor() + 1.)
+            } else if (lo..hi).contains(&t0) {
+                (f64::NEG_INFINITY, f64::INFINITY)
+            } else {
+                continue;
+            };
+            let (xs, xe) = (a.max(x0 as f64) as usize, b.min(x1) as usize);
+            if xs >= xe {
+                continue;
+            }
+            let v0: [i64; 3] = std::array::from_fn(|j| ((c0[j] + d[j] * t0) * ONE).round() as i64);
+            let dv: [i64; 3] = std::array::from_fn(|j| (d[j] * self.tx * ONE).round() as i64);
+            let st: [i32; 3] = std::array::from_fn(|j| (v0[j] + xs as i64 * dv[j]) as i32);
+            let dv = dv.map(|v| v as i32);
+            let pat: [i32; 8] = std::array::from_fn(|k| (bayer[(xs + k) & 7] as i32 * 4 + 2) << 8);
+            let px = |v: [i32; 3], k: usize| {
+                let ch = |i: usize| ((v[i] + pat[k]) >> 16).clamp(0, 255) as u32;
+                ch(0) << 16 | ch(1) << 8 | ch(2)
+            };
+            let run = &mut row[xs..xe];
+            if dv == [0; 3] {
+                // One colour along the run (a vertical gradient): eight
+                // pixels, repeated.
+                let tile: [u32; 8] = std::array::from_fn(|k| px(st, k));
+                for (i, p) in run.iter_mut().enumerate() {
+                    p.0 = tile[i & 7];
                 }
                 continue;
             }
-            for (i, p) in row.iter_mut().enumerate() {
-                let e = &self.lut[(ti >> 16).clamp(0, last) as usize];
-                let d = dither(bayer[(x0 as usize + i) & 7]);
-                p.0 = if self.opaque { opaque_px(e, d) } else { blended_px(e, d, p.0) };
-                ti += dti;
+            let mut v: [[i32; 8]; 3] = std::array::from_fn(|i| std::array::from_fn(|k| st[i] + k as i32 * dv[i]));
+            let mut chunks = run.chunks_exact_mut(8);
+            for chunk in &mut chunks {
+                for k in 0..8 {
+                    chunk[k].0 = px([v[0][k], v[1][k], v[2][k]], k);
+                }
+                for i in 0..3 {
+                    for k in 0..8 {
+                        v[i][k] += dv[i] * 8;
+                    }
+                }
             }
+            for (k, p) in chunks.into_remainder().iter_mut().enumerate() {
+                p.0 = px([v[0][k], v[1][k], v[2][k]], k);
+            }
+        }
+    }
+
+    /// row[x0..] of row y, which starts at x = 0.
+    fn blend_row(&self, row: &mut [Px], x0: i32, y: i32) {
+        let last = (LUT_LEN - 1) as i64;
+        let scale = last as f64 * 65536.;
+        let dti = (self.tx * scale).round() as i64;
+        let bayer = &BAYER[y as usize & 7];
+        let mut ti = ((self.base + x0 as f64 * self.tx + y as f64 * self.ty) * scale).round() as i64;
+        for (i, p) in row[x0 as usize..].iter_mut().enumerate() {
+            let e = &self.lut[(ti >> 16).clamp(0, last) as usize];
+            p.0 = blended_px(e, dither(bayer[(x0 as usize + i) & 7]), p.0);
+            ti += dti;
         }
     }
 }
@@ -212,12 +294,6 @@ fn colour_at(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
 #[inline]
 fn dither(b: u8) -> u32 {
     b as u32 * 4 + 2
-}
-
-#[inline]
-fn opaque_px(e: &[u32; 4], d: u32) -> u32 {
-    let ch = |v: u32| ((v + d) >> 8).min(255);
-    ch(e[0]) << 16 | ch(e[1]) << 8 | ch(e[2])
 }
 
 #[inline]
@@ -965,6 +1041,9 @@ mod tests {
             ("vertical, dark", stops([8, 10, 20, 255], [30, 34, 60, 255]), 180., 0),
             ("diagonal", stops([200, 20, 40, 255], [10, 90, 250, 255]), 135., 0),
             ("horizontal", stops([0, 0, 0, 255], [255, 255, 255, 255]), 90., 0),
+            ("right to left", stops([0, 0, 0, 255], [255, 255, 255, 255]), 270., 0),
+            ("backdrop", stops([8, 10, 20, 255], [30, 34, 60, 255]), 170., 0),
+            ("up, leaning", stops([8, 10, 20, 255], [30, 34, 60, 255]), 10., 0),
             ("translucent", stops([255, 255, 255, 64], [0, 0, 0, 200]), 160., 0x3050a0),
         ] {
             let (mut a, mut b) = (frame(w, h, under), frame(w, h, under));
@@ -979,22 +1058,25 @@ mod tests {
     fn a_partial_fill_matches_the_whole() {
         let (w, h) = (64, 64);
         let s = stops([10, 20, 30, 255], [90, 60, 30, 255]);
-        let g = Gradient::new(&s, 200., (0., 0., w as f32, h as f32));
-        let (mut whole, mut part) = (frame(w, h, 0), frame(w, h, 0));
-        g.fill(&mut whole, (0, 0, w as i32, h as i32));
-        g.fill(&mut part, (0, 0, w as i32, h as i32));
-        g.fill(&mut part, (13, 7, 41, 29));
-        assert_eq!(max_diff(&whole, &part), 0);
+        for angle in [200., 170., 180., 90., 270.] {
+            let g = Gradient::new(&s, angle, (0., 0., w as f32, h as f32));
+            let (mut whole, mut part) = (frame(w, h, 0), frame(w, h, 0));
+            g.fill(&mut whole, (0, 0, w as i32, h as i32));
+            g.fill(&mut part, (0, 0, w as i32, h as i32));
+            g.fill(&mut part, (13, 7, 41, 29));
+            assert_eq!(max_diff(&whole, &part), 0, "{angle}");
+        }
     }
 
     /// cargo test --release -- --ignored --nocapture
     #[test]
     #[ignore]
     fn timing() {
-        let (w, h) = (720, 1600);
+        let (w, h) = (1080, 2340);
         let rect = (0., 0., w as f32, h as f32);
-        for (name, angle) in [("vertical", 180.), ("diagonal", 160.)] {
-            let s = stops([8, 10, 20, 255], [30, 34, 60, 255]);
+        let dark = stops([8, 10, 20, 255], [30, 34, 60, 255]);
+        let scrim = stops([0, 0, 0, 0], [0, 0, 0, 136]);
+        for (name, s, angle) in [("vertical", &dark, 180.), ("170deg", &dark, 170.), ("scrim", &scrim, 180.)] {
             let mut f = frame(w, h, 0);
             let t = Instant::now();
             for _ in 0..10 {
@@ -1006,7 +1088,7 @@ mod tests {
                 Gradient::new(&s, angle, rect).fill(&mut f, (0, 0, w as i32, h as i32));
             }
             let new = t.elapsed() / 10;
-            println!("{name} {w}x{h}: float {old:?}, table {new:?}");
+            println!("{name} {w}x{h}: float {old:?}, fixed point {new:?}");
         }
     }
 }
