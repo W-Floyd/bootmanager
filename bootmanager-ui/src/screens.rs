@@ -2,7 +2,7 @@
 //! the backend state, each row with what activating it does.
 
 use crate::app::State;
-use crate::proto::{Disk, Listing, Text};
+use crate::proto::{Disk, Listing, Slot, SlotsInfo, Text};
 use crate::Row;
 use slint::{Image, SharedString};
 
@@ -34,6 +34,8 @@ pub enum Screen {
     /// An image, fitted to the screen, over everything (app.slint's viewer).
     Image { dev: String, path: String, picture: Load<Image> },
     Log(Load<Vec<String>>),
+    /// A/B slots and what the bootloader handed over.
+    Diagnostics(Load<SlotsInfo>),
 }
 
 #[derive(Clone)]
@@ -43,6 +45,9 @@ pub enum Action {
     Service(String, bool),
     Reboot(String),
     PowerOff,
+    /// slots.set: a slot and what to make it (active, successful,
+    /// unbootable).
+    Slot(String, &'static str),
     /// Hand a file to the browser: its path under /files/, and how.
     Url(String, UrlMode),
     Back,
@@ -127,6 +132,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             rows.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks(Load::Waiting))));
             rows.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log(Load::Waiting))));
+            rows.push((row("Diagnostics", "Boot slots and the bootloader", "nav", false), Action::Open(Screen::Diagnostics(Load::Waiting))));
             rows.push((row("Reboot", "", "action", false), Action::Reboot(String::new())));
             for m in &s.modes {
                 rows.push((row(format!("Reboot to {m}"), "", "action", false), Action::Reboot(m.clone())));
@@ -239,9 +245,103 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             ("Log".into(), "Newest first".into(), rows)
         }
+        Screen::Diagnostics(d) => {
+            rows.extend(pending(d, "Reading…"));
+            if let Load::Ready(d) = d {
+                if !d.slots_error.is_empty() {
+                    rows.push(info("No boot slots", d.slots_error.clone()));
+                }
+                for sl in &d.slots {
+                    slot_rows(&mut rows, sl, &d.slots);
+                }
+                if !d.bootloader.is_empty() {
+                    rows.push(info("Bootloader", ""));
+                    rows.extend(d.bootloader.iter().map(|r| info(r.title.clone(), r.detail.clone())));
+                }
+            }
+            ("Diagnostics".into(), "What the bootloader boots next".into(), rows)
+        }
+    }
+}
+
+/// A slot's state, then what can be done to it: the bootloader boots the
+/// active slot with the highest priority, and counts its tries down
+/// until one boot is marked successful.
+fn slot_rows(rows: &mut Vec<(Row, Action)>, sl: &Slot, all: &[Slot]) {
+    let mut state = vec![];
+    if sl.active {
+        state.push("active".to_string());
+    }
+    state.push(format!("priority {}", sl.priority));
+    if sl.successful {
+        state.push("booted successfully".into());
+    } else {
+        state.push(format!("{} {} left", sl.retries, if sl.retries == 1 { "try" } else { "tries" }));
+    }
+    if sl.unbootable {
+        state.push("unbootable".into());
+    }
+    let title = format!("Slot {}{}", sl.name.to_uppercase(), if sl.booted { "  (booted)" } else { "" });
+    rows.push(info(title, state.join("  ·  ")));
+    let name = sl.name.to_uppercase();
+    // ABL reads unbootable only on a slot not marked successful, and
+    // marks one unbootable once its tries are gone.
+    let bootable = |o: &&Slot| o.successful || !o.unbootable && o.retries > 0;
+    let next = all.iter().filter(bootable).max_by_key(|o| (o.active, o.priority)).map(|o| o.name == sl.name);
+    if next != Some(true) {
+        rows.push((row(format!("Boot slot {name} next"), "Active, top priority, every try back", "action", false), Action::Slot(sl.name.clone(), "active")));
+    }
+    if !sl.successful {
+        rows.push((row(format!("Mark slot {name} successful"), "Stop counting its tries down", "action", false), Action::Slot(sl.name.clone(), "successful")));
+    }
+    if !sl.unbootable {
+        let detail = if all.iter().filter(bootable).any(|o| o.name != sl.name && o.priority > 0) {
+            "The bootloader boots the other slot"
+        } else {
+            "No other bootable slot: ABL stops in fastboot"
+        };
+        rows.push((row(format!("Mark slot {name} failed"), detail, "danger", false), Action::Slot(sl.name.clone(), "unbootable")));
     }
 }
 
 fn base_name(p: &str) -> String {
     p.rsplit('/').next().unwrap_or(p).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(name: &str, active: bool, priority: u32, successful: bool) -> Slot {
+        Slot { name: name.into(), booted: name == "a", active, priority, retries: 3, successful, unbootable: false }
+    }
+
+    #[test]
+    fn slot_actions() {
+        // As a stage in slot A finds a phone whose B was never set up.
+        let all = [slot("a", true, 3, true), slot("b", false, 0, false)];
+        let mut rows = vec![];
+        for sl in &all {
+            slot_rows(&mut rows, sl, &all);
+        }
+        let titles: Vec<String> = rows.iter().map(|(r, _)| format!("{} | {}", r.title, r.detail)).collect();
+        assert_eq!(
+            titles,
+            [
+                "Slot A  (booted) | active  ·  priority 3  ·  booted successfully",
+                "Mark slot A failed | No other bootable slot: ABL stops in fastboot",
+                "Slot B | priority 0  ·  3 tries left",
+                "Boot slot B next | Active, top priority, every try back",
+                "Mark slot B successful | Stop counting its tries down",
+                "Mark slot B failed | The bootloader boots the other slot",
+            ]
+        );
+        assert!(matches!(&rows[3].1, Action::Slot(s, "active") if s == "b"));
+
+        // B at priority 2 but out of tries is no fallback.
+        let all = [slot("a", true, 3, true), Slot { retries: 0, ..slot("b", false, 2, false) }];
+        let mut rows = vec![];
+        slot_rows(&mut rows, &all[0], &all);
+        assert_eq!(rows[1].0.detail, "No other bootable slot: ABL stops in fastboot");
+    }
 }

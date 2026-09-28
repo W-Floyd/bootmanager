@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"bootmanager.local/bootmanager/internal/slots"
 )
 
 // Transport is one fastboot connection. Read returns one command packet,
@@ -66,6 +68,9 @@ type Server struct {
 	// that returned nil.
 	BeforeWrite func(p Partition) error
 	AfterWrite  func(p Partition)
+	// Slots is the A/B slot state, for set_active and the slot-*
+	// variables; nil for none.
+	Slots SlotStore
 	// Busy shows what the server is doing; "" when it is done.
 	Busy func(text string)
 	// Reboot and Continue run after the reply, on a goroutine of their
@@ -84,6 +89,12 @@ const (
 	maxResponse = 256
 	dataChunk   = 64 << 10 // one read of the data phase: one USB request
 )
+
+// SlotStore is what the server needs of slots.Store.
+type SlotStore interface {
+	List() ([]slots.Slot, error)
+	SetActive(slot string) error
+}
 
 var errUnknownVar = errors.New("unknown variable")
 
@@ -140,6 +151,16 @@ func (s *Server) handle(t Transport, cmd string) error {
 			log.Printf("fastboot: flash %s: %v", arg, err)
 			return fail(t, err.Error())
 		}
+		return okay(t, "")
+	case "set_active":
+		if s.Slots == nil {
+			return fail(t, "no A/B slots")
+		}
+		if err := s.Slots.SetActive(strings.TrimPrefix(arg, "_")); err != nil {
+			log.Printf("fastboot: set_active %s: %v", arg, err)
+			return fail(t, err.Error())
+		}
+		log.Printf("fastboot: slot %s active", arg)
 		return okay(t, "")
 	case "continue":
 		if s.Continue == nil {
@@ -252,6 +273,20 @@ func (s *Server) getvar(name string) (string, error) {
 			return "raw", nil
 		}
 		return "no", nil
+	case "slot-successful", "slot-unbootable", "slot-retry-count":
+		if s.Slots == nil {
+			return "", errUnknownVar
+		}
+		list, err := s.Slots.List()
+		if err != nil {
+			return "", err
+		}
+		for _, sl := range list {
+			if sl.Name == strings.TrimPrefix(arg, "_") {
+				return slotVar(base, sl), nil
+			}
+		}
+		return "", fmt.Errorf("no slot %q", arg)
 	case "has-slot":
 		// The host adds the current slot's suffix to a name that has one.
 		if _, err := s.partition(arg + "_a"); err == nil {
@@ -263,6 +298,24 @@ func (s *Server) getvar(name string) (string, error) {
 		return v, nil
 	}
 	return "", errUnknownVar
+}
+
+var slotVars = []string{"slot-successful", "slot-unbootable", "slot-retry-count"}
+
+func slotVar(name string, sl slots.Slot) string {
+	yesNo := func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "no"
+	}
+	switch name {
+	case "slot-successful":
+		return yesNo(sl.Successful)
+	case "slot-unbootable":
+		return yesNo(sl.Unbootable)
+	}
+	return strconv.Itoa(sl.Retries)
 }
 
 // allVars is getvar:all's list, as name:value.
@@ -278,6 +331,14 @@ func (s *Server) allVars() []string {
 	}
 	slices.Sort(fixed)
 	out = append(out, fixed...)
+	if s.Slots != nil {
+		list, _ := s.Slots.List()
+		for _, sl := range list {
+			for _, n := range slotVars {
+				out = append(out, n+":"+sl.Name+":"+slotVar(n, sl))
+			}
+		}
+	}
 	if s.Partitions == nil {
 		return out
 	}

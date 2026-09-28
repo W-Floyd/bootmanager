@@ -19,6 +19,7 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Services => "/services".into(),
         Screen::Disks(_) => "/partitions".into(),
         Screen::Log(_) => "/log".into(),
+        Screen::Diagnostics(_) => "/diagnostics".into(),
         Screen::Files { dev, path, .. } => format!("/partitions/{dev}{}", encode(path.trim_end_matches('/'))),
         // The browser previews images itself; the viewer is the panel's.
         Screen::File { dev, path, .. } | Screen::Image { dev, path, .. } => format!("/file/{dev}{}", encode(path)),
@@ -45,6 +46,7 @@ pub fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
         ["boot"] => (vec![Screen::Main], Screen::Boot),
         ["services"] => (vec![Screen::Main], Screen::Services),
         ["log"] => (vec![Screen::Main], Screen::Log(Load::Waiting)),
+        ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics(Load::Waiting)),
         ["partitions"] => (vec![Screen::Main], Screen::Disks(Load::Waiting)),
         ["partitions", dev, rest @ ..] => {
             let mut st = dir_stack(dev, rest);
@@ -75,6 +77,7 @@ mod tests {
         for (route, stack_len) in [
             ("/menu", 0),
             ("/boot", 1),
+            ("/diagnostics", 1),
             ("/partitions", 1),
             ("/partitions/mmcblk0p2", 2),
             ("/partitions/mmcblk0p2/usr/share", 4),

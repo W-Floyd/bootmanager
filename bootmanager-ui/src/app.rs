@@ -375,6 +375,11 @@ impl App {
                     *log = l
                 }
             }),
+            Screen::Diagnostics(_) => self.fetch("slots.info", json!({}), |s, l| {
+                if let Screen::Diagnostics(d) = &mut s.screen {
+                    *d = l;
+                }
+            }),
             Screen::Main | Screen::File { .. } => {}
         }
     }
@@ -559,6 +564,17 @@ impl App {
             }),
             Action::Reboot(mode) => self.call("power", json!({"action": "reboot", "mode": mode}), App::report),
             Action::PowerOff => self.call("power", json!({"action": "poweroff"}), App::report),
+            Action::Slot(slot, what) => self.call("slots.set", json!({"slot": slot, "action": what}), |a, r| {
+                let mut s = a.state.borrow_mut();
+                match r {
+                    Ok(info) => {
+                        if let Screen::Diagnostics(d) = &mut s.screen {
+                            *d = Load::Ready(info);
+                        }
+                    }
+                    Err(e) => s.error = e,
+                }
+            }),
             Action::Url(path, mode) => {
                 if let Some(open) = &*self.open_url.borrow() {
                     open(&self.state.borrow().files_port, &path, mode);

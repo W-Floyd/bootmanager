@@ -33,6 +33,7 @@ func (a *app) startFastboot() (func(), error) {
 		Vars:        map[string]string{"product": model()},
 		Partitions:  fastboot.Partitions,
 		Open:        fastboot.Open,
+		Slots:       a.slots,
 		BeforeWrite: func(fastboot.Partition) error {
 			mu.Lock()
 			if rescan != nil {

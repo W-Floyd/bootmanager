@@ -32,6 +32,7 @@ import (
 
 	"bootmanager.local/bootmanager/internal/boot"
 	"bootmanager.local/bootmanager/internal/rpc"
+	"bootmanager.local/bootmanager/internal/slots"
 	"bootmanager.local/bootmanager/internal/storage"
 	"bootmanager.local/bootmanager/internal/svc"
 	"bootmanager.local/bootmanager/internal/uiproc"
@@ -67,6 +68,7 @@ type app struct {
 	services []*svc.Service // until svcs is made from them
 	svcs     *svc.Set
 	disks    *storage.Browser
+	slots    *slots.Store
 	ui       *uiproc.Supervisor
 	web      *webServer
 
@@ -113,7 +115,7 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("bootmanager starting")
 
-	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser(), ready: make(chan struct{})}
+	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser(), slots: newSlots(), ready: make(chan struct{})}
 	if !*waitReady {
 		a.markReady()
 	}
@@ -154,6 +156,7 @@ func main() {
 	}
 	a.rpc.Greeting = func() []rpc.Event { return []rpc.Event{{Event: "autoboot", Data: a.boot.Autoboot()}} }
 	a.register()
+	a.registerSlots()
 	if devExt != nil {
 		devExt.register(a)
 	}
@@ -197,6 +200,9 @@ func main() {
 		// is reached when the panel does not come up.
 		if err := a.svcs.Set("ssh", true); err != nil {
 			log.Printf("ssh: %v", err)
+		}
+		if *markSuccessful {
+			a.markBootedSuccessful()
 		}
 	}
 	go a.boot.Run()

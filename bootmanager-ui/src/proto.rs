@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 /// Changes whenever a command or event changes shape (bootmanager's
 /// protocolVersion).
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[derive(Deserialize)]
 pub struct Hello {
@@ -80,6 +80,33 @@ pub struct Text {
     pub binary: bool,
     pub size: u64,
     pub truncated: bool,
+}
+
+/// An A/B slot as the bootloader keeps it (bootmanager/internal/slots).
+#[derive(Deserialize, Clone)]
+pub struct Slot {
+    pub name: String,
+    pub booted: bool,
+    pub active: bool,
+    pub priority: u32,
+    pub retries: u32,
+    pub successful: bool,
+    pub unbootable: bool,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct InfoRow {
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct SlotsInfo {
+    pub slots: Vec<Slot>,
+    /// Why there are no slots, when there are none.
+    #[serde(default)]
+    pub slots_error: String,
+    pub bootloader: Vec<InfoRow>,
 }
 
 #[derive(Deserialize)]

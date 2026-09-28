@@ -63,6 +63,7 @@ differs between devices and stages:
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
 | `-web` | `/usr/share/bootmanager-web` | the UI's web build |
+| `-mark-successful` | off | mark the booted A/B slot successful once the stage is ready, as Android does once it is up, so ABL stops counting its tries down |
 | `-fastboot-gadget` | | the configfs USB gadget Fastboot joins; empty: the one bound to a UDC |
 | `-wait-ready` | off | start the UI and socket at once; hold the boot scan and countdown, disks, SSH, Remote UI and `-dev-once` until `stage.ready` |
 | `-send CMD` | | a client: send CMD to `-socket` (retrying 5 s for it to appear), print the reply, exit non-zero on an error |
@@ -158,7 +159,8 @@ as fastbootd does (`is-userspace:yes`), without logical partitions.
   while Fastboot is on.
 * `current-slot` is the bootloader's (`androidboot.slot_suffix`), so
   `flash boot` writes the booted slot's, the stage's own. Name the slot.
-  `set_active` is not there; ABL has it.
+* `set_active` and `slot-successful`/`slot-unbootable`/`slot-retry-count`
+  are the Diagnostics screen's slots (below).
 * A download is held in RAM, up to 256 MiB. The host sends a larger image
   as sparse pieces by itself.
 * A flash unmounts the browse and boot-scan mounts first. The device is
@@ -166,6 +168,37 @@ as fastbootd does (`is-userspace:yes`), without logical partitions.
   The boot entries are found again 2 s after the last flash.
 * The kernel needs `CONFIG_USB_CONFIGFS_F_FS`. Its `functionfs` file system
   shows in `/proc/filesystems` only once the first `ffs.*` function exists.
+
+## Diagnostics
+
+**Tools -> Diagnostics** shows the A/B slots as a Qualcomm ABL keeps
+them, and what the bootloader's bootconfig says (its version, the booted
+slot, boot reason, verified boot state, serial). Per slot: active,
+priority, tries left or booted successfully, unbootable; and **Boot slot
+X next**, **Mark slot X successful**, **Mark slot X failed**.
+
+ABL keeps the state in the GPT attributes of `boot_a`/`boot_b` (bits
+48-49 priority, 50 active, 51-53 tries left, 54 successful, 55
+unbootable) and boots the active slot of highest priority. On each boot
+of a slot not marked successful it takes a try off, and at none marks it
+unbootable and boots the other. Nothing in a LinuxBoot stage marks a boot
+successful unless `-mark-successful` does.
+
+* **Boot slot X next** is ABL's `set_active`: X at priority 3, active,
+  7 tries, not successful; the other slot priority 2, not active; the
+  active bit of every `_X` partition set and of the other slot's cleared.
+* **Mark failed** is what ABL does when the tries run out: unbootable, not
+  successful (ABL reads unbootable only then), priority 0. With no other
+  bootable slot ABL stops in its fastboot.
+* Only the GPTs of the disks holding `boot_a` and `boot_b` are written.
+  ABL's `set_active` also marks `xbl_a`/`xbl_b`, each on a UFS LUN of its
+  own, but the boot ROM picks xbl by a UFS attribute, not those bits, and
+  those LUNs' GPTs are the ones a bad write could leave the device
+  unbootable by.
+* Both GPT copies are checked before anything is written (CRCs, and the
+  entries identical), then the backup is written and read back from the
+  device, then the primary. The disk that makes the chosen slot bootable
+  goes first, so a failure midway leaves both slots bootable.
 
 ## Dev builds
 
@@ -216,7 +249,8 @@ or `{"id":N,"error":"..."}`. Pushed events are `{"event":E,"data":...}`:
 `service.list`, `service.set {name, running}`, `disk.list`,
 `fs.list {dev, path}`, `fs.read {dev, path}`,
 `fs.thumb {dev, path, size | width, height}`, `stage.ready`,
-`display.info`, `log.tail {lines}`, `power.modes`,
+`display.info`, `log.tail {lines}`, `power.modes`, `slots.info`,
+`slots.set {slot, action: active|successful|unbootable}`,
 `power {action: reboot|poweroff, mode}`, and in dev builds
 `dev.restart {what: ui|backend}`. `hello` carries the protocol version,
 which the UI and page check. Under `-wait-ready`, `service.set`,

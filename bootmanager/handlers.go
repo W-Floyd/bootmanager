@@ -14,7 +14,7 @@ import (
 
 // protocolVersion changes whenever a command or event changes shape; the
 // UI refuses a backend of another version.
-const protocolVersion = 2
+const protocolVersion = 3
 
 type none struct{}
 

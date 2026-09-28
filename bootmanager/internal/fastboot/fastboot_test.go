@@ -13,7 +13,38 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"bootmanager.local/bootmanager/internal/slots"
 )
+
+type fakeSlots struct {
+	mu     sync.Mutex
+	active string
+}
+
+func (f *fakeSlots) List() ([]slots.Slot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []slots.Slot
+	for _, n := range []string{"a", "b"} {
+		sl := slots.Slot{Name: n, Booted: n == "a"}
+		if n == f.active {
+			sl.Active, sl.Priority, sl.Retries = true, 3, 7
+		}
+		out = append(out, sl)
+	}
+	return out, nil
+}
+
+func (f *fakeSlots) SetActive(slot string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if slot != "a" && slot != "b" {
+		return errors.New("no slot " + slot)
+	}
+	f.active = slot
+	return nil
+}
 
 type memTarget struct {
 	mu     sync.Mutex
@@ -57,6 +88,7 @@ func testDevice() (*Server, map[string]*memTarget) {
 		Vars:        map[string]string{"product": "test", "current-slot": "a", "slot-count": "2"},
 		Partitions:  func() ([]Partition, error) { return parts, nil },
 		Open:        func(p Partition) (Target, error) { return mem[p.Dev], nil },
+		Slots:       &fakeSlots{active: "a"},
 	}
 	return s, mem
 }
@@ -249,6 +281,14 @@ func TestHostFastboot(t *testing.T) {
 	p, _ = file("big.img", 100<<10, 4)
 	if out, err := exec.Command(bin, "-s", "tcp:"+ln.Addr().String(), "flash", "boot_a", p).CombinedOutput(); err == nil {
 		t.Errorf("flash boot_a with an image over its size succeeded:\n%s", out)
+	}
+
+	run("set_active", "b")
+	if out := run("getvar", "slot-retry-count:b"); !strings.Contains(out, "slot-retry-count:b: 7") {
+		t.Errorf("getvar slot-retry-count:b after set_active b:\n%s", out)
+	}
+	if out := run("getvar", "all"); !strings.Contains(out, "slot-retry-count:a:0") {
+		t.Errorf("getvar all, slot vars:\n%s", out)
 	}
 
 	run("reboot", "bootloader")
