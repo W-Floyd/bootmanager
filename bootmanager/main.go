@@ -38,23 +38,24 @@ import (
 )
 
 var (
-	socketPath  = flag.String("socket", "/tmp/bootmanager.sock", "IPC socket")
-	uiPath      = flag.String("ui", "/bin/bootmanager-ui", "UI binary; empty for none")
-	webDir      = flag.String("web", "/usr/share/bootmanager-web", "web build of bootmanager-ui, served by Remote UI")
-	autoboot    = flag.Int("autoboot", 10, "seconds before booting the default entry; 0 disables")
-	holdFile    = flag.String("hold", "/tmp/hold", "stay in the stage when this file exists as the countdown starts or ends")
-	scanDir     = flag.String("scan", "", "parse this directory's boot config instead of probing block devices")
-	blDir       = flag.String("bootloader", "/sys/firmware/bootloader", "the device tree and initramfs the bootloader handed the stage (fdt, initrd), if it keeps them; with them, an Android boot image at "+boot.AndroidImage+" on a partition is an entry")
-	logPath     = flag.String("log", "/tmp/bootmanager.log", "log file, also shown on the Log screen")
-	extraLogs   = flag.String("logs", "", "comma-separated files shown on the Log screen before the log (the stage's own, say)")
-	listen      = flag.String("listen", "127.0.0.1", "address Remote UI listens on: a USB network's, say, never one reachable from elsewhere; the default needs an SSH tunnel")
-	rebootModes = flag.String("reboot-modes", "bootloader,fastboot,recovery,download", "comma-separated reboot modes offered when the device tree maps them; leave out any that strand the device (edl)")
-	panelFile   = flag.String("panel", "", "gmobile display-panel file for this device, instead of looking it up in gmobile's set")
-	compatible  = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
-	sshKeys     = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
-	sshHostKey  = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
-	waitReady   = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
-	sendCmd     = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
+	socketPath   = flag.String("socket", "/tmp/bootmanager.sock", "IPC socket")
+	uiPath       = flag.String("ui", "/bin/bootmanager-ui", "UI binary; empty for none")
+	webDir       = flag.String("web", "/usr/share/bootmanager-web", "web build of bootmanager-ui, served by Remote UI")
+	autoboot     = flag.Int("autoboot", 10, "seconds before booting the default entry; 0 disables")
+	holdFile     = flag.String("hold", "/tmp/hold", "stay in the stage when this file exists as the countdown starts or ends")
+	scanDir      = flag.String("scan", "", "parse this directory's boot config instead of probing block devices")
+	androidParts = flag.String("android-partitions", "", "comma-separated GPT labels of partitions that may hold an Android boot image, read raw; empty: the other A/B slot's boot partition, from the bootloader's androidboot.slot_suffix")
+	blDir        = flag.String("bootloader", "/sys/firmware/bootloader", "the device tree and initramfs the bootloader handed the stage (fdt, initrd), if it keeps them; with them, an Android boot image at "+boot.AndroidImage+" on a partition is an entry")
+	logPath      = flag.String("log", "/tmp/bootmanager.log", "log file, also shown on the Log screen")
+	extraLogs    = flag.String("logs", "", "comma-separated files shown on the Log screen before the log (the stage's own, say)")
+	listen       = flag.String("listen", "127.0.0.1", "address Remote UI listens on: a USB network's, say, never one reachable from elsewhere; the default needs an SSH tunnel")
+	rebootModes  = flag.String("reboot-modes", "bootloader,fastboot,recovery,download", "comma-separated reboot modes offered when the device tree maps them; leave out any that strand the device (edl)")
+	panelFile    = flag.String("panel", "", "gmobile display-panel file for this device, instead of looking it up in gmobile's set")
+	compatible   = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
+	sshKeys      = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
+	sshHostKey   = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
+	waitReady    = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
+	sendCmd      = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
 )
 
 // readyTimeout: a stage that never sends stage.ready still boots.
@@ -117,12 +118,13 @@ func main() {
 		a.markReady()
 	}
 	a.boot = boot.New(boot.Config{
-		ScanDir:       *scanDir,
-		Autoboot:      *autoboot,
-		HoldFile:      *holdFile,
-		BootloaderDir: *blDir,
-		Emit:          a.rpc.Broadcast,
-		Teardown:      a.teardown,
+		ScanDir:           *scanDir,
+		Autoboot:          *autoboot,
+		HoldFile:          *holdFile,
+		BootloaderDir:     *blDir,
+		AndroidPartitions: splitList(*androidParts),
+		Emit:              a.rpc.Broadcast,
+		Teardown:          a.teardown,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },
@@ -213,4 +215,15 @@ func (a *app) logFiles() []string {
 		}
 	}
 	return append(files, *logPath)
+}
+
+// splitList splits a comma-separated flag value, dropping empty items.
+func splitList(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

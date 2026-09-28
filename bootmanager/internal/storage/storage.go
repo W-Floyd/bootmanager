@@ -25,11 +25,10 @@ import (
 
 // Browsing mounts are read-only and ask for the journal to be left alone
 // (ext4 noload, f2fs/xfs norecovery): a plain ro mount still replays a
-// dirty journal, which is a write. That only holds for a partition nothing
-// has mounted yet. A second mount shares the first one's superblock and
-// options, and the boot scan has already mounted every partition it
-// could, plain ro -- as u-root's boot always has, and as it must for the
-// scan to read a current extlinux.conf.
+// dirty journal, which is a write. The boot scan's mounts are the same:
+// u-root's pkg/mount (the fogona-linuxboot fork) adds those options to
+// every read-only mount, and a second mount here shares the first one's
+// superblock and options.
 const browseRoot = "/mnt/browse"
 
 type Browser struct {

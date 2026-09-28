@@ -9,9 +9,10 @@ wasm, runs in a browser on a connected host.
 
 Nothing in it is tied to a device or distribution. Boot entries come from
 extlinux/BLS through u-root, and stock Android's from an Android boot
-image at `android/boot.img` on a partition, when the stage kept the device
-tree and initramfs its bootloader handed it (`-bootloader`: a Qualcomm
-ABL builds both for the Android it would boot). The panel's shape and
+image -- in the other A/B slot's boot partition, or at `android/boot.img`
+on a partition -- when the stage kept the device tree and initramfs its
+bootloader handed it (`-bootloader`: a Qualcomm ABL builds both for the
+Android it would boot). The panel's shape and
 size come from gmobile's display-panel data (or a file the device
 supplies), reboot modes from the device tree.
 
@@ -55,6 +56,7 @@ differs between devices and stages:
 | `-panel` | | a gmobile-format display-panel file, for a panel gmobile does not have yet |
 | `-hold` | `/tmp/hold` | no autoboot while it exists |
 | `-bootloader` | `/sys/firmware/bootloader` | the device tree (`fdt`) and initramfs (`initrd`) the bootloader handed the stage, if the stage keeps them. With them, an Android boot image (v3/v4) at `android/boot.img` on a partition is an entry: its kernel, with these, and the tree's `/chosen/bootargs` as its command line |
+| `-android-partitions` | | GPT labels of partitions that may hold such an image, read raw; empty: the boot partition of the A/B slot the bootloader did not boot (its bootconfig's `androidboot.slot_suffix`), the stage being in the booted one. A partition's image wins over a file's |
 | `-logs` | | files shown on the Log screen before the backend's (the uinit's log) |
 | `-autoboot` | `10` | seconds |
 | `-reboot-modes` | `bootloader,fastboot,recovery,download` | reboot modes offered when the device tree maps them; leave out any that strand the device (qcom's `edl` needs a long power-button press to leave) |

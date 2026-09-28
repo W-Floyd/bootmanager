@@ -14,6 +14,7 @@ import (
 	"github.com/u-root/u-root/pkg/boot"
 	"github.com/u-root/u-root/pkg/dt"
 	"github.com/u-root/u-root/pkg/mount"
+	"github.com/u-root/u-root/pkg/mount/block"
 )
 
 // Android entries: stock Android, booted with what its bootloader would
@@ -23,15 +24,17 @@ import (
 // (vendor_boot's and init_boot's ramdisks and a bootconfig trailer), and it
 // hands both to whatever it boots instead. A stage that keeps them
 // (Config.BootloaderDir: fdt and initrd) has all of it but the kernel,
-// which comes from an Android boot image (header v3 or v4) at AndroidImage
-// on a scanned partition.
+// which comes from an Android boot image (header v3 or v4): a partition of
+// its own, read raw -- by default the other A/B slot's boot partition
+// (otherSlotBoot), or those Config.AndroidPartitions names -- or a file at
+// AndroidImage on a scanned partition.
 
 // AndroidImage is where on a partition an Android boot image is looked for.
 const AndroidImage = "android/boot.img"
 
-// androidEntries returns an entry per Android boot image found on the
-// scan's mounts, or none when the stage kept no bootloader tree.
-func androidEntries(mounts []*mount.MountPoint, bootloaderDir string) []boot.OSImage {
+// androidEntries returns an entry per Android boot image found, or none
+// when the stage kept no bootloader tree.
+func androidEntries(mounts []*mount.MountPoint, devs block.BlockDevices, partitions []string, bootloaderDir string) []boot.OSImage {
 	if bootloaderDir == "" {
 		return nil
 	}
@@ -47,19 +50,95 @@ func androidEntries(mounts []*mount.MountPoint, bootloaderDir string) []boot.OSI
 	if err != nil {
 		return nil
 	}
-	var imgs []boot.OSImage
-	for _, mp := range mounts {
-		path := filepath.Join(mp.Path, AndroidImage)
-		img, err := androidImage(path, bytes.NewReader(fdtBytes), initrd, bootargs)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				log.Printf("%s: %v", path, err)
+	if partitions == nil {
+		if p := otherSlotBoot(initrd); p != "" {
+			partitions = []string{p}
+		}
+	}
+	found := func(paths []string) []boot.OSImage {
+		var imgs []boot.OSImage
+		for _, path := range paths {
+			img, err := androidImage(path, bytes.NewReader(fdtBytes), initrd, bootargs)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					log.Printf("%s: %v", path, err)
+				}
+				continue
 			}
+			imgs = append(imgs, img)
+		}
+		return imgs
+	}
+	var parts []string
+	for _, label := range partitions {
+		for _, d := range devs.FilterPartLabel(label) {
+			parts = append(parts, d.DevicePath())
+		}
+	}
+	// A boot image in a partition wins over a file: it is the same
+	// Android, and the one that needs no removable card.
+	if imgs := found(parts); len(imgs) > 0 {
+		return imgs
+	}
+	var files []string
+	for _, mp := range mounts {
+		files = append(files, filepath.Join(mp.Path, AndroidImage))
+	}
+	return found(files)
+}
+
+// otherSlotBoot is the boot partition of the A/B slot the bootloader did
+// not boot, from androidboot.slot_suffix in the bootconfig at the end of
+// its initramfs, or "" without one. The stage is in the booted slot's
+// boot partition, so Android's kernel can only be in the other; the rest
+// of that Android (vendor_boot, init_boot and dtbo, which the bootloader
+// loaded, and system and vendor, which the bootconfig names) is the booted
+// slot's.
+func otherSlotBoot(initrd string) string {
+	switch bootconfig(initrd)["androidboot.slot_suffix"] {
+	case "_a":
+		return "boot_b"
+	case "_b":
+		return "boot_a"
+	}
+	return ""
+}
+
+// bootconfig reads the bootconfig trailer at the end of an initramfs
+// (Documentation/admin-guide/bootconfig.rst: the text, its size and
+// checksum as little-endian u32s, "#BOOTCONFIG\n") as key-value pairs,
+// flat keys only, which is all a bootloader writes.
+func bootconfig(path string) map[string]string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() < 20 {
+		return nil
+	}
+	tail := make([]byte, 20)
+	if _, err := f.ReadAt(tail, st.Size()-20); err != nil || string(tail[8:]) != "#BOOTCONFIG\n" {
+		return nil
+	}
+	size := int64(binary.LittleEndian.Uint32(tail))
+	if size > st.Size()-20 || size > 32<<10 {
+		return nil
+	}
+	text := make([]byte, size)
+	if _, err := f.ReadAt(text, st.Size()-20-size); err != nil {
+		return nil
+	}
+	kv := map[string]string{}
+	for _, line := range strings.Split(string(bytes.TrimRight(text, "\x00")), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		imgs = append(imgs, img)
+		kv[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), `"`)
 	}
-	return imgs
+	return kv
 }
 
 func chosenBootargs(fdtBytes []byte) (string, error) {

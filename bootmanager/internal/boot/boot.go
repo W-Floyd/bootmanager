@@ -39,6 +39,10 @@ type Config struct {
 	// handed the stage (fdt, initrd), when the stage keeps them: with it,
 	// an Android boot image on a partition is an entry (android.go).
 	BootloaderDir string
+	// AndroidPartitions are partitions, by GPT label, that may hold an
+	// Android boot image, read raw (android.go). Nil: the boot partition
+	// of the A/B slot the bootloader did not boot.
+	AndroidPartitions []string
 	// Emit sends an event to every client.
 	Emit func(name string, data any)
 	// Teardown runs just before a handover, and before power actions:
@@ -97,7 +101,7 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	})
 	// After the console edit: Android's command line is the bootloader's,
 	// console= included.
-	imgs = append(imgs, androidEntries(m.pool.MountPoints, m.cfg.BootloaderDir)...)
+	imgs = append(imgs, androidEntries(m.pool.MountPoints, devs, m.cfg.AndroidPartitions, m.cfg.BootloaderDir)...)
 	return imgs, nil
 }
 
