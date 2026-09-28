@@ -270,7 +270,8 @@ export component AppWindow inherits Window {
 
         VerticalLayout {
             head := Rectangle {
-                // Its content's height, no more.
+                // Its content's height, no more: a plain Rectangle in a
+                // layout lifts its parent's height limit.
                 vertical-stretch: 0;
                 VerticalLayout {
                     padding-left: root.side-pad;

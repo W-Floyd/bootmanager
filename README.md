@@ -262,22 +262,6 @@ its stdin ends, so keep it open until the reply:
 
 ## Traps
 
-* **The wasm-bindgen crate and CLI must be the same version**; the crate
-  is pinned (`Cargo.toml`), and `build.sh` refuses a CLI that differs.
-* **Slint links fontconfig through fontique** unless
-  `i-slint-common/fontconfig-dlopen` is on (`Cargo.toml`). Linked, the
-  binary cannot be static.
-* **`block.GetBlockDevices` never fills in `FSType`**; the backend reads
-  it from the superblock (`mount.FSFromBlock`).
-* **Browse mounts' `noload` does not reach a partition the boot scan
-  already mounted**: a second mount shares the first one's superblock and
-  options. On those, a dirty journal was replayed at the scan, as u-root's
-  `boot` always does, and as it must to read a current `extlinux.conf`.
-* **A plain `Rectangle` in a Slint layout lifts its parent's height
-  limit**; the header has `vertical-stretch: 0` for it. Check layout
-  changes on a full-screen screenshot.
-* **Slint's window keeps its logical size across a scale change**: set the
-  physical size again after one (`app.rs`, `apply_panel`).
 * **A dragged menu row can stay lit** (the hover fill) after the finger
   lifts: a drag the list cannot scroll, begun within Flickable's 100 ms
   press delay, leaves the row's `has-hover` set. Slint 1.18.1's bug,
