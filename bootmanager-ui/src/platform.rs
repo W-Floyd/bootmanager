@@ -104,51 +104,126 @@ impl TargetPixelBuffer for Canvas<'_> {
                 (s.position, [c.red() as f32 * k, c.green() as f32 * k, c.blue() as f32 * k, al])
             })
             .collect();
-        let (Some(first), Some(last)) = (stops.first(), stops.last()) else { return false };
-        let opaque = stops.iter().all(|s| s.1[3] >= 255.);
-
-        // CSS: the gradient line runs through the centre at the angle
-        // (0deg up, clockwise), long enough to reach the corners.
-        let (sin, cos) = g.angle().to_radians().sin_cos();
-        let len = (a.width * sin).abs() + (a.height * cos).abs();
-        let (cx, cy) = (a.x + a.width / 2., a.y + a.height / 2.);
-        let dt = sin / len;
+        if stops.is_empty() {
+            return false;
+        }
+        let grad = Gradient::new(&stops, g.angle(), (a.x, a.y, a.width, a.height));
         let (x0, y0) = (a.x.round() as i32, a.y.round() as i32);
         let (x1, y1) = ((a.x + a.width).round() as i32, (a.y + a.height).round() as i32);
-
-        let w = self.0.width;
         for (o, s) in clip.iter() {
-            let (rx0, ry0) = (o.x.max(x0).max(0), o.y.max(y0).max(0));
-            let rx1 = (o.x + s.width as i32).min(x1).min(w as i32);
+            let rx0 = o.x.max(x0).max(0);
+            let ry0 = o.y.max(y0).max(0);
+            let rx1 = (o.x + s.width as i32).min(x1).min(self.0.width as i32);
             let ry1 = (o.y + s.height as i32).min(y1).min(self.0.height as i32);
-            for y in ry0..ry1 {
-                let row = &mut self.0.px[y as usize * w..][rx0.max(0) as usize..rx1.max(rx0) as usize];
-                let bayer = &BAYER[y as usize & 7];
-                let mut t = 0.5 + ((rx0 as f32 + 0.5 - cx) * sin - (y as f32 + 0.5 - cy) * cos) / len;
-                for (i, p) in row.iter_mut().enumerate() {
-                    let c = if t <= first.0 {
-                        first.1
-                    } else if t >= last.0 {
-                        last.1
-                    } else {
-                        let k = stops.windows(2).position(|w| t < w[1].0).unwrap_or(0);
-                        let ((p0, c0), (p1, c1)) = (stops[k], stops[k + 1]);
-                        let f = if p1 > p0 { (t - p0) / (p1 - p0) } else { 0. };
-                        std::array::from_fn(|j| c0[j] + (c1[j] - c0[j]) * f)
-                    };
-                    let d = (bayer[(rx0 as usize + i) & 7] as f32 + 0.5) / 64.;
-                    let keep = if opaque { 0. } else { 1. - c[3] / 255. };
-                    let ch = |shift: u32, v: f32| {
-                        let under = ((p.0 >> shift) & 0xff) as f32;
-                        ((under * keep + v + d) as u32).min(255) << shift
-                    };
-                    p.0 = ch(16, c[0]) | ch(8, c[1]) | ch(0, c[2]);
-                    t += dt;
-                }
-            }
+            grad.fill(self.0, (rx0, ry0, rx1, ry1));
         }
         true
     }
+}
+
+/// Entries in a gradient's lookup table: finer than 8 bits can show along
+/// any line on this screen, so the table adds nothing the dither can see.
+const LUT_LEN: usize = 2048;
+
+/// A linear gradient ready to fill. Along the gradient line it is a table of
+/// premultiplied colour and of what survives of the pixel underneath, in 8.8
+/// fixed point, so a pixel costs a lookup, the dither and a shift: 8 bits of
+/// colour plus 8 below them for the dither to spread.
+struct Gradient {
+    lut: Vec<[u32; 4]>,
+    opaque: bool,
+    // t = base + x * tx + y * ty, at the pixel's centre.
+    base: f64,
+    tx: f64,
+    ty: f64,
+}
+
+impl Gradient {
+    /// CSS: the gradient line runs through the centre of the rectangle at
+    /// the angle (0deg up, clockwise), long enough to reach the corners.
+    fn new(stops: &[(f32, [f32; 4])], angle: f32, (x, y, w, h): (f32, f32, f32, f32)) -> Self {
+        let lut = (0..LUT_LEN)
+            .map(|i| {
+                let c = colour_at(stops, i as f32 / (LUT_LEN - 1) as f32);
+                let keep = 1. - c[3] / 255.;
+                // Colour in 8.8; keep as a 16-bit fraction, so under * keep
+                // >> 8 is 8.8 too.
+                [(c[0] * 256.) as u32, (c[1] * 256.) as u32, (c[2] * 256.) as u32, (keep * 65536.) as u32]
+            })
+            .collect();
+        let opaque = stops.iter().all(|s| s.1[3] >= 255.);
+        let (sin, cos) = (angle as f64).to_radians().sin_cos();
+        let len = (w as f64 * sin).abs() + (h as f64 * cos).abs();
+        let (cx, cy) = (x as f64 + w as f64 / 2., y as f64 + h as f64 / 2.);
+        let (tx, ty) = (sin / len, -cos / len);
+        let base = 0.5 + (0.5 - cx) * tx + (0.5 - cy) * ty;
+        Gradient { lut, opaque, base, tx, ty }
+    }
+
+    /// Fills [x0, x1) x [y0, y1) of the frame, dithered on the pixel's
+    /// screen position so a partial repaint matches what is around it.
+    fn fill(&self, f: &mut Frame, (x0, y0, x1, y1): (i32, i32, i32, i32)) {
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let last = (LUT_LEN - 1) as i64;
+        let scale = last as f64 * 65536.;
+        let dti = (self.tx * scale).round() as i64;
+        for y in y0..y1 {
+            let row = &mut f.px[y as usize * f.width..][x0 as usize..x1 as usize];
+            let bayer = &BAYER[y as usize & 7];
+            let mut ti = ((self.base + x0 as f64 * self.tx + y as f64 * self.ty) * scale).round() as i64;
+            if dti == 0 && self.opaque {
+                // Vertical: one colour along the row, so eight pixels, repeated.
+                let e = &self.lut[(ti >> 16).clamp(0, last) as usize];
+                let pat: [u32; 8] = std::array::from_fn(|k| opaque_px(e, dither(bayer[k])));
+                for (i, p) in row.iter_mut().enumerate() {
+                    p.0 = pat[(x0 as usize + i) & 7];
+                }
+                continue;
+            }
+            for (i, p) in row.iter_mut().enumerate() {
+                let e = &self.lut[(ti >> 16).clamp(0, last) as usize];
+                let d = dither(bayer[(x0 as usize + i) & 7]);
+                p.0 = if self.opaque { opaque_px(e, d) } else { blended_px(e, d, p.0) };
+                ti += dti;
+            }
+        }
+    }
+}
+
+/// The colour at t along the gradient, premultiplied, 0..255.
+fn colour_at(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
+    let (first, last) = (stops[0], stops[stops.len() - 1]);
+    if t <= first.0 {
+        return first.1;
+    }
+    if t >= last.0 {
+        return last.1;
+    }
+    let k = stops.windows(2).position(|w| t < w[1].0).unwrap_or(0);
+    let ((p0, c0), (p1, c1)) = (stops[k], stops[k + 1]);
+    let f = if p1 > p0 { (t - p0) / (p1 - p0) } else { 0. };
+    std::array::from_fn(|j| c0[j] + (c1[j] - c0[j]) * f)
+}
+
+/// An ordered-dither threshold as the 8.8 fraction added before the shift:
+/// (b + 0.5) / 64 of one step.
+#[inline]
+fn dither(b: u8) -> u32 {
+    b as u32 * 4 + 2
+}
+
+#[inline]
+fn opaque_px(e: &[u32; 4], d: u32) -> u32 {
+    let ch = |v: u32| ((v + d) >> 8).min(255);
+    ch(e[0]) << 16 | ch(e[1]) << 8 | ch(e[2])
+}
+
+#[inline]
+fn blended_px(e: &[u32; 4], d: u32, under: u32) -> u32 {
+    let ch = |shift: u32, v: u32| ((((under >> shift & 0xff) * e[3] >> 8) + v + d) >> 8).min(255) << shift;
+    ch(16, e[0]) | ch(8, e[1]) | ch(0, e[2])
 }
 
 // --- fbdev (linux/fb.h) ---
@@ -831,6 +906,107 @@ impl Platform for FbPlatform {
                 self.scan_inputs(&mut inputs);
                 last_scan = Instant::now();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The float fill Gradient replaced, per pixel, as the reference.
+    fn reference(f: &mut Frame, stops: &[(f32, [f32; 4])], angle: f32, (x, y, w, h): (f32, f32, f32, f32)) {
+        let opaque = stops.iter().all(|s| s.1[3] >= 255.);
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let len = (w * sin).abs() + (h * cos).abs();
+        let (cx, cy) = (x + w / 2., y + h / 2.);
+        for py in y as usize..(y + h) as usize {
+            for px in x as usize..(x + w) as usize {
+                let t = 0.5 + ((px as f32 + 0.5 - cx) * sin - (py as f32 + 0.5 - cy) * cos) / len;
+                let c = colour_at(stops, t);
+                let d = (BAYER[py & 7][px & 7] as f32 + 0.5) / 64.;
+                let keep = if opaque { 0. } else { 1. - c[3] / 255. };
+                let p = &mut f.px[py * f.width + px];
+                let ch = |shift: u32, v: f32| {
+                    let under = ((p.0 >> shift) & 0xff) as f32;
+                    ((under * keep + v + d) as u32).min(255) << shift
+                };
+                p.0 = ch(16, c[0]) | ch(8, c[1]) | ch(0, c[2]);
+            }
+        }
+    }
+
+    fn frame(w: usize, h: usize, fill: u32) -> Frame {
+        Frame { px: vec![Px(fill); w * h], width: w, height: h }
+    }
+
+    fn stops(a: [u8; 4], b: [u8; 4]) -> Vec<(f32, [f32; 4])> {
+        [(0., a), (1., b)]
+            .map(|(p, c)| {
+                let k = c[3] as f32 / 255.;
+                (p, [c[0] as f32 * k, c[1] as f32 * k, c[2] as f32 * k, c[3] as f32])
+            })
+            .to_vec()
+    }
+
+    fn max_diff(a: &Frame, b: &Frame) -> u32 {
+        a.px.iter()
+            .zip(&b.px)
+            .map(|(p, q)| (0..3).map(|i| ((p.0 >> (i * 8)) & 0xff).abs_diff((q.0 >> (i * 8)) & 0xff)).max().unwrap())
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn matches_the_float_fill() {
+        let (w, h) = (96, 160);
+        let rect = (0., 0., w as f32, h as f32);
+        for (name, s, angle, under) in [
+            ("vertical, dark", stops([8, 10, 20, 255], [30, 34, 60, 255]), 180., 0),
+            ("diagonal", stops([200, 20, 40, 255], [10, 90, 250, 255]), 135., 0),
+            ("horizontal", stops([0, 0, 0, 255], [255, 255, 255, 255]), 90., 0),
+            ("translucent", stops([255, 255, 255, 64], [0, 0, 0, 200]), 160., 0x3050a0),
+        ] {
+            let (mut a, mut b) = (frame(w, h, under), frame(w, h, under));
+            reference(&mut a, &s, angle, rect);
+            Gradient::new(&s, angle, rect).fill(&mut b, (0, 0, w as i32, h as i32));
+            let d = max_diff(&a, &b);
+            assert!(d <= 1, "{name}: differs by {d}");
+        }
+    }
+
+    #[test]
+    fn a_partial_fill_matches_the_whole() {
+        let (w, h) = (64, 64);
+        let s = stops([10, 20, 30, 255], [90, 60, 30, 255]);
+        let g = Gradient::new(&s, 200., (0., 0., w as f32, h as f32));
+        let (mut whole, mut part) = (frame(w, h, 0), frame(w, h, 0));
+        g.fill(&mut whole, (0, 0, w as i32, h as i32));
+        g.fill(&mut part, (0, 0, w as i32, h as i32));
+        g.fill(&mut part, (13, 7, 41, 29));
+        assert_eq!(max_diff(&whole, &part), 0);
+    }
+
+    /// cargo test --release -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn timing() {
+        let (w, h) = (720, 1600);
+        let rect = (0., 0., w as f32, h as f32);
+        for (name, angle) in [("vertical", 180.), ("diagonal", 160.)] {
+            let s = stops([8, 10, 20, 255], [30, 34, 60, 255]);
+            let mut f = frame(w, h, 0);
+            let t = Instant::now();
+            for _ in 0..10 {
+                reference(&mut f, &s, angle, rect);
+            }
+            let old = t.elapsed() / 10;
+            let t = Instant::now();
+            for _ in 0..10 {
+                Gradient::new(&s, angle, rect).fill(&mut f, (0, 0, w as i32, h as i32));
+            }
+            let new = t.elapsed() / 10;
+            println!("{name} {w}x{h}: float {old:?}, table {new:?}");
         }
     }
 }
