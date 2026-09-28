@@ -1,7 +1,8 @@
 // Monochrome icons on a 24x24 grid, cut-outs by even-odd fill. The pmOS
 // logo is postmarketOS's (CC-BY-SA-4.0,
 // gitlab.postmarketos.org/postmarketOS/artwork, logo/logo.svg at
-// 7ca32b82ec0c); the rest are drawn for this.
+// 6b3ffc4caaad75e8c00113480d008576894f21df), fitted to the grid; the rest
+// are drawn for this.
 
 export component Icon {
     in property <string> name;
@@ -15,7 +16,7 @@ export component Icon {
         fill: root.color;
         fill-rule: evenodd;
         commands: root.name == "pmos"
-            ? "M 16.47 17.68 L 17.30 15.41 L 19.70 15.81 L 23.00 21.53 L 8.70 21.53 L 10.24 19.66 L 8.70 17.79 L 16.44 17.79 Z M 7.60 17.79 L 9.15 19.65 L 7.60 21.53 L 1.00 21.53 L 8.15 9.14 L 9.00 11.41 L 11.39 11.01 L 7.52 17.72 Z M 11.93 10.06 L 9.55 10.47 L 8.70 8.19 L 12.00 2.47 L 19.15 14.86 L 16.76 14.46 L 15.91 16.73 L 12.04 10.02 Z"
+            ? "M 9.05 17.79 L 10.61 19.66 L 9.05 21.53 L 23.00 21.53 L 19.76 15.92 L 17.36 15.49 L 16.52 17.79 Z M 15.74 16.43 L 16.57 14.14 L 18.98 14.56 L 12.00 2.47 L 8.76 8.08 L 9.60 10.38 L 12.00 9.95 Z M 11.22 11.31 L 8.81 11.73 L 7.98 9.44 L 1.00 21.53 L 7.48 21.53 L 9.05 19.66 L 7.48 17.79 Z"
             : root.name == "android"
             ? "M 5 13 A 7 7 0 0 1 19 13 Z M 8.6 10 A 0.9 0.9 0 1 0 10.4 10 A 0.9 0.9 0 1 0 8.6 10 Z M 13.6 10 A 0.9 0.9 0 1 0 15.4 10 A 0.9 0.9 0 1 0 13.6 10 Z M 7.6 7.4 L 5.9 4.6 L 6.8 4.1 L 8.5 6.9 Z M 16.4 7.4 L 18.1 4.6 L 17.2 4.1 L 15.5 6.9 Z M 5 14 L 19 14 L 19 19 A 2 2 0 0 1 17 21 L 7 21 A 2 2 0 0 1 5 19 Z M 1.8 14.8 A 1.3 1.3 0 0 1 4.4 14.8 L 4.4 18.6 A 1.3 1.3 0 0 1 1.8 18.6 Z M 19.6 14.8 A 1.3 1.3 0 0 1 22.2 14.8 L 22.2 18.6 A 1.3 1.3 0 0 1 19.6 18.6 Z"
             : root.name == "linux"

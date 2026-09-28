@@ -17,7 +17,8 @@ struct Look {
 // wins.
 const LOOKS: &[(&[&str], Look)] = &[
     (&["recovery", "twrp", "rescue", "fallback"], Look { tag: "RECOVERY", icon: "recovery", a: 0xf0a030, b: 0x8a3a12 }),
-    (&["postmarketos", "pmos"], Look { tag: "POSTMARKETOS", icon: "pmos", a: 0x2fbf71, b: 0x0b4a5c }),
+    // postmarketOS's green (artwork, docs/assets/attributes.svg).
+    (&["postmarketos", "pmos"], Look { tag: "POSTMARKETOS", icon: "pmos", a: 0x009900, b: 0x003300 }),
     (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0b5a45 }),
     (&["ubuntu"], Look { tag: "UBUNTU", icon: "linux", a: 0xe95420, b: 0x5a1f3f }),
     (&["debian", "mobian"], Look { tag: "DEBIAN", icon: "linux", a: 0xd70a53, b: 0x4a0a2c }),
