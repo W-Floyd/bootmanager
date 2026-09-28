@@ -30,7 +30,7 @@ const LOOKS: &[(&[&str], Look)] = &[
 // Any other entry with a command line is Linux (u-root finds Linux images).
 const LINUX: Look = Look { tag: "LINUX", icon: "linux", a: 0xf7b733, b: 0x7a2e10 };
 const OTHER: Look = Look { tag: "SYSTEM", icon: "layers", a: 0x8a7cf0, b: 0x2a2466 };
-const MENU: Look = Look { tag: "MENU", icon: "gear", a: 0x6a6f9e, b: 0x1c1d30 };
+const MENU: Look = Look { tag: "", icon: "gear", a: 0x6a6f9e, b: 0x1c1d30 };
 
 fn look(e: &Entry) -> &'static Look {
     let text = format!("{} {}", e.label, e.detail).to_lowercase();
@@ -105,6 +105,6 @@ mod tests {
         assert_eq!(cards[1].tag, "DEFAULT");
         assert_eq!(cards[2].tag, "", "the title says it already");
         assert_eq!(cards[3].tag, "ANDROID");
-        assert_eq!(cards[4].icon, "gear");
+        assert_eq!((cards[4].icon.as_str(), cards[4].tag.as_str()), ("gear", ""));
     }
 }
