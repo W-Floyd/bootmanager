@@ -56,6 +56,7 @@ var (
 	sshKeys      = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
 	sshHostKey   = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
 	waitReady    = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
+	settingsFile = flag.String("settings", "", "where the entries' order and default are kept: a file, or DEV:PATH, a file on block device DEV (kernel name) from its root, mounted only to read or write it; empty: for this run only")
 	sendCmd      = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
 )
 
@@ -125,6 +126,7 @@ func main() {
 		HoldFile:          *holdFile,
 		BootloaderDir:     *blDir,
 		AndroidPartitions: splitList(*androidParts),
+		Settings:          *settingsFile,
 		Emit:              a.rpc.Broadcast,
 		Teardown:          a.teardown,
 	})

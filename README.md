@@ -59,6 +59,7 @@ differs between devices and stages:
 | `-android-partitions` | | GPT labels of partitions that may hold such an image, read raw; empty: the boot partition of the A/B slot the bootloader did not boot (its bootconfig's `androidboot.slot_suffix`), the stage being in the booted one. A partition's image wins over a file's |
 | `-logs` | | files shown on the Log screen before the backend's (the uinit's log) |
 | `-autoboot` | `10` | seconds |
+| `-settings` | | where the entries' order and default are kept: a file, or `DEV:PATH`, a file on block device `DEV` (a kernel name) from its root, mounted only to read or write it (past the boot scan's read-only mount, which comes back as it was). Empty: for this run only |
 | `-reboot-modes` | `bootloader,fastboot,recovery,download` | reboot modes offered when the device tree maps them; leave out any that strand the device (qcom's `edl` needs a long power-button press to leave) |
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
@@ -76,11 +77,18 @@ gzip Image); use a u-root with them there.
 ## The screen
 
 It opens on a carousel: a card per boot entry, its look (colours, icon,
-landscape) guessed from the entry's label and command line, the default
-first with the countdown on it, and a last card, Tools, for the menu:
-services, partitions, the log, reboot and power off. Starting an entry
-grows its card to the whole screen until the handover; a failed boot
-puts it back.
+landscape) guessed from the entry's label and command line, in the order
+last arranged, centred on the default with the countdown on it, and a
+last card, Tools, for the menu: services, partitions, the log, reboot and
+power off. Starting an entry grows its card to the whole screen until the
+handover; a failed boot puts it back.
+
+**Long-press an entry's card** to arrange it: a bar under it moves it
+left or right, and makes it the default, or, pressed again, no longer:
+the default is then the entry the scan finds first. The default is an
+entry, not a place: moving cards never changes it. Both are kept in
+`-settings` by the entry's label, so an entry keeps its place when its
+card is out or reflashed, and one the settings do not know goes last.
 
 | key | carousel | menu |
 |---|---|---|
@@ -89,6 +97,7 @@ puts it back.
 | Power held 600 ms, Esc | open the menu | back (each screen also starts with a Back row; the first one's leads back to the carousel) |
 | tap | a side card: bring it to the middle; the middle one: start it | select a row (drag to scroll) |
 | swipe | move through the cards | |
+| long press | arrange the card: Vol+ / Vol- move it, Power makes it (or no longer) the default, Power held ends | |
 | any key or touch | stops the autoboot countdown | |
 
 ## Panel shape and scale
@@ -245,7 +254,8 @@ waits 100 ms: `--keys enter,tick,shot,tick,shot,...` is a filmstrip.
 Requests are `{"id":N,"cmd":C,"args":{...}}`, replies `{"id":N,"data":...}`
 or `{"id":N,"error":"..."}`. Pushed events are `{"event":E,"data":...}`:
 `autoboot`, `entries`, `services`, `busy`, `error`. The commands:
-`hello`, `boot.list`, `boot.start {index}`, `autoboot.cancel`,
+`hello`, `boot.list`, `boot.start {index}`, `boot.move {index, by}`,
+`boot.default {index}` (-1: the scan's first again), `autoboot.cancel`,
 `service.list`, `service.set {name, running}`, `disk.list`,
 `fs.list {dev, path}`, `fs.read {dev, path}`,
 `fs.thumb {dev, path, size | width, height}`, `stage.ready`,

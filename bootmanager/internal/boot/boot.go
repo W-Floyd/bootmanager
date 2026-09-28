@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -48,6 +49,9 @@ type Config struct {
 	// Teardown runs just before a handover, and before power actions:
 	// whatever must not outlive the stage (the UI, services, mounts).
 	Teardown func()
+	// Settings is where the entries' order and default are kept
+	// (settingsFile): PATH or DEV:PATH. Empty: for this run only.
+	Settings string
 }
 
 type Manager struct {
@@ -55,18 +59,36 @@ type Manager struct {
 	scanMu sync.Mutex // held over a scan and over the pool's mounts' release
 	pool   mount.Pool
 
-	mu      sync.Mutex
-	images  []boot.OSImage
-	scanned bool
-	booting bool
-	left    int // seconds of countdown left; -1 when none is running
+	mu       sync.Mutex
+	images   []boot.OSImage // in the user's order
+	keys     []string       // images' keys (keysOf)
+	settings Settings
+	def      int  // the default entry
+	explicit bool // chosen, not the one the scan found first
+	first    int  // with no default chosen, the scan's first entry: its place now
+	scanned  bool
+	booting  bool
+	left     int // seconds of countdown left; -1 when none is running
 
 	stop     chan struct{}
 	stopOnce sync.Once
 }
 
 func New(cfg Config) *Manager {
-	return &Manager{cfg: cfg, left: -1, stop: make(chan struct{})}
+	m := &Manager{cfg: cfg, left: -1, stop: make(chan struct{})}
+	var err error
+	if m.settings, err = parseSettingsFile(cfg.Settings).load(); err != nil {
+		log.Printf("settings %s: %v", cfg.Settings, err)
+	}
+	return m
+}
+
+// setImages takes a scan's images, arranged as the settings say.
+func (m *Manager) setImages(imgs []boot.OSImage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.images, m.keys, m.def, m.explicit = arrange(imgs, m.settings)
+	_, _, m.first, _ = arrange(imgs, Settings{Order: m.settings.Order})
 }
 
 type Entry struct {
@@ -77,6 +99,10 @@ type Entry struct {
 type Entries struct {
 	Scanning bool    `json:"scanning"`
 	Entries  []Entry `json:"entries"`
+	// Default is the entry the autoboot boots; Explicit, that the user
+	// chose it, rather than it being the one the scan found first.
+	Default  int  `json:"default"`
+	Explicit bool `json:"explicit"`
 }
 
 type Autoboot struct {
@@ -112,8 +138,10 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 // the countdown is cancelled first. It returns once either happens.
 func (m *Manager) Run() {
 	imgs, err := m.scan()
+	m.setImages(imgs)
 	m.mu.Lock()
-	m.images, m.scanned = imgs, true
+	m.scanned, imgs = true, m.images
+	def := m.def
 	m.mu.Unlock()
 	if err != nil {
 		log.Printf("scan: %v", err)
@@ -121,7 +149,11 @@ func (m *Manager) Run() {
 	}
 	log.Printf("found %d boot entries", len(imgs))
 	for i, img := range imgs {
-		log.Printf("  %d: %s", i, img.Label())
+		mark := ""
+		if i == def {
+			mark = " (default)"
+		}
+		log.Printf("  %d: %s%s", i, img.Label(), mark)
 	}
 	m.cfg.Emit("entries", m.List())
 	if len(imgs) == 0 || m.cfg.Autoboot <= 0 {
@@ -148,7 +180,7 @@ func (m *Manager) Run() {
 	if m.held() {
 		return
 	}
-	if err := m.Start(0); err != nil {
+	if err := m.Start(def); err != nil {
 		log.Printf("autoboot: %v", err)
 		m.cfg.Emit("error", map[string]string{"message": err.Error()})
 	}
@@ -209,8 +241,8 @@ func (m *Manager) Autoboot() Autoboot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a := Autoboot{Remaining: m.left}
-	if len(m.images) > 0 {
-		a.Label = m.images[0].Label()
+	if m.def < len(m.images) {
+		a.Label = m.images[m.def].Label()
 	}
 	return a
 }
@@ -218,7 +250,7 @@ func (m *Manager) Autoboot() Autoboot {
 func (m *Manager) List() Entries {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e := Entries{Scanning: !m.scanned, Entries: []Entry{}}
+	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Default: m.def, Explicit: m.explicit}
 	for _, img := range m.images {
 		detail := ""
 		if li, ok := img.(*boot.LinuxImage); ok {
@@ -303,11 +335,90 @@ func (m *Manager) Rescan() {
 	if err != nil {
 		log.Printf("rescan: %v", err)
 	}
-	m.mu.Lock()
-	m.images = imgs
-	m.mu.Unlock()
+	m.setImages(imgs)
 	log.Printf("rescan: %d boot entries", len(imgs))
 	m.cfg.Emit("entries", m.List())
+}
+
+// Move moves entry i by places (-1 left, 1 right) and keeps the order:
+// the whole of it, so entries on a card that is out stay where they were.
+func (m *Manager) Move(i, by int) error {
+	return m.change(func() error {
+		j := i + by
+		if i < 0 || j < 0 || i >= len(m.images) || j >= len(m.images) {
+			return fmt.Errorf("cannot move entry %d by %d", i, by)
+		}
+		m.images[i], m.images[j] = m.images[j], m.images[i]
+		m.keys[i], m.keys[j] = m.keys[j], m.keys[i]
+		// The default, chosen or not, is an entry: it goes with it.
+		for _, d := range []*int{&m.def, &m.first} {
+			switch *d {
+			case i:
+				*d = j
+			case j:
+				*d = i
+			}
+		}
+		// Those not found this time stay in the order, after these.
+		order := slices.Clone(m.keys)
+		for _, k := range m.settings.Order {
+			if !slices.Contains(order, k) {
+				order = append(order, k)
+			}
+		}
+		m.settings.Order = order
+		return nil
+	})
+}
+
+// SetDefault makes entry i the one to autoboot, or, with i < 0, goes back
+// to the first.
+func (m *Manager) SetDefault(i int) error {
+	return m.change(func() error {
+		if i >= len(m.images) {
+			return fmt.Errorf("no boot entry %d", i)
+		}
+		if i < 0 {
+			m.settings.Default, m.def, m.explicit = "", m.first, false
+			return nil
+		}
+		m.settings.Default, m.def, m.explicit = m.keys[i], i, true
+		return nil
+	})
+}
+
+// change applies f to the entries and settings and saves them, undoing
+// all of it if the save fails.
+func (m *Manager) change(f func() error) error {
+	m.mu.Lock()
+	if m.booting {
+		m.mu.Unlock()
+		return errors.New("a boot is in progress")
+	}
+	saved := struct {
+		images   []boot.OSImage
+		keys     []string
+		settings Settings
+		def      int
+		explicit bool
+		first    int
+	}{slices.Clone(m.images), slices.Clone(m.keys), Settings{slices.Clone(m.settings.Order), m.settings.Default}, m.def, m.explicit, m.first}
+	err := f()
+	if err == nil {
+		m.scanMu.Lock()
+		err = parseSettingsFile(m.cfg.Settings).save(m.settings)
+		m.scanMu.Unlock()
+		if err != nil {
+			err = fmt.Errorf("saving settings: %w", err)
+		}
+	}
+	if err != nil {
+		m.images, m.keys, m.settings, m.def, m.explicit, m.first = saved.images, saved.keys, saved.settings, saved.def, saved.explicit, saved.first
+	}
+	m.mu.Unlock()
+	m.cfg.Emit("entries", m.List())
+	m.cfg.Emit("autoboot", m.Autoboot())
+	return err
 }
 
 // Unmount releases the scan's mounts and syncs, for a handover or a

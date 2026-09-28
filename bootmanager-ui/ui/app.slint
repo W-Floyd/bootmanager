@@ -69,6 +69,11 @@ export component AppWindow inherits Window {
     in property <string> toast;
     in property <string> home-hint: "▲▼ choose  ·  Power start  ·  hold for menu";
     callback card-activated(int);
+    in property <int> default-index;
+    in property <bool> default-explicit;
+    in-out property <int> card-editing: -1;
+    callback card-move(int, int);
+    callback card-default(int);
     callback open-menu();
 
     // The menu.
@@ -202,6 +207,11 @@ export component AppWindow inherits Window {
             activated(i) => { root.card-activated(i); }
             activity => { root.activity(); }
             menu => { root.open-menu(); }
+            default-index: root.default-index;
+            default-explicit: root.default-explicit;
+            editing <=> root.card-editing;
+            move(i, by) => { root.card-move(i, by); }
+            make-default(i) => { root.card-default(i); }
         }
 
         // One dot per card; the current one a pill.
@@ -225,7 +235,7 @@ export component AppWindow inherits Window {
             y: root.height - 44px;
             width: parent.width;
             horizontal-alignment: center;
-            text: root.home-hint;
+            text: carousel.editing >= 0 ? "▲▼ move  ·  Power default  ·  hold Power: done" : root.home-hint;
             font-size: 12px;
             color: #ffffff80;
             opacity: root.chrome ? 1 : 0;

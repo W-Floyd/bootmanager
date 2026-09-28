@@ -121,7 +121,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             let boot = match &s.entries {
                 None => "Looking for boot entries…".to_string(),
                 Some(e) if e.is_empty() => "No boot entries found".to_string(),
-                Some(e) => format!("Default: {}", e[0].label),
+                Some(e) => format!("Default: {}", e.get(s.default).map_or("", |e| e.label.as_str())),
             };
             let svc: Vec<String> =
                 s.services.iter().map(|v| format!("{} {}", v.title, if v.running { "on" } else { "off" })).collect();
@@ -146,7 +146,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 Some(e) if e.is_empty() => rows.push(info("No boot entries", "Nothing on any disk has an extlinux.conf")),
                 Some(e) => {
                     for (i, e) in e.iter().enumerate() {
-                        let title = if i == 0 { format!("{}  (default)", e.label) } else { e.label.clone() };
+                        let title = if i == s.default { format!("{}  (default)", e.label) } else { e.label.clone() };
                         rows.push((row(title, e.detail.clone(), "action", false), Action::Boot(i)));
                     }
                 }

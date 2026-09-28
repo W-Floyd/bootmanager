@@ -58,6 +58,12 @@ pub struct State {
     /// left is dropped.
     generation: u64,
     pub entries: Option<Vec<proto::Entry>>,
+    /// The default entry, and whether the user chose it.
+    pub default: usize,
+    pub explicit: bool,
+    /// The carousel was put on the default, as it is once, when the
+    /// entries first arrive.
+    centred: bool,
     pub services: Vec<Service>,
     pub modes: Vec<String>,
     /// Files can be handed to a browser (the web build).
@@ -95,6 +101,13 @@ pub struct App {
     last_route: RefCell<String>,
 }
 
+impl State {
+    fn take_entries(&mut self, e: proto::Entries) {
+        (self.default, self.explicit) = (e.default.min(e.entries.len().saturating_sub(1)), e.explicit);
+        self.entries = Some(e.entries);
+    }
+}
+
 impl App {
     pub fn install(ui: &AppWindow, mode: Mode) -> Rc<App> {
         let app = Rc::new(App {
@@ -106,6 +119,9 @@ impl App {
                 actions: vec![],
                 generation: 0,
                 entries: None,
+                default: 0,
+                explicit: false,
+                centred: false,
                 services: vec![],
                 modes: vec![],
                 browser: matches!(mode, Mode::Browser { .. }),
@@ -150,6 +166,18 @@ impl App {
         ui.on_card_activated(move |i| {
             if let Some(a) = weak.upgrade() {
                 a.activate_card(i as usize)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_move(move |i, by| {
+            if let Some(a) = weak.upgrade() {
+                a.move_card(i as usize, by)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_default(move |i| {
+            if let Some(a) = weak.upgrade() {
+                a.default_card(i as usize)
             }
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
@@ -244,7 +272,7 @@ impl App {
                 s.countdown_total = s.countdown_total.max(a.remaining);
             }
             Event::Entries(e) if !e.scanning => {
-                s.entries = Some(e.entries);
+                s.take_entries(e);
                 drop(s);
                 self.entries_arrived();
                 s = self.state.borrow_mut();
@@ -311,7 +339,7 @@ impl App {
     fn refresh_boot(self: &Rc<Self>) {
         self.call("boot.list", json!({}), |a, r: Result<proto::Entries, _>| match r {
             Ok(e) if !e.scanning => {
-                a.state.borrow_mut().entries = Some(e.entries);
+                a.state.borrow_mut().take_entries(e);
                 a.entries_arrived();
             }
             Ok(_) => {}
@@ -518,6 +546,34 @@ impl App {
         }
     }
 
+    /// Moves entry i's card by places (-1 left), the carousel and the edit
+    /// bar going with it.
+    fn move_card(self: &Rc<Self>, i: usize, by: i32) {
+        self.call("boot.move", json!({"index": i, "by": by}), move |a, r: Result<proto::Entries, _>| match r {
+            Ok(e) => {
+                a.state.borrow_mut().take_entries(e);
+                if let Some(ui) = a.ui.upgrade() {
+                    let j = i as i32 + by;
+                    ui.set_card_editing(j);
+                    ui.set_card_selected(j);
+                }
+            }
+            Err(e) => a.state.borrow_mut().error = e,
+        });
+    }
+
+    /// Makes entry i the default, or, when it already is by choice, goes
+    /// back to the first being the default.
+    fn default_card(self: &Rc<Self>, i: usize) {
+        let s = self.state.borrow();
+        let index = if s.explicit && s.default == i { -1 } else { i as i64 };
+        drop(s);
+        self.call("boot.default", json!({"index": index}), |a, r: Result<proto::Entries, _>| match r {
+            Ok(e) => a.state.borrow_mut().take_entries(e),
+            Err(e) => a.state.borrow_mut().error = e,
+        });
+    }
+
     /// A card chosen on the carousel: boot its entry, or open the menu.
     fn activate_card(self: &Rc<Self>, i: usize) {
         let entries = self.state.borrow().entries.as_ref().map_or(0, |e| e.len());
@@ -590,10 +646,16 @@ impl App {
         let Some(ui) = self.ui.upgrade() else { return };
         let connected = self.client.connected();
         let mut s = self.state.borrow_mut();
-        let cards = cards::build(s.entries.as_deref().unwrap_or_default());
+        let cards = cards::build(s.entries.as_deref().unwrap_or_default(), s.default);
         if cards != s.cards {
             ui.set_cards(ModelRc::new(VecModel::from(cards.clone())));
             s.cards = cards;
+        }
+        ui.set_default_index(s.default as i32);
+        ui.set_default_explicit(s.explicit);
+        if !s.centred && s.entries.is_some() {
+            s.centred = true;
+            ui.set_card_selected(s.default as i32);
         }
         ui.set_menu_open(s.menu_open);
         ui.set_launching(s.launching);

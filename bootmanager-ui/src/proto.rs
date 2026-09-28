@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 /// Changes whenever a command or event changes shape (bootmanager's
 /// protocolVersion).
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[derive(Deserialize)]
 pub struct Hello {
@@ -33,6 +33,12 @@ pub struct Entry {
 pub struct Entries {
     pub scanning: bool,
     pub entries: Vec<Entry>,
+    /// The entry the autoboot boots; explicit: the user chose it, rather
+    /// than it being the first.
+    #[serde(default)]
+    pub default: usize,
+    #[serde(default)]
+    pub explicit: bool,
 }
 
 #[derive(Deserialize)]

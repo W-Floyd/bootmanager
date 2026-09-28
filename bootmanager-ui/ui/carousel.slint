@@ -107,6 +107,8 @@ export component CardView {
     in property <float> launch;
     in property <string> note;
     callback clicked();
+    // Held still for half a second; the release after it is no click.
+    callback long-pressed();
     property <bool> launching: self.launch > 0;
 
     property <length> radius: self.width * 0.07 * (1 - root.launch);
@@ -281,8 +283,77 @@ export component CardView {
         animate opacity { duration: 200ms; }
     }
 
-    TouchArea {
+    ta := TouchArea {
+        property <bool> held;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.held = false;
+            }
+        }
+        clicked => {
+            if (!self.held) {
+                root.clicked();
+            }
+        }
+    }
+    Timer {
+        interval: 500ms;
+        running: ta.pressed && !ta.held && abs(ta.mouse-x - ta.pressed-x) < 12px && abs(ta.mouse-y - ta.pressed-y) < 12px;
+        triggered => {
+            ta.held = true;
+            root.long-pressed();
+        }
+    }
+}
+
+component BarButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> on;
+    in property <length> font-size: 17px;
+    callback clicked();
+    min-width: 52px;
+    height: 44px;
+    border-radius: 22px;
+    background: t.pressed && root.enabled ? #ffffff40 : root.on ? #ffffff30 : transparent;
+    Text {
+        text: root.text;
+        font-size: root.font-size;
+        color: root.enabled ? #ffffff : #ffffff40;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    t := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+}
+
+// Under a card being arranged: move it left or right, make it the default.
+component EditBar inherits Rectangle {
+    in property <bool> can-left;
+    in property <bool> can-right;
+    in property <bool> is-default;
+    callback left();
+    callback right();
+    callback star();
+    callback done();
+    width: row.preferred-width;
+    height: 52px;
+    border-radius: 26px;
+    background: #000000b0;
+    row := HorizontalLayout {
+        padding: 4px;
+        spacing: 2px;
+        BarButton { text: "‹"; font-size: 30px; enabled: root.can-left; clicked => { root.left(); } }
+        BarButton {
+            text: root.is-default ? "★ Default" : "☆ Default";
+            on: root.is-default;
+            min-width: 120px;
+            clicked => { root.star(); }
+        }
+        BarButton { text: "›"; font-size: 30px; enabled: root.can-right; clicked => { root.right(); } }
+        BarButton { text: "Done"; min-width: 70px; clicked => { root.done(); } }
     }
 }
 
@@ -299,6 +370,16 @@ export component Carousel inherits FocusScope {
     callback activated(int);
     callback activity();
     callback menu();
+    // The default entry's card, which carries the countdown; explicit:
+    // chosen, not just the first.
+    in property <int> default-index;
+    in property <bool> default-explicit;
+    // The card being arranged (a long press on an entry's), or -1; the
+    // last card, the menu's, is not one.
+    in-out property <int> editing: -1;
+    callback move(int, int);
+    callback make-default(int);
+    property <int> entries: root.cards.length - 1;
 
     // The band the cards sit in; the carousel itself is the whole window,
     // for a launched card to fill.
@@ -321,10 +402,33 @@ export component Carousel inherits FocusScope {
     function go(i: int) {
         root.selected = max(0, min(root.cards.length - 1, i));
     }
+    // Arranging ends when the carousel moves off the card, or a boot starts.
+    changed selected => {
+        if (root.selected != root.editing) {
+            root.editing = -1;
+        }
+    }
+    changed launching => {
+        if (root.launching >= 0) {
+            root.editing = -1;
+        }
+    }
 
     key-pressed(event) => {
         root.activity();
         if (root.launching >= 0) {
+            return accept;
+        }
+        if (root.editing >= 0) {
+            if ((event.text == Key.UpArrow || event.text == Key.LeftArrow) && root.editing > 0) {
+                root.move(root.editing, -1);
+            } else if ((event.text == Key.DownArrow || event.text == Key.RightArrow) && root.editing < root.entries - 1) {
+                root.move(root.editing, 1);
+            } else if (event.text == Key.Return || event.text == " ") {
+                root.make-default(root.editing);
+            } else if (event.text == Key.Escape || event.text == Key.Backspace) {
+                root.editing = -1;
+            }
             return accept;
         }
         if (event.text == Key.UpArrow || event.text == Key.LeftArrow) {
@@ -378,7 +482,7 @@ export component Carousel inherits FocusScope {
             card: card;
             far: min(1.5, self.ad) * (1 - self.lt);
             current: i == root.selected;
-            remaining: i == 0 ? root.remaining : -1;
+            remaining: i == root.default-index ? root.remaining : -1;
             total: root.total;
             launch: self.lt;
             note: root.note;
@@ -395,12 +499,34 @@ export component Carousel inherits FocusScope {
 
             clicked => {
                 root.activity();
-                if (i == root.selected) {
+                if (root.editing >= 0) {
+                    root.editing = -1;
+                } else if (i == root.selected) {
                     root.activated(i);
                 } else {
                     root.go(i);
                 }
             }
+            long-pressed => {
+                root.activity();
+                if (i < root.entries && root.launching < 0) {
+                    root.go(i);
+                    root.editing = i;
+                }
+            }
         }
+    }
+
+    if root.editing >= 0 && root.editing == root.selected: EditBar {
+        x: (root.width - self.width) / 2;
+        y: root.band-y + (root.band-h + root.card-h) / 2 + 14px;
+        z: 200;
+        can-left: root.editing > 0;
+        can-right: root.editing < root.entries - 1;
+        is-default: root.editing == root.default-index && root.default-explicit;
+        left => { root.activity(); root.move(root.editing, -1); }
+        right => { root.activity(); root.move(root.editing, 1); }
+        star => { root.activity(); root.make-default(root.editing); }
+        done => { root.editing = -1; }
     }
 }

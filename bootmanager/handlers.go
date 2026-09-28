@@ -14,7 +14,7 @@ import (
 
 // protocolVersion changes whenever a command or event changes shape; the
 // UI refuses a backend of another version.
-const protocolVersion = 3
+const protocolVersion = 4
 
 type none struct{}
 
@@ -39,6 +39,18 @@ func (a *app) register() {
 	})
 	rpc.Handle(s, "boot.list", func(none) (any, error) { return a.boot.List(), nil })
 	rpc.Handle(s, "boot.start", func(x struct{ Index int }) (any, error) { return nil, a.boot.Start(x.Index) })
+	// Saving may remount the partition the settings are on: the browsing
+	// mounts go first, as they hold it open.
+	rpc.Handle(s, "boot.move", func(x struct{ Index, By int }) (any, error) {
+		a.disks.UnmountAll()
+		err := a.boot.Move(x.Index, x.By)
+		return a.boot.List(), err
+	})
+	rpc.Handle(s, "boot.default", func(x struct{ Index int }) (any, error) {
+		a.disks.UnmountAll()
+		err := a.boot.SetDefault(x.Index)
+		return a.boot.List(), err
+	})
 	rpc.Handle(s, "autoboot.cancel", func(none) (any, error) { a.boot.Cancel(); return nil, nil })
 	rpc.Handle(s, "service.list", func(none) (any, error) { return a.svcs.List(), nil })
 	rpc.Handle(s, "service.set", afterReady(a, func(x struct {

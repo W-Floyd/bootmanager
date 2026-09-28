@@ -63,14 +63,14 @@ fn card(title: &str, subtitle: String, tag: &str, l: &Look, variant: i32) -> Car
     Card { title: title.into(), subtitle: subtitle.into(), tag: tag.into(), icon: l.icon.into(), a: rgb(l.a), b: rgb(l.b), variant }
 }
 
-/// A card per entry, the first marked the default, then the menu's.
-pub fn build(entries: &[Entry]) -> Vec<Card> {
+/// A card per entry, the default marked, then the menu's.
+pub fn build(entries: &[Entry], default: usize) -> Vec<Card> {
     let mut cards: Vec<Card> = entries
         .iter()
         .enumerate()
         .map(|(i, e)| {
             let l = look(e);
-            card(&e.label, subtitle(&e.detail), if i == 0 { "DEFAULT" } else { l.tag }, l, (i % 3) as i32)
+            card(&e.label, subtitle(&e.detail), if i == default { "DEFAULT" } else { l.tag }, l, (i % 3) as i32)
         })
         .collect();
     cards.push(card("Tools", "Services, partitions, log, power".into(), MENU.tag, &MENU, 2));
@@ -94,9 +94,9 @@ mod tests {
         assert_eq!(look(&entry("Something", "")).icon, "layers");
         assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
         assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
-        let cards = build(&[entry("a", ""), entry("b", "")]);
+        let cards = build(&[entry("a", ""), entry("b", "")], 1);
         assert_eq!(cards.len(), 3);
-        assert_eq!(cards[0].tag, "DEFAULT");
+        assert_eq!(cards[1].tag, "DEFAULT");
         assert_eq!(cards[2].icon, "gear");
     }
 }

@@ -9,7 +9,9 @@
 //!     bootmanager-ui --socket S --screenshot out.png [--keys down,down,enter] [--size 720x1600]
 //!         keys: up down enter back wait (each step 400 ms apart), and
 //!         shot (save the frame as out-N.png) or tick (100 ms, for
-//!         filmstrips of an animation: tick,shot,tick,shot,...)
+//!         filmstrips of an animation: tick,shot,tick,shot,...); a finger:
+//!         press:X:Y move:X:Y lift:X:Y (logical pixels, 8 ms apart, as a
+//!         touchscreen reports), a long press being press, ticks, lift
 
 use bootmanager_ui::app::{App, Mode};
 use bootmanager_ui::platform::{self, Fb, FbPlatform, Frame, Target};
@@ -87,6 +89,7 @@ fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize, frame: R
         (0, _) => 800,
         (_, Some("shot")) => 0,
         (_, Some("tick")) => 100,
+        (_, Some(s)) if touch_step(s).is_some() => 8,
         _ => 400,
     };
     slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
@@ -107,12 +110,32 @@ fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize, frame: R
             u.window().dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
             u.window().dispatch_event(WindowEvent::KeyReleased { text });
         }
+        // As the panel's touchscreen sends them (platform.rs).
+        if let Some((kind, x, y)) = touch_step(step) {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            match kind {
+                "press" => u.window().dispatch_event(WindowEvent::PointerPressed { position, button }),
+                "move" => u.window().dispatch_event(WindowEvent::PointerMoved { position }),
+                _ => {
+                    u.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+                    u.window().dispatch_event(WindowEvent::PointerExited);
+                }
+            }
+        }
         if step == "shot" {
             let n = steps[..i].iter().filter(|s| *s == "shot").count();
             save_png(&format!("{}-{n}.png", out.trim_end_matches(".png")), &frame.borrow());
         }
         run_script(ui, steps, i + 1, frame, out);
     });
+}
+
+/// press:X:Y, move:X:Y or lift:X:Y.
+fn touch_step(step: &str) -> Option<(&str, f32, f32)> {
+    let mut it = step.split(':');
+    let kind = it.next().filter(|k| matches!(*k, "press" | "move" | "lift"))?;
+    Some((kind, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
 fn save_png(path: &str, frame: &Frame) {
