@@ -15,9 +15,12 @@
 use crate::app::scale_for;
 use evdev::raw_stream::RawDevice;
 use evdev::{AbsoluteAxisCode, EventSummary, KeyCode, SynchronizationCode};
-use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
+use slint::platform::software_renderer::{
+    DrawRectangleArgs, MinimalSoftwareWindow, PhysicalRegion, PremultipliedRgbaColor, RenderingRotation, RepaintBufferType, TargetPixel,
+    TargetPixelBuffer,
+};
 use slint::platform::{EventLoopProxy, Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
-use slint::{LogicalPosition, PhysicalSize, PlatformError};
+use slint::{Brush, LogicalPosition, PhysicalSize, PlatformError};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -51,6 +54,101 @@ pub struct Frame {
     pub px: Vec<Px>,
     pub width: usize,
     pub height: usize,
+}
+
+/// 8x8 ordered-dither thresholds, 0..64.
+const BAYER: [[u8; 8]; 8] = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+];
+
+/// The frame as Slint's render target. Slint truncates gradients to 8 bits
+/// per channel (vertical ones to 256 steps along their length), which bands
+/// a dark backdrop; plain unrounded gradient rectangles are drawn here
+/// instead, in float, dithered on the pixel's screen position so a partial
+/// repaint matches what is around it.
+struct Canvas<'a>(&'a mut Frame);
+
+impl TargetPixelBuffer for Canvas<'_> {
+    type TargetPixel = Px;
+
+    fn line_slice(&mut self, line: usize) -> &mut [Px] {
+        let w = self.0.width;
+        &mut self.0.px[line * w..][..w]
+    }
+
+    fn num_lines(&self) -> usize {
+        self.0.height
+    }
+
+    fn draw_rectangle(&mut self, a: &DrawRectangleArgs, clip: &PhysicalRegion) -> bool {
+        let Brush::LinearGradient(g) = &a.background else { return false };
+        let radii = [a.top_left_radius, a.top_right_radius, a.bottom_right_radius, a.bottom_left_radius];
+        if radii.iter().any(|r| *r > 0.) || a.border_width > 0. || a.rotation != RenderingRotation::NoRotation {
+            return false;
+        }
+        // Premultiplied, 0..255, with the item's opacity.
+        let op = a.alpha as f32 / 255.;
+        let stops: Vec<(f32, [f32; 4])> = g
+            .stops()
+            .map(|s| {
+                let c = s.color;
+                let al = c.alpha() as f32 * op;
+                let k = al / 255.;
+                (s.position, [c.red() as f32 * k, c.green() as f32 * k, c.blue() as f32 * k, al])
+            })
+            .collect();
+        let (Some(first), Some(last)) = (stops.first(), stops.last()) else { return false };
+        let opaque = stops.iter().all(|s| s.1[3] >= 255.);
+
+        // CSS: the gradient line runs through the centre at the angle
+        // (0deg up, clockwise), long enough to reach the corners.
+        let (sin, cos) = g.angle().to_radians().sin_cos();
+        let len = (a.width * sin).abs() + (a.height * cos).abs();
+        let (cx, cy) = (a.x + a.width / 2., a.y + a.height / 2.);
+        let dt = sin / len;
+        let (x0, y0) = (a.x.round() as i32, a.y.round() as i32);
+        let (x1, y1) = ((a.x + a.width).round() as i32, (a.y + a.height).round() as i32);
+
+        let w = self.0.width;
+        for (o, s) in clip.iter() {
+            let (rx0, ry0) = (o.x.max(x0).max(0), o.y.max(y0).max(0));
+            let rx1 = (o.x + s.width as i32).min(x1).min(w as i32);
+            let ry1 = (o.y + s.height as i32).min(y1).min(self.0.height as i32);
+            for y in ry0..ry1 {
+                let row = &mut self.0.px[y as usize * w..][rx0.max(0) as usize..rx1.max(rx0) as usize];
+                let bayer = &BAYER[y as usize & 7];
+                let mut t = 0.5 + ((rx0 as f32 + 0.5 - cx) * sin - (y as f32 + 0.5 - cy) * cos) / len;
+                for (i, p) in row.iter_mut().enumerate() {
+                    let c = if t <= first.0 {
+                        first.1
+                    } else if t >= last.0 {
+                        last.1
+                    } else {
+                        let k = stops.windows(2).position(|w| t < w[1].0).unwrap_or(0);
+                        let ((p0, c0), (p1, c1)) = (stops[k], stops[k + 1]);
+                        let f = if p1 > p0 { (t - p0) / (p1 - p0) } else { 0. };
+                        std::array::from_fn(|j| c0[j] + (c1[j] - c0[j]) * f)
+                    };
+                    let d = (bayer[(rx0 as usize + i) & 7] as f32 + 0.5) / 64.;
+                    let keep = if opaque { 0. } else { 1. - c[3] / 255. };
+                    let ch = |shift: u32, v: f32| {
+                        let under = ((p.0 >> shift) & 0xff) as f32;
+                        ((under * keep + v + d) as u32).min(255) << shift
+                    };
+                    p.0 = ch(16, c[0]) | ch(8, c[1]) | ch(0, c[2]);
+                    t += dt;
+                }
+            }
+        }
+        true
+    }
 }
 
 // --- fbdev (linux/fb.h) ---
@@ -568,7 +666,7 @@ impl FbPlatform {
                 renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);
             }
             let t0 = Instant::now();
-            let region = renderer.render(&mut frame.px, w);
+            let region = renderer.render_into_buffer(&mut Canvas(&mut frame));
             let t1 = Instant::now();
             let (o, s) = (region.bounding_box_origin(), region.bounding_box_size());
             if let Target::Fb(fb) = &self.target {

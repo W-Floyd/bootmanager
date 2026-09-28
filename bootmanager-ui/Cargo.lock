@@ -414,6 +414,7 @@ dependencies = [
  "console_error_panic_hook",
  "evdev",
  "i-slint-common",
+ "i-slint-renderer-software",
  "libc",
  "percent-encoding",
  "png 0.17.16",

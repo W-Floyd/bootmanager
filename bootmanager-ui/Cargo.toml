@@ -11,7 +11,7 @@ publish = false
 #   web    wasm for a browser, served by the backend, over a WebSocket.
 [features]
 default = ["fbdev"]
-fbdev = ["slint/renderer-software", "dep:libc", "dep:evdev", "dep:png"]
+fbdev = ["slint/renderer-software", "dep:i-slint-renderer-software", "dep:libc", "dep:evdev", "dep:png"]
 web = ["slint/backend-winit", "slint/renderer-femtovg", "dep:wasm-bindgen", "dep:web-sys", "dep:console_error_panic_hook"]
 
 [lib]
@@ -39,6 +39,9 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # binary being static; dlopened, it simply fails in the stage and the
 # embedded fonts are used. Must match slint's version exactly.
 i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }
+# Not used directly either: "experimental" exposes TargetPixelBuffer, whose
+# draw_rectangle hook lets platform.rs draw gradients itself, dithered.
+i-slint-renderer-software = { version = "=1.18.1", features = ["experimental"], optional = true }
 
 [build-dependencies]
 slint-build = "1.18"
