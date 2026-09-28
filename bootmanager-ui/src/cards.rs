@@ -19,7 +19,8 @@ const LOOKS: &[(&[&str], Look)] = &[
     (&["recovery", "twrp", "rescue", "fallback"], Look { tag: "RECOVERY", icon: "recovery", a: 0xf0a030, b: 0x8a3a12 }),
     // postmarketOS's green (artwork, docs/assets/attributes.svg).
     (&["postmarketos", "pmos"], Look { tag: "POSTMARKETOS", icon: "pmos", a: 0x009900, b: 0x003300 }),
-    (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0b5a45 }),
+    // Android's green, #3ddc84, and a darker one of its hue.
+    (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0e4d2c }),
     (&["ubuntu"], Look { tag: "UBUNTU", icon: "linux", a: 0xe95420, b: 0x5a1f3f }),
     (&["debian", "mobian"], Look { tag: "DEBIAN", icon: "linux", a: 0xd70a53, b: 0x4a0a2c }),
     (&["fedora"], Look { tag: "FEDORA", icon: "linux", a: 0x3c6eb4, b: 0x1b2a55 }),
