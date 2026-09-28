@@ -44,6 +44,7 @@ var (
 	autoboot    = flag.Int("autoboot", 10, "seconds before booting the default entry; 0 disables")
 	holdFile    = flag.String("hold", "/tmp/hold", "stay in the stage when this file exists as the countdown starts or ends")
 	scanDir     = flag.String("scan", "", "parse this directory's boot config instead of probing block devices")
+	blDir       = flag.String("bootloader", "/sys/firmware/bootloader", "the device tree and initramfs the bootloader handed the stage (fdt, initrd), if it keeps them; with them, an Android boot image at "+boot.AndroidImage+" on a partition is an entry")
 	logPath     = flag.String("log", "/tmp/bootmanager.log", "log file, also shown on the Log screen")
 	extraLogs   = flag.String("logs", "", "comma-separated files shown on the Log screen before the log (the stage's own, say)")
 	listen      = flag.String("listen", "127.0.0.1", "address Remote UI listens on: a USB network's, say, never one reachable from elsewhere; the default needs an SSH tunnel")
@@ -116,11 +117,12 @@ func main() {
 		a.markReady()
 	}
 	a.boot = boot.New(boot.Config{
-		ScanDir:  *scanDir,
-		Autoboot: *autoboot,
-		HoldFile: *holdFile,
-		Emit:     a.rpc.Broadcast,
-		Teardown: a.teardown,
+		ScanDir:       *scanDir,
+		Autoboot:      *autoboot,
+		HoldFile:      *holdFile,
+		BootloaderDir: *blDir,
+		Emit:          a.rpc.Broadcast,
+		Teardown:      a.teardown,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },

@@ -35,6 +35,10 @@ type Config struct {
 	// HoldFile, when it exists as the countdown starts or ends, stops the
 	// autoboot.
 	HoldFile string
+	// BootloaderDir holds the device tree and initramfs the bootloader
+	// handed the stage (fdt, initrd), when the stage keeps them: with it,
+	// an Android boot image on a partition is an entry (android.go).
+	BootloaderDir string
 	// Emit sends an event to every client.
 	Emit func(name string, data any)
 	// Teardown runs just before a handover, and before power actions:
@@ -91,6 +95,9 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	boot.ApplyLinuxModifiers(imgs, func(li *boot.LinuxImage) {
 		li.Cmdline = f.Update(cmdline.NewCmdLine(), li.Cmdline)
 	})
+	// After the console edit: Android's command line is the bootloader's,
+	// console= included.
+	imgs = append(imgs, androidEntries(m.pool.MountPoints, m.cfg.BootloaderDir)...)
 	return imgs, nil
 }
 
