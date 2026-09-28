@@ -12,9 +12,10 @@ struct Look {
     b: u32,
 }
 
-// Matched in order against the words of the label and command line,
-// lowercased, as prefixes ("lineage" finds "lineageos"); the first match
-// wins.
+// Matched in order against the words of the label, then of the command
+// line, lowercased, as prefixes ("lineage" finds "lineageos"); the first
+// match wins. The label first: a command line can carry another system's
+// words (Android's, from its bootloader, the stage's own pmos_* ones).
 const LOOKS: &[(&[&str], Look)] = &[
     (&["recovery", "twrp", "rescue", "fallback"], Look { tag: "RECOVERY", icon: "recovery", a: 0xf0a030, b: 0x8a3a12 }),
     // postmarketOS's green (artwork, docs/assets/attributes.svg).
@@ -35,10 +36,12 @@ const OTHER: Look = Look { tag: "SYSTEM", icon: "layers", a: 0x8a7cf0, b: 0x2a24
 const MENU: Look = Look { tag: "", icon: "gear", a: 0x6a6f9e, b: 0x1c1d30 };
 
 fn look(e: &Entry) -> &'static Look {
-    let text = format!("{} {}", e.label, e.detail).to_lowercase();
-    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
-    let found = LOOKS.iter().find(|(keys, _)| keys.iter().any(|k| words.iter().any(|w| w.starts_with(k))));
-    match found {
+    let find = |text: &str| {
+        let text = text.to_lowercase();
+        let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        LOOKS.iter().find(|(keys, _)| keys.iter().any(|k| words.iter().any(|w| w.starts_with(k))))
+    };
+    match find(&e.label).or_else(|| find(&e.detail)) {
         Some((_, l)) => l,
         None if !e.detail.is_empty() => &LINUX,
         None => &OTHER,
@@ -100,6 +103,9 @@ mod tests {
         assert_eq!(look(&entry("pmos (recovery)", "")).icon, "recovery");
         assert_eq!(look(&entry("Something", "quiet")).icon, "linux");
         assert_eq!(look(&entry("Mobian", "")).icon, "debian");
+        // Android's command line, as ABL builds it, carries the stage's pmOS words.
+        assert_eq!(look(&entry("Android", "console=null pmos.nosplash pmos_boot_uuid=3777f3f3 init=/init")).icon, "android");
+        assert_eq!(look(&entry("Kernel 7.3", "pmos_root_uuid=8e7b")).icon, "pmos");
         assert_eq!(look(&entry("Something", "")).icon, "layers");
         assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
         assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
