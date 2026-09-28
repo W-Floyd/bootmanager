@@ -104,6 +104,13 @@ func otherSlotBoot(initrd string) string {
 	return ""
 }
 
+// Bootconfig is the bootconfig of the initramfs the bootloader handed
+// the stage (in bootloaderDir), nil without one: androidboot.slot_suffix,
+// androidboot.serialno, ...
+func Bootconfig(bootloaderDir string) map[string]string {
+	return bootconfig(filepath.Join(bootloaderDir, "initrd"))
+}
+
 // bootconfig reads the bootconfig trailer at the end of an initramfs
 // (Documentation/admin-guide/bootconfig.rst: the text, its size and
 // checksum as little-endian u32s, "#BOOTCONFIG\n") as key-value pairs,

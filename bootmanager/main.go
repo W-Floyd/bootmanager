@@ -145,6 +145,12 @@ func main() {
 			Detail: "http://" + net.JoinHostPort(*listen, webPort),
 			Start:  svc.InProcess(a.startRemote),
 		},
+		{
+			Name:   "fastboot",
+			Title:  "Fastboot",
+			Detail: "flashes over USB; the USB network drops for a moment",
+			Start:  svc.InProcess(a.startFastboot),
+		},
 	}
 	a.rpc.Greeting = func() []rpc.Event { return []rpc.Event{{Event: "autoboot", Data: a.boot.Autoboot()}} }
 	a.register()

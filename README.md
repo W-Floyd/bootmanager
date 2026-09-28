@@ -1,8 +1,8 @@
 # Boot Manager
 
 A boot menu and recovery screen for a LinuxBoot stage, as a PC's firmware
-setup and boot menu would be: pick and start a boot entry; switch SSH and
-remote access on and off; browse partitions read-only; view the log;
+setup and boot menu would be: pick and start a boot entry; switch SSH,
+remote access and fastboot on and off; browse partitions read-only; view the log;
 reboot (into any mode the device tree offers) or power off. It runs on the
 device's panel, driven by its keys or touch, and the same UI, built for
 wasm, runs in a browser on a connected host.
@@ -63,6 +63,7 @@ differs between devices and stages:
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
 | `-web` | `/usr/share/bootmanager-web` | the UI's web build |
+| `-fastboot-gadget` | | the configfs USB gadget Fastboot joins; empty: the one bound to a UDC |
 | `-wait-ready` | off | start the UI and socket at once; hold the boot scan and countdown, disks, SSH, Remote UI and `-dev-once` until `stage.ready` |
 | `-send CMD` | | a client: send CMD to `-socket` (retrying 5 s for it to appear), print the reply, exit non-zero on an error |
 
@@ -134,6 +135,37 @@ password, so:
 
 With the default `-listen`, reach it through SSH:
 `ssh -L 8080:127.0.0.1:8080 -L 8081:127.0.0.1:8081 root@<device>`.
+
+## Fastboot
+
+**Services -> Fastboot** makes the device a fastboot device beside the
+stage's USB network, for the host's stock `fastboot` to flash from the
+stage: GPT partitions by name (`fastboot flash boot_b boot.img`), any
+block device by its kernel name (`mmcblk1p2`), and the SD card whole as
+`sdcard` (`fastboot flash sdcard pmos.img`: a disk image, partition table
+and all). It also takes `getvar`, `reboot [bootloader|recovery|...]` (the
+device tree's modes) and `continue` (boot the default entry). It answers
+as fastbootd does (`is-userspace:yes`), without logical partitions.
+
+* **It is off by default and asks for nothing**: whoever has the cable
+  can overwrite any partition, the stage's own included. Switch it on only
+  on a host you trust.
+* Switching it on or off rebinds the gadget: **the USB network drops for a
+  moment**, and SSH over it usually survives.
+* The serial number, `getvar` and `fastboot devices` alike, is the
+  bootloader's (`androidboot.serialno`), else the device tree's
+  `serial-number`: the one ABL's fastboot shows. The gadget has it only
+  while Fastboot is on.
+* `current-slot` is the bootloader's (`androidboot.slot_suffix`), so
+  `flash boot` writes the booted slot's, the stage's own. Name the slot.
+  `set_active` is not there; ABL has it.
+* A download is held in RAM, up to 256 MiB. The host sends a larger image
+  as sparse pieces by itself.
+* A flash unmounts the browse and boot-scan mounts first. The device is
+  opened exclusively, so a partition still mounted elsewhere is refused.
+  The boot entries are found again 2 s after the last flash.
+* The kernel needs `CONFIG_USB_CONFIGFS_F_FS`. Its `functionfs` file system
+  shows in `/proc/filesystems` only once the first `ffs.*` function exists.
 
 ## Dev builds
 

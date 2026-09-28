@@ -51,8 +51,9 @@ type Config struct {
 }
 
 type Manager struct {
-	cfg  Config
-	pool mount.Pool
+	cfg    Config
+	scanMu sync.Mutex // held over a scan and over the pool's mounts' release
+	pool   mount.Pool
 
 	mu      sync.Mutex
 	images  []boot.OSImage
@@ -84,6 +85,8 @@ type Autoboot struct {
 }
 
 func (m *Manager) scan() ([]boot.OSImage, error) {
+	m.scanMu.Lock()
+	defer m.scanMu.Unlock()
 	if m.cfg.ScanDir != "" {
 		return syslinux.ParseLocalConfig(context.Background(), m.cfg.ScanDir)
 	}
@@ -274,6 +277,37 @@ func (m *Manager) Handover(img boot.OSImage) error {
 	m.cfg.Emit("busy", map[string]string{"text": "Starting " + img.Label() + "…"})
 	m.cfg.Teardown()
 	return fmt.Errorf("kexec returned: %w", boot.Execute())
+}
+
+// Release drops the entries and the scan's mounts, before a partition
+// they are on is rewritten; Rescan finds them again. The UI keeps showing
+// the old entries until then.
+func (m *Manager) Release() error {
+	m.mu.Lock()
+	if m.booting {
+		m.mu.Unlock()
+		return errors.New("a boot is in progress")
+	}
+	m.images = nil
+	m.mu.Unlock()
+	m.scanMu.Lock()
+	defer m.scanMu.Unlock()
+	m.Unmount()
+	m.pool = mount.Pool{}
+	return nil
+}
+
+// Rescan finds the entries again, after Release.
+func (m *Manager) Rescan() {
+	imgs, err := m.scan()
+	if err != nil {
+		log.Printf("rescan: %v", err)
+	}
+	m.mu.Lock()
+	m.images = imgs
+	m.mu.Unlock()
+	log.Printf("rescan: %d boot entries", len(imgs))
+	m.cfg.Emit("entries", m.List())
 }
 
 // Unmount releases the scan's mounts and syncs, for a handover or a
