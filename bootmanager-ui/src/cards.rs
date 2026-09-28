@@ -70,7 +70,13 @@ pub fn build(entries: &[Entry], default: usize) -> Vec<Card> {
         .enumerate()
         .map(|(i, e)| {
             let l = look(e);
-            card(&e.label, subtitle(&e.detail), if i == default { "DEFAULT" } else { l.tag }, l, (i % 3) as i32)
+            // A tag that only repeats the title says nothing.
+            let tag = match l.tag {
+                _ if i == default => "DEFAULT",
+                t if t.eq_ignore_ascii_case(&e.label) => "",
+                t => t,
+            };
+            card(&e.label, subtitle(&e.detail), tag, l, (i % 3) as i32)
         })
         .collect();
     cards.push(card("Tools", "Services, partitions, log, power".into(), MENU.tag, &MENU, 2));
@@ -94,9 +100,11 @@ mod tests {
         assert_eq!(look(&entry("Something", "")).icon, "layers");
         assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
         assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
-        let cards = build(&[entry("a", ""), entry("b", "")], 1);
-        assert_eq!(cards.len(), 3);
+        let cards = build(&[entry("a", ""), entry("b", ""), entry("Android", ""), entry("Android 14", "")], 1);
+        assert_eq!(cards.len(), 5);
         assert_eq!(cards[1].tag, "DEFAULT");
-        assert_eq!(cards[2].icon, "gear");
+        assert_eq!(cards[2].tag, "", "the title says it already");
+        assert_eq!(cards[3].tag, "ANDROID");
+        assert_eq!(cards[4].icon, "gear");
     }
 }

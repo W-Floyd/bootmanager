@@ -162,7 +162,7 @@ export component CardView {
         spacing: root.width * 0.025;
         opacity: max(0, 1 - root.launch * 3);
 
-        HorizontalLayout {
+        if root.card.tag != "": HorizontalLayout {
             alignment: start;
             Rectangle {
                 background: #ffffff33;
