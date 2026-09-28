@@ -16,25 +16,6 @@ export { Card, Row }
 
 // The top line: with no cutout, one line; with some, a line as tall as
 // they reach, its text left of them, as phosh lays out its top bar.
-component TopLine {
-    in property <string> text;
-    in property <color> color;
-    in property <length> cutout-x;
-    in property <length> cutout-h;
-    in property <length> side-pad;
-    height: root.cutout-h > 0 ? max(root.cutout-h, 24px) : 16px;
-    Text {
-        x: 0;
-        width: root.cutout-h > 0 ? max(0px, root.cutout-x - root.side-pad - 8px) : parent.width;
-        height: parent.height;
-        vertical-alignment: center;
-        text: root.text;
-        font-size: 12px;
-        color: root.color;
-        overflow: elide;
-    }
-}
-
 export component AppWindow inherits Window {
     preferred-width: 360px;
     preferred-height: 800px;
@@ -44,10 +25,8 @@ export component AppWindow inherits Window {
 
     // The device tree's name for the device.
     in property <string> model;
-    // The panel's shape (display.info): the span of the cutouts near the
-    // top edge, how far down the lowest reaches, and the corner radius.
-    in property <length> cutout-x;
-    in property <length> cutout-w;
+    // The panel's shape (display.info): how far down the lowest of the
+    // cutouts near the top edge reaches, and the corner radius.
     in property <length> cutout-h;
     in property <length> corner-radius;
     // Clear of the rounded corners: half the radius covers text a line
@@ -155,18 +134,21 @@ export component AppWindow inherits Window {
             padding-top: root.cutout-h > 0 ? 0 : 14px;
             spacing: 2px;
             height: self.preferred-height;
-            TopLine {
-                text: root.model;
-                color: #ffffffb0;
-                cutout-x: root.cutout-x;
-                cutout-h: root.cutout-h;
-                side-pad: root.side-pad;
+            // Clear of the cutouts near the top edge.
+            Rectangle {
+                height: root.cutout-h > 0 ? max(root.cutout-h, 24px) : 16px;
             }
             Text {
                 text: "Choose a system";
                 font-size: 26px;
                 font-weight: 700;
                 color: #ffffff;
+            }
+            Text {
+                text: root.model;
+                font-size: 13px;
+                color: #ffffffb0;
+                overflow: elide;
             }
         }
 

@@ -459,16 +459,9 @@ impl App {
         let Some(p) = p else { return };
         let k = width as f32 / p.xres as f32 / scale;
         ui.set_corner_radius(p.corner_radii[0].max(p.corner_radii[1]) as f32 * k);
-        // The cutouts near the top edge share the header's first line, which
-        // grows to clear the lowest of them.
-        let top: Vec<_> = p.cutouts.iter().filter(|c| c.y < p.yres as i32 / 10).collect();
-        if let (Some(x0), Some(x1), Some(y1)) = (
-            top.iter().map(|c| c.x).min(),
-            top.iter().map(|c| c.x + c.w).max(),
-            top.iter().map(|c| c.y + c.h).max(),
-        ) {
-            ui.set_cutout_x(x0 as f32 * k);
-            ui.set_cutout_w((x1 - x0) as f32 * k);
+        // The header starts below the lowest of the cutouts near the top edge.
+        let top = p.cutouts.iter().filter(|c| c.y < p.yres as i32 / 10).map(|c| c.y + c.h).max();
+        if let Some(y1) = top {
             ui.set_cutout_h(y1 as f32 * k);
         }
     }

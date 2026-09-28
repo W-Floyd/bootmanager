@@ -114,8 +114,8 @@ From it:
   width, in quarter steps: 2 on a 68 mm, 720 px phone, 3 on a 1080 px one.
   Without a physical size, the framebuffer's (when the driver reports it),
   else 360 logical pixels across.
-* **Cutouts**: those near the top edge share the header's first line,
-  which grows to clear the lowest; its text stays left of them.
+* **Cutouts**: the header starts below the lowest of those near the top
+  edge.
 * **Corners**: the side padding clears the top corners' radius.
 
 The browser build is not that shape and does none of this. The fonts
