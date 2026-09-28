@@ -22,7 +22,7 @@ const LOOKS: &[(&[&str], Look)] = &[
     // Android's green, #3ddc84, and a darker one of its hue.
     (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0e4d2c }),
     (&["ubuntu"], Look { tag: "UBUNTU", icon: "linux", a: 0xe95420, b: 0x5a1f3f }),
-    (&["debian", "mobian"], Look { tag: "DEBIAN", icon: "linux", a: 0xd70a53, b: 0x4a0a2c }),
+    (&["debian", "mobian"], Look { tag: "DEBIAN", icon: "debian", a: 0xce0056, b: 0x48001e }),
     (&["fedora"], Look { tag: "FEDORA", icon: "linux", a: 0x3c6eb4, b: 0x1b2a55 }),
     (&["arch"], Look { tag: "ARCH", icon: "linux", a: 0x1793d1, b: 0x0a3550 }),
     (&["alpine"], Look { tag: "ALPINE", icon: "linux", a: 0x2a8fc4, b: 0x0a2f4a }),
@@ -99,6 +99,7 @@ mod tests {
         assert_eq!(look(&entry("LineageOS 21", "")).icon, "android");
         assert_eq!(look(&entry("pmos (recovery)", "")).icon, "recovery");
         assert_eq!(look(&entry("Something", "quiet")).icon, "linux");
+        assert_eq!(look(&entry("Mobian", "")).icon, "debian");
         assert_eq!(look(&entry("Something", "")).icon, "layers");
         assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
         assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
