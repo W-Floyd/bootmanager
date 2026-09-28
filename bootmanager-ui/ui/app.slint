@@ -109,7 +109,7 @@ export component AppWindow inherits Window {
     property <color> tint: root.cards.length > 0 ? root.cards[root.card-selected].a : #3a3f7a;
     animate tint { duration: 700ms; easing: ease-in-out; }
     Rectangle {
-        background: @linear-gradient(170deg, root.tint.mix(#10121c, 0.35) 0%, root.tint.mix(#0b0c14, 0.12) 50%, #07080c 100%);
+        background: @linear-gradient(180deg, root.tint.mix(#10121c, 0.35) 0%, root.tint.mix(#0b0c14, 0.12) 50%, #07080c 100%);
     }
 
     // The splash until the entrance; gone once faded, so its animation
