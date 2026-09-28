@@ -278,3 +278,9 @@ its stdin ends, so keep it open until the reply:
   changes on a full-screen screenshot.
 * **Slint's window keeps its logical size across a scale change**: set the
   physical size again after one (`app.rs`, `apply_panel`).
+* **A dragged menu row can stay lit** (the hover fill) after the finger
+  lifts: a drag the list cannot scroll, begun within Flickable's 100 ms
+  press delay, leaves the row's `has-hover` set. Slint 1.18.1's bug,
+  [slint#5262](https://github.com/slint-ui/slint/issues/5262); fixed by
+  [slint#13218](https://github.com/slint-ui/slint/pull/13218), not yet
+  released. Take the release that has it rather than working around it.
