@@ -43,6 +43,8 @@ type Disk struct {
 	Name   string `json:"name"`
 	FSType string `json:"fstype"`
 	Size   uint64 `json:"size"`
+	// Removable: on an SD card or USB, which is where repair is offered.
+	Removable bool `json:"removable"`
 }
 
 // Disks returns the partitions that carry a file system, removable media
@@ -61,8 +63,12 @@ func (b *Browser) Disks() ([]Disk, error) {
 			continue
 		}
 		size, _ := d.Size()
-		out = append(out, Disk{Dev: d.Name, Name: ueventValue(d.Name, "PARTNAME"), FSType: fstype, Size: size})
 		ext[d.Name] = removable(d.Name)
+		name := ueventValue(d.Name, "PARTNAME")
+		if isDM(d.Name) {
+			name = DMName(d.Name)
+		}
+		out = append(out, Disk{Dev: d.Name, Name: name, FSType: fstype, Size: size, Removable: ext[d.Name]})
 	}
 	slices.SortStableFunc(out, func(x, y Disk) int {
 		if ext[x.Dev] != ext[y.Dev] {
@@ -78,6 +84,9 @@ func (b *Browser) Disks() ([]Disk, error) {
 
 // removable: the partition's disk is an SD card or marked removable (USB).
 func removable(dev string) bool {
+	if isDM(dev) {
+		return removableDM(dev, 0)
+	}
 	p, err := filepath.EvalSymlinks(filepath.Join("/sys/class/block", dev))
 	if err != nil {
 		return false
@@ -109,14 +118,27 @@ func ueventValue(dev, key string) string {
 }
 
 // fsType names the file system on /dev/<dev> from its superblock, "" when
-// the kernel has none it recognises. block.GetBlockDevices leaves FSType
-// empty.
+// none is recognised. block.GetBlockDevices leaves FSType empty.
 func fsType(dev string) string {
-	fs, _, err := mount.FSFromBlock("/dev/" + dev)
-	if err != nil {
-		return ""
+	if fs, _, err := mount.FSFromBlock("/dev/" + dev); err == nil {
+		return fs
 	}
-	return fs
+	return superblockType(dev)
+}
+
+// FSType is fsType for other packages.
+func FSType(dev string) string { return fsType(dev) }
+
+// Unmount releases dev's browsing mount, if it has one.
+func (b *Browser) Unmount(dev string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r, ok := b.mounts[dev]; ok {
+		mp := r.Name()
+		r.Close()
+		unix.Unmount(mp, unix.MNT_DETACH)
+		delete(b.mounts, dev)
+	}
 }
 
 // root mounts dev for browsing, once, and returns its os.Root.
@@ -251,3 +273,6 @@ func (b *Browser) List(dev, p string) (Listing, error) {
 	}
 	return l, nil
 }
+
+// Removable: dev is on an SD card or other removable media.
+func Removable(dev string) bool { return removable(dev) }

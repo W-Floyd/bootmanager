@@ -72,6 +72,7 @@ type app struct {
 	slots    *slots.Store
 	ui       *uiproc.Supervisor
 	web      *webServer
+	battery  batteryLevel
 
 	ready     chan struct{} // closed once the stage is set up
 	readyOnce sync.Once
@@ -156,8 +157,11 @@ func main() {
 			Start:  svc.InProcess(a.startFastboot),
 		},
 	}
-	a.rpc.Greeting = func() []rpc.Event { return []rpc.Event{{Event: "autoboot", Data: a.boot.Autoboot()}} }
+	a.rpc.Greeting = func() []rpc.Event {
+		return []rpc.Event{{Event: "autoboot", Data: a.boot.Autoboot()}, {Event: "battery", Data: a.battery.get()}}
+	}
 	a.register()
+	a.watchBattery()
 	a.registerSlots()
 	if devExt != nil {
 		devExt.register(a)

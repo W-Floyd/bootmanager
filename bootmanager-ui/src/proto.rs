@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 /// Changes whenever a command or event changes shape (bootmanager's
 /// protocolVersion).
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 7;
 
 #[derive(Deserialize)]
 pub struct Hello {
@@ -21,6 +21,18 @@ pub struct Hello {
     /// Where /files/ is served, for the web build.
     #[serde(default)]
     pub files_port: String,
+    /// The stage has file system checkers: Check and Repair are offered.
+    #[serde(default)]
+    pub fsck: bool,
+    /// The stage can unlock LUKS partitions.
+    #[serde(default)]
+    pub luks: bool,
+}
+
+/// disk.unlock's reply: the dm-N device the volume is now.
+#[derive(Deserialize)]
+pub struct Unlocked {
+    pub dev: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -39,6 +51,40 @@ pub struct Entries {
     pub default: usize,
     #[serde(default)]
     pub explicit: bool,
+}
+
+/// autoboot.settings: whether the stage autoboots at start, the countdown's
+/// length, and whether a change outlives this run.
+#[derive(Deserialize, Clone)]
+pub struct AutobootSettings {
+    pub enabled: bool,
+    pub seconds: u32,
+    pub saved: bool,
+}
+
+/// The battery's level, pushed as the "battery" event.
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Battery {
+    /// A battery was found and is in.
+    pub present: bool,
+    /// 0 to 100; -1 when unknown.
+    pub percent: i32,
+    /// The kernel's: Charging, Discharging, Full, Not charging, Unknown.
+    #[serde(default)]
+    pub status: String,
+    pub charging: bool,
+}
+
+/// One power supply, from power.supplies: a battery or what charges it,
+/// with every property the kernel reports (lowercase, in the kernel's units:
+/// µV, µA, µAh, tenths of °C).
+#[derive(Deserialize, Clone)]
+pub struct Supply {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub props: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +107,27 @@ pub struct Disk {
     pub name: String,
     pub fstype: String,
     pub size: u64,
+    /// On an SD card or USB: repair is offered only there.
+    #[serde(default)]
+    pub removable: bool,
+}
+
+/// disk.fsck's reply: how a check or repair ended, and the end of what the
+/// checker printed.
+#[derive(Deserialize, Clone)]
+pub struct FsckResult {
+    pub repair: bool,
+    /// clean, fixed, errors, dirty-log or failed.
+    pub status: String,
+    pub code: i32,
+    #[serde(default)]
+    pub lines: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FsckLine {
+    pub dev: String,
+    pub line: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -158,6 +225,9 @@ pub enum Event {
     Services(Vec<Service>),
     Busy(String),
     Error(String),
+    /// The latest line of a running check.
+    Fsck(FsckLine),
+    Battery(Battery),
 }
 
 type Reply = Box<dyn FnOnce(Result<Value, String>)>;
@@ -242,6 +312,8 @@ fn event(name: &str, data: Value) -> Option<Event> {
         "services" => Event::Services(de(data)?),
         "busy" => Event::Busy(de::<TextData>(data)?.text),
         "error" => Event::Error(de::<TextData>(data)?.text),
+        "fsck" => Event::Fsck(de(data)?),
+        "battery" => Event::Battery(de(data)?),
         _ => return None,
     })
 }

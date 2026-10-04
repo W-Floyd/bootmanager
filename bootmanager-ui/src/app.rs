@@ -3,8 +3,8 @@
 
 use crate::proto::{self, Client, DisplayInfo, Event, Hello, Panel, Service, Thumb};
 use crate::routes::{route_of, screens_of};
-use crate::screens::{self, is_image, join, Action, Load, Screen, UrlMode};
-use crate::{cards, AppWindow, Card, Row};
+use crate::screens::{self, is_image, join, Action, FsckRun, Load, Screen, UnlockRun, UrlMode};
+use crate::{cards, AppWindow, Card, Row, VirtualKeyboardHandler};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use slint::platform::WindowEvent;
@@ -65,6 +65,19 @@ pub struct State {
     /// entries first arrive.
     centred: bool,
     pub services: Vec<Service>,
+    /// The check or repair on the Fsck screen.
+    pub fsck: FsckRun,
+    /// autoboot.settings, read when the menu or its Autoboot screen opens.
+    pub autoboot: Option<proto::AutobootSettings>,
+    /// The battery's level (the "battery" event), for the indicator.
+    pub battery: Option<proto::Battery>,
+    /// Every power supply's properties, read when Diagnostics opens.
+    pub supplies: Vec<proto::Supply>,
+    /// The stage has the checkers (an optional part of a stage build).
+    pub fsck_available: bool,
+    /// The stage can unlock LUKS partitions (cryptsetup is optional too).
+    pub luks_available: bool,
+    pub unlock: UnlockRun,
     pub modes: Vec<String>,
     /// Files can be handed to a browser (the web build).
     pub browser: bool,
@@ -99,6 +112,8 @@ pub struct App {
     /// The web build's URL sync, and the last route it was told.
     on_route: RefCell<Option<Box<dyn Fn(&str)>>>,
     last_route: RefCell<String>,
+    /// Re-reads the power supplies while Diagnostics is on show.
+    power_timer: slint::Timer,
 }
 
 impl State {
@@ -123,6 +138,13 @@ impl App {
                 explicit: false,
                 centred: false,
                 services: vec![],
+                fsck: FsckRun::Idle,
+                autoboot: None,
+                battery: None,
+                supplies: vec![],
+                fsck_available: false,
+                luks_available: false,
+                unlock: UnlockRun::Idle,
                 modes: vec![],
                 browser: matches!(mode, Mode::Browser { .. }),
                 files_port: String::new(),
@@ -142,6 +164,7 @@ impl App {
             open_url: RefCell::new(None),
             on_route: RefCell::new(None),
             last_route: RefCell::new("/".into()),
+            power_timer: slint::Timer::default(),
         });
         let weak = Rc::downgrade(&app);
         let on = move |f: fn(&Rc<App>)| {
@@ -153,6 +176,17 @@ impl App {
             }
         };
         ui.on_back(on(|a| a.back()));
+        ui.on_passphrase_accepted(on(|a| a.unlock()));
+        // The on-screen keyboard presses a key of the window, as the
+        // examples/virtual_keyboard of Slint does; the focused text field
+        // takes it like a real key.
+        let weak_keys = ui.as_weak();
+        ui.global::<VirtualKeyboardHandler>().on_key_pressed(move |key| {
+            if let Some(ui) = weak_keys.upgrade() {
+                ui.window().dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+                ui.window().dispatch_event(WindowEvent::KeyReleased { text: key });
+            }
+        });
         ui.on_close_menu(on(|a| a.close_menu()));
         ui.on_activity(on(|a| a.activity()));
         ui.on_open_menu(on(|a| a.open_menu()));
@@ -181,6 +215,12 @@ impl App {
             }
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
+        let weak = Rc::downgrade(&app);
+        app.power_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(2), move || {
+            if let Some(a) = weak.upgrade() {
+                a.refresh_power()
+            }
+        });
         app.render();
         // Up from black once there is a first frame to fade to.
         let weak = ui.as_weak();
@@ -199,6 +239,24 @@ impl App {
             }
         });
         app
+    }
+
+    /// The Battery screen follows the battery and charger live: read again
+    /// every couple of seconds while it is up, which is when a plug or
+    /// unplug, or the voltage and current moving, shows.
+    fn refresh_power(self: &Rc<Self>) {
+        if !self.client.connected() || !matches!(self.state.borrow().screen, Screen::Battery) {
+            return;
+        }
+        self.refresh_power_now();
+    }
+
+    fn refresh_power_now(self: &Rc<Self>) {
+        self.call("power.supplies", json!({}), |a, r: Result<Vec<proto::Supply>, _>| {
+            if let Ok(v) = r {
+                a.state.borrow_mut().supplies = v;
+            }
+        });
     }
 
     /// Plays the carousel's entrance, once its cards are in the window.
@@ -237,6 +295,8 @@ impl App {
                     ui.set_model(top.trim_start_matches("  ·  ").into());
                 }
                 a.state.borrow_mut().files_port = h.files_port;
+                a.state.borrow_mut().fsck_available = h.fsck;
+                a.state.borrow_mut().luks_available = h.luks;
             }
             Ok(h) => a.state.borrow_mut().error = format!("Backend protocol {}, UI {}: update both", h.version, proto::VERSION),
             Err(e) => a.state.borrow_mut().error = e,
@@ -280,6 +340,12 @@ impl App {
             Event::Entries(_) => {}
             Event::Services(v) => s.services = v,
             Event::Error(e) => s.error = e,
+            Event::Battery(b) => s.battery = Some(b),
+            Event::Fsck(f) => {
+                if matches!(&s.screen, Screen::Fsck { dev, .. } if *dev == f.dev) && matches!(s.fsck, FsckRun::Running(_)) {
+                    s.fsck = FsckRun::Running(f.line);
+                }
+            }
             Event::Busy(text) => {
                 // A boot the UI did not start (the autoboot): launch its card
                 // too. A busy that ends without a handover is a failed boot.
@@ -365,6 +431,15 @@ impl App {
                     *d = l
                 }
             }),
+            Screen::Fsck { dev, .. } => self.fetch("disk.list", json!({}), move |s, l: Load<Vec<proto::Disk>>| {
+                if let Screen::Fsck { disk, .. } = &mut s.screen {
+                    *disk = match l {
+                        Load::Ready(v) => v.into_iter().find(|d| d.dev == dev).map_or_else(|| Load::Failed(format!("{dev} has no file system")), Load::Ready),
+                        Load::Failed(e) => Load::Failed(e),
+                        Load::Waiting => Load::Waiting,
+                    };
+                }
+            }),
             Screen::Files { dev, path, .. } => self.fetch("fs.list", json!({"dev": dev, "path": path}), move |s, l: Load<proto::Listing>| {
                 if let Load::Ready(listing) = &l {
                     s.thumb_queue = listing
@@ -403,12 +478,18 @@ impl App {
                     *log = l
                 }
             }),
-            Screen::Diagnostics(_) => self.fetch("slots.info", json!({}), |s, l| {
-                if let Screen::Diagnostics(d) = &mut s.screen {
+            Screen::Battery => self.refresh_power_now(),
+            Screen::BootInfo(_) => self.fetch("slots.info", json!({}), |s, l| {
+                if let Screen::BootInfo(d) = &mut s.screen {
                     *d = l;
                 }
             }),
-            Screen::Main | Screen::File { .. } => {}
+            Screen::Main | Screen::Autoboot => self.call("autoboot.settings", json!({}), |a, r: Result<proto::AutobootSettings, _>| {
+                if let Ok(v) = r {
+                    a.state.borrow_mut().autoboot = Some(v);
+                }
+            }),
+            Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics => {}
         }
     }
 
@@ -478,6 +559,13 @@ impl App {
     fn show(self: &Rc<Self>, screen: Screen, selected: i32) {
         {
             let mut s = self.state.borrow_mut();
+            // A passphrase lives only while its screen is up.
+            if !matches!(screen, Screen::Unlock { .. }) {
+                s.unlock = UnlockRun::Idle;
+                if let Some(ui) = self.ui.upgrade() {
+                    ui.set_passphrase("".into());
+                }
+            }
             s.screen = screen;
             s.generation += 1;
             s.thumb_queue.clear();
@@ -503,6 +591,9 @@ impl App {
         let mut s = self.state.borrow_mut();
         let prev = std::mem::replace(&mut s.screen, Screen::Main);
         s.stack.push((prev, selected));
+        if matches!(screen, Screen::Fsck { .. }) && !matches!(s.fsck, FsckRun::Running(_)) {
+            s.fsck = FsckRun::Idle;
+        }
         drop(s);
         self.show(screen, 1);
     }
@@ -600,6 +691,33 @@ impl App {
         });
     }
 
+    /// Sends the typed passphrase. It is cleared at once, kept nowhere but
+    /// in the request; the screen goes back to the partition list on
+    /// success, where the volume now is a partition, and stays on a wrong
+    /// passphrase.
+    fn unlock(self: &Rc<Self>) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let (dev, pass) = {
+            let mut s = self.state.borrow_mut();
+            let Screen::Unlock { dev, .. } = &s.screen else { return };
+            let dev = dev.clone();
+            let pass = ui.get_passphrase();
+            if pass.is_empty() || matches!(s.unlock, UnlockRun::Working) {
+                return;
+            }
+            s.unlock = UnlockRun::Working;
+            ui.set_passphrase("".into());
+            (dev, pass.to_string())
+        };
+        self.call("disk.unlock", json!({"dev": dev, "passphrase": pass}), |a, r: Result<proto::Unlocked, _>| match r {
+            Ok(_) => {
+                a.state.borrow_mut().unlock = UnlockRun::Idle;
+                a.back();
+            }
+            Err(e) => a.state.borrow_mut().unlock = UnlockRun::Failed(e),
+        });
+    }
+
     fn activate(self: &Rc<Self>, i: usize) {
         let action = self.state.borrow().actions.get(i).cloned().unwrap_or(Action::None);
         match action {
@@ -617,7 +735,7 @@ impl App {
                 let mut s = a.state.borrow_mut();
                 match r {
                     Ok(info) => {
-                        if let Screen::Diagnostics(d) = &mut s.screen {
+                        if let Screen::BootInfo(d) = &mut s.screen {
                             *d = Load::Ready(info);
                         }
                     }
@@ -628,6 +746,41 @@ impl App {
                 if let Some(open) = &*self.open_url.borrow() {
                     open(&self.state.borrow().files_port, &path, mode);
                 }
+            }
+            Action::AutobootSet(enabled, seconds) => {
+                self.call("autoboot.set", json!({"enabled": enabled, "seconds": seconds}), |a, r: Result<proto::AutobootSettings, _>| match r {
+                    Ok(v) => a.state.borrow_mut().autoboot = Some(v),
+                    Err(e) => a.state.borrow_mut().error = e,
+                })
+            }
+            Action::Unlock => self.unlock(),
+            Action::Lock(dev) => self.call("disk.lock", json!({"dev": dev}), |a, r: Result<Value, _>| match r {
+                // The volume is gone: back to the partition list.
+                Ok(_) => a.back(),
+                Err(e) => a.state.borrow_mut().error = e,
+            }),
+            Action::FsckConfirm => {
+                if let Screen::Fsck { confirm, .. } = &mut self.state.borrow_mut().screen {
+                    *confirm = true;
+                }
+            }
+            Action::Fsck(dev, repair) => {
+                {
+                    let mut s = self.state.borrow_mut();
+                    if matches!(s.fsck, FsckRun::Running(_)) {
+                        return;
+                    }
+                    s.fsck = FsckRun::Running(String::new());
+                    if let Screen::Fsck { confirm, .. } = &mut s.screen {
+                        *confirm = false;
+                    }
+                }
+                self.call("disk.fsck", json!({"dev": dev, "repair": repair}), |a, r: Result<proto::FsckResult, _>| {
+                    a.state.borrow_mut().fsck = match r {
+                        Ok(res) => FsckRun::Done(res),
+                        Err(e) => FsckRun::Failed(e),
+                    };
+                });
             }
             Action::None => {}
         }
@@ -651,6 +804,15 @@ impl App {
             ui.set_card_selected(s.default as i32);
         }
         ui.set_menu_open(s.menu_open);
+        ui.set_text_entry(matches!(s.screen, Screen::Unlock { .. }));
+        match &s.battery {
+            Some(b) if b.present => {
+                ui.set_battery_present(true);
+                ui.set_battery_percent(b.percent);
+                ui.set_battery_charging(b.charging);
+            }
+            _ => ui.set_battery_present(false),
+        }
         ui.set_launching(s.launching);
         ui.set_remaining(if connected { s.countdown as i32 } else { -1 });
         ui.set_total(s.countdown_total.max(1) as i32);

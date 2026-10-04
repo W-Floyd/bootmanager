@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"bootmanager.local/bootmanager/internal/fsck"
+	"bootmanager.local/bootmanager/internal/luks"
 	"bootmanager.local/bootmanager/internal/panel"
 	"bootmanager.local/bootmanager/internal/power"
 	"bootmanager.local/bootmanager/internal/rpc"
@@ -14,7 +16,7 @@ import (
 
 // protocolVersion changes whenever a command or event changes shape; the
 // UI refuses a backend of another version.
-const protocolVersion = 4
+const protocolVersion = 7
 
 type none struct{}
 
@@ -28,7 +30,7 @@ type fileArgs struct {
 func (a *app) register() {
 	s := a.rpc
 	rpc.Handle(s, "hello", func(none) (any, error) {
-		return map[string]any{"version": protocolVersion, "files_port": filesPort, "model": model()}, nil
+		return map[string]any{"version": protocolVersion, "files_port": filesPort, "model": model(), "fsck": fsck.Available(*fsckDir), "luks": luks.Available(*cryptsetupBin)}, nil
 	})
 	rpc.Handle(s, "stage.ready", func(none) (any, error) {
 		if !a.isReady() {
@@ -52,6 +54,17 @@ func (a *app) register() {
 		return a.boot.List(), err
 	})
 	rpc.Handle(s, "autoboot.cancel", func(none) (any, error) { a.boot.Cancel(); return nil, nil })
+	// Whether to autoboot and for how long, from the next start. Saving
+	// may remount the partition the settings are on, as boot.move does.
+	rpc.Handle(s, "autoboot.settings", func(none) (any, error) { return a.boot.AutobootSettings(), nil })
+	rpc.Handle(s, "autoboot.set", func(x struct {
+		Enabled bool
+		Seconds int
+	}) (any, error) {
+		a.disks.UnmountAll()
+		err := a.boot.SetAutoboot(x.Enabled, x.Seconds)
+		return a.boot.AutobootSettings(), err
+	})
 	rpc.Handle(s, "service.list", func(none) (any, error) { return a.svcs.List(), nil })
 	rpc.Handle(s, "service.set", afterReady(a, func(x struct {
 		Name    string
@@ -71,6 +84,8 @@ func (a *app) register() {
 		}
 		return a.disks.Thumb(x.Dev, x.Path, x.Width, x.Height)
 	}))
+	a.registerFsck()
+	a.registerUnlock()
 	rpc.Handle(s, "display.info", func(none) (any, error) { return displayInfo() })
 	rpc.Handle(s, "log.tail", func(x struct{ Lines int }) (any, error) { return a.logTail(x.Lines), nil })
 	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(allowedModes()), nil })

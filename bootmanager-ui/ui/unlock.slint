@@ -1,0 +1,99 @@
+// The passphrase screen of `bootmanager-ui --unlock`: what an initramfs
+// runs to unlock an encrypted root, in place of unl0kr. Its own window, no
+// backend: it asks for a passphrase on the on-screen keyboard
+// (keyboard.slint) and src/unlock.rs prints it on stdout, for cryptsetup.
+
+import { Palette } from "theme.slint";
+import { Keyboard } from "keyboard.slint";
+
+export component UnlockWindow inherits Window {
+    preferred-width: 360px;
+    preferred-height: 800px;
+    background: #07080c;
+    default-font-family: "DejaVu Sans";
+    title: "Unlock";
+
+    // What is being unlocked ("mmcblk0p2"), and why the last try failed.
+    in property <string> volume;
+    in property <string> message;
+    in-out property <string> passphrase;
+    in-out property <bool> reveal;
+    callback accepted();
+
+    VerticalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        // Clear of a camera cutout and rounded corners at the top; the
+        // panel's own shape is not known here, as the stage's UI learns it
+        // from the backend.
+        padding-top: 72px;
+        spacing: 10px;
+
+        Text {
+            text: "Unlock";
+            font-size: 26px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+        if root.volume != "": Text {
+            text: root.volume;
+            font-size: 13px;
+            color: Palette.dim;
+        }
+        if root.message != "": Text {
+            text: root.message;
+            font-size: 14px;
+            color: Palette.alert;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 48px;
+            border-radius: 10px;
+            background: #ffffff14;
+            border-width: 1px;
+            border-color: field.has-focus ? Palette.accent : #ffffff20;
+            if root.passphrase == "": Text {
+                x: 14px;
+                text: "Passphrase";
+                font-size: 18px;
+                color: #ffffff60;
+                vertical-alignment: center;
+            }
+            field := TextInput {
+                x: 14px;
+                width: parent.width - 28px - 56px;
+                text <=> root.passphrase;
+                input-type: root.reveal ? InputType.text : InputType.password;
+                single-line: true;
+                font-size: 20px;
+                color: #ffffff;
+                vertical-alignment: center;
+                accepted => { root.accepted(); }
+                init => { self.focus(); }
+            }
+            // Show or hide what was typed.
+            Rectangle {
+                x: parent.width - self.width;
+                width: 56px;
+                Text {
+                    text: root.reveal ? "hide" : "show";
+                    font-size: 13px;
+                    color: Palette.dim;
+                }
+                TouchArea {
+                    clicked => { root.reveal = !root.reveal; }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+    }
+
+    Keyboard {
+        y: parent.height - self.height;
+        width: parent.width;
+    }
+}

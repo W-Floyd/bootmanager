@@ -2,9 +2,10 @@
 //! the backend state, each row with what activating it does.
 
 use crate::app::State;
-use crate::proto::{Disk, Listing, Slot, SlotsInfo, Text};
+use crate::proto::{Disk, FsckResult, Listing, Slot, SlotsInfo, Supply, Text};
 use crate::Row;
 use slint::{Image, SharedString};
+use std::collections::BTreeMap;
 
 /// A request in flight or its outcome.
 #[derive(Clone)]
@@ -24,9 +25,20 @@ impl<T> From<Result<T, String>> for Load<T> {
 pub enum Screen {
     Main,
     Boot,
+    /// Whether to autoboot and for how long (State's `autoboot`).
+    Autoboot,
+    /// The battery and charger (State's `supplies`).
+    Battery,
     Services,
     Disks(Load<Vec<Disk>>),
     Files { dev: String, name: String, path: String, listing: Load<Listing> },
+    /// Check a partition's file system, and repair it once the check has
+    /// found errors and the repair is confirmed. The run's state is the
+    /// State's `fsck`.
+    Fsck { dev: String, disk: Load<Disk>, confirm: bool },
+    /// The passphrase of a LUKS partition, typed in the field above the
+    /// list on the on-screen keyboard; the volume then shows as a partition.
+    Unlock { dev: String, name: String },
     /// One file: what can be done with it.
     File { dev: String, path: String, size: u64 },
     /// A file's start, as text.
@@ -35,7 +47,27 @@ pub enum Screen {
     Image { dev: String, path: String, picture: Load<Image> },
     Log(Load<Vec<String>>),
     /// A/B slots and what the bootloader handed over.
-    Diagnostics(Load<SlotsInfo>),
+    BootInfo(Load<SlotsInfo>),
+    /// The menu of what can be inspected: Battery and Boot.
+    Diagnostics,
+}
+
+/// Where an unlock attempt stands, on the Unlock screen.
+#[derive(Clone)]
+pub enum UnlockRun {
+    Idle,
+    Working,
+    Failed(String),
+}
+
+/// A check or repair of the partition on the Fsck screen.
+#[derive(Clone)]
+pub enum FsckRun {
+    Idle,
+    /// Running; the checker's latest line.
+    Running(String),
+    Done(FsckResult),
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -50,6 +82,16 @@ pub enum Action {
     Slot(String, &'static str),
     /// Hand a file to the browser: its path under /files/, and how.
     Url(String, UrlMode),
+    /// disk.fsck on a partition: a check, or (true) a repair.
+    Fsck(String, bool),
+    /// Ask to confirm the repair.
+    FsckConfirm,
+    /// autoboot.set: on or off, and a countdown in seconds (0: keep it).
+    AutobootSet(bool, u32),
+    /// disk.unlock with the typed passphrase; the Unlock screen's dev.
+    Unlock,
+    /// disk.lock on an unlocked volume (dm-N).
+    Lock(String),
     Back,
     Refresh,
     None,
@@ -105,6 +147,21 @@ fn pending<T>(l: &Load<T>, waiting: &str) -> Option<(Row, Action)> {
     }
 }
 
+fn status_title(r: &FsckResult) -> String {
+    let what = if r.repair { "Repair" } else { "Check" };
+    match r.status.as_str() {
+        "clean" => format!("{what}: no errors"),
+        "fixed" => format!("{what}: errors fixed"),
+        "errors" if r.repair => format!("{what}: errors remain"),
+        "errors" => format!("{what}: errors found"),
+        "dirty-log" => format!("{what}: the log needs replaying"),
+        _ => format!("{what}: failed"),
+    }
+}
+
+/// The countdown lengths offered, in seconds.
+const COUNTDOWNS: [u32; 6] = [3, 5, 10, 15, 30, 60];
+
 /// The heading, subheading and rows of the screen on show. Every screen
 /// starts with a Back row (the menu's first, back to the carousel): with
 /// three keys, a row is easier to find than a long press.
@@ -125,14 +182,20 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             };
             let svc: Vec<String> =
                 s.services.iter().map(|v| format!("{} {}", v.title, if v.running { "on" } else { "off" })).collect();
+            let auto = match &s.autoboot {
+                None => String::new(),
+                Some(a) if a.enabled => format!("On  ·  {} s", a.seconds),
+                Some(_) => "Off".to_string(),
+            };
             rows.push((row("Boot", boot, "nav", false), Action::Open(Screen::Boot)));
+            rows.push((row("Autoboot", auto, "nav", false), Action::Open(Screen::Autoboot)));
             rows.push((row("Services", svc.join("  ·  "), "nav", false), Action::Open(Screen::Services)));
             if let Some(r) = s.services.iter().find(|v| v.name == "remote" && v.running) {
                 rows.push((row("Remote UI is on", r.detail.clone(), "info", false), Action::Open(Screen::Services)));
             }
             rows.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks(Load::Waiting))));
             rows.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log(Load::Waiting))));
-            rows.push((row("Diagnostics", "Boot slots and the bootloader", "nav", false), Action::Open(Screen::Diagnostics(Load::Waiting))));
+            rows.push((row("Diagnostics", "Battery, boot slots and the bootloader", "nav", false), Action::Open(Screen::Diagnostics)));
             rows.push((row("Reboot", "", "action", false), Action::Reboot(String::new())));
             for m in &s.modes {
                 rows.push((row(format!("Reboot to {m}"), "", "action", false), Action::Reboot(m.clone())));
@@ -153,6 +216,31 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             ("Boot".into(), "Load the entry and kexec into it".into(), rows)
         }
+        Screen::Autoboot => {
+            match &s.autoboot {
+                None => rows.push(info("Reading…", "")),
+                Some(a) => {
+                    rows.push((
+                        row("Autoboot", "Start the default entry when the countdown ends", "toggle", a.enabled),
+                        Action::AutobootSet(!a.enabled, 0),
+                    ));
+                    rows.push(info("Countdown", "How long to wait before it starts"));
+                    for n in COUNTDOWNS {
+                        let current = a.seconds == n;
+                        let title = if current { format!("{n} seconds  ✓") } else { format!("{n} seconds") };
+                        rows.push((row(title, "", "action", false), Action::AutobootSet(a.enabled, n)));
+                    }
+                    if !COUNTDOWNS.contains(&a.seconds) {
+                        rows.push(info(format!("{} seconds", a.seconds), "Set elsewhere; choose one above to change it"));
+                    }
+                    rows.push(info("Applies from the next start", ""));
+                    if !a.saved {
+                        rows.push(info("Not saved", "This stage has no settings location, so it lasts until restart"));
+                    }
+                }
+            }
+            ("Autoboot".into(), "Starting the default entry on its own".into(), rows)
+        }
         Screen::Services => {
             for v in &s.services {
                 rows.push((row(v.title.clone(), v.detail.clone(), "toggle", v.running), Action::Service(v.name.clone(), !v.running)));
@@ -167,6 +255,15 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 }
                 for d in d {
                     let title = if d.name.is_empty() { d.dev.clone() } else { format!("{}  ·  {}", d.dev, d.name) };
+                    if d.fstype == "crypto_LUKS" {
+                        if s.luks_available {
+                            let open = Screen::Unlock { dev: d.dev.clone(), name: d.name.clone() };
+                            rows.push((row(title, format!("Encrypted (LUKS)  ·  {}  ·  tap to unlock", human_size(d.size)), "nav", false), Action::Open(open)));
+                        } else {
+                            rows.push(info(title, format!("Encrypted (LUKS)  ·  {}  ·  not supported in this build", human_size(d.size))));
+                        }
+                        continue;
+                    }
                     let open = Screen::Files { dev: d.dev.clone(), name: d.name.clone(), path: "/".into(), listing: Load::Waiting };
                     rows.push((row(title, format!("{}  ·  {}", d.fstype, human_size(d.size)), "nav", false), Action::Open(open)));
                 }
@@ -174,6 +271,13 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             ("Partitions".into(), "Mounted read-only".into(), rows)
         }
         Screen::Files { dev, name, path, listing } => {
+            if path == "/" && dev.starts_with("dm-") && s.luks_available {
+                rows.push((row("Lock", "Close the encrypted volume", "action", false), Action::Lock(dev.clone())));
+            }
+            if path == "/" && s.fsck_available {
+                let open = Screen::Fsck { dev: dev.clone(), disk: Load::Waiting, confirm: false };
+                rows.push((row("Check file system", "Find errors; repair is offered after", "nav", false), Action::Open(open)));
+            }
             rows.extend(pending(listing, "Reading…"));
             if let Load::Ready(l) = listing {
                 for f in &l.entries {
@@ -198,6 +302,58 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             let heading = if name.is_empty() { dev.clone() } else { name.clone() };
             (heading, format!("{dev}:{path}"), rows)
+        }
+        Screen::Unlock { dev, name } => {
+            // The passphrase field is above the list (app.slint).
+            match &s.unlock {
+                UnlockRun::Working => rows.push(info("Unlocking…", "Key derivation can take a few seconds")),
+                UnlockRun::Failed(e) => rows.push(info("Not unlocked", e.clone())),
+                UnlockRun::Idle => {}
+            }
+            let sub = if name.is_empty() { dev.clone() } else { format!("{dev}  ·  {name}") };
+            ("Unlock".into(), sub, rows)
+        }
+        Screen::Fsck { dev, disk, confirm } => {
+            // A link to /check/<dev> on a stage without the tools.
+            if !s.fsck_available {
+                rows.push(info("Not in this build", "This stage has no file system checkers"));
+                return ("Check".into(), String::new(), rows);
+            }
+            rows.extend(pending(disk, "Probing…"));
+            let mut sub = String::new();
+            if let Load::Ready(d) = disk {
+                sub = format!("{dev}  ·  {}  ·  {}", d.fstype, human_size(d.size));
+                match &s.fsck {
+                    FsckRun::Running(line) => rows.push(info("Running…", line.clone())),
+                    run => {
+                        let (title, detail) = match run {
+                            FsckRun::Done(r) => (status_title(r), format!("exit {}", r.code)),
+                            FsckRun::Failed(e) => ("Could not run".to_string(), e.clone()),
+                            _ => ("Not checked yet".to_string(), "A check changes nothing on the partition".to_string()),
+                        };
+                        rows.push(info(title, detail));
+                        rows.push((row("Check", "Read-only", "action", false), Action::Fsck(dev.clone(), false)));
+                        // Repair follows a check that found errors, and only on removable media.
+                        let errors = matches!(run, FsckRun::Done(r) if r.status == "errors" && !r.repair);
+                        if errors && d.removable && d.fstype != "xfs" {
+                            if *confirm {
+                                rows.push(info(format!("Repair writes to {dev}"), "Copy off anything that matters first"));
+                                rows.push((row(format!("Repair {dev} now"), "Writes to the card", "action", false), Action::Fsck(dev.clone(), true)));
+                            } else {
+                                rows.push((row("Repair…", "Asks to confirm", "action", false), Action::FsckConfirm));
+                            }
+                        } else if errors && d.fstype == "xfs" {
+                            rows.push(info("XFS is not repaired here", "Mount it so the log replays, then check again"));
+                        } else if errors {
+                            rows.push(info("Repair is for SD cards", "This partition is internal"));
+                        }
+                        if let FsckRun::Done(r) = run {
+                            rows.extend(r.lines.iter().rev().take(60).map(|l| info(l.clone(), "")));
+                        }
+                    }
+                }
+            }
+            ("Check".into(), sub, rows)
         }
         Screen::File { dev, path, size } => {
             let text = Screen::Text { dev: dev.clone(), path: path.clone(), text: Load::Waiting };
@@ -245,7 +401,28 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             }
             ("Log".into(), "Newest first".into(), rows)
         }
-        Screen::Diagnostics(d) => {
+        // The battery and what charges it, as the kernel reports them,
+        // read again while the screen is up (App::refresh_power).
+        Screen::Battery => {
+            rows.extend(power_rows(&s.supplies));
+            let sub = match &s.battery {
+                Some(b) if b.present && b.percent >= 0 => format!("{} %  ·  {}", b.percent, if b.charging { "Charging" } else { "Not charging" }),
+                Some(b) if b.present => "Level unknown".to_string(),
+                _ => "No battery found".to_string(),
+            };
+            ("Battery".into(), sub, rows)
+        }
+        Screen::Diagnostics => {
+            let power = match &s.battery {
+                Some(b) if b.present && b.percent >= 0 => format!("{} %  ·  {}", b.percent, if b.charging { "Charging" } else { "Not charging" }),
+                Some(b) if b.present => "Level unknown".to_string(),
+                _ => "No battery found".to_string(),
+            };
+            rows.push((row("Battery", power, "nav", false), Action::Open(Screen::Battery)));
+            rows.push((row("Boot", "A/B slots and the bootloader's state", "nav", false), Action::Open(Screen::BootInfo(Load::Waiting))));
+            ("Diagnostics".into(), "What the device reports".into(), rows)
+        }
+        Screen::BootInfo(d) => {
             rows.extend(pending(d, "Reading…"));
             if let Load::Ready(d) = d {
                 if !d.slots_error.is_empty() {
@@ -259,9 +436,99 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                     rows.extend(d.bootloader.iter().map(|r| info(r.title.clone(), r.detail.clone())));
                 }
             }
-            ("Diagnostics".into(), "What the bootloader boots next".into(), rows)
+            ("Boot".into(), "What the bootloader boots next".into(), rows)
         }
     }
+}
+
+/// A property in the kernel's units, scaled: µV to V, µA to mA and the like.
+fn scaled(props: &BTreeMap<String, String>, key: &str, div: f64, decimals: usize, unit: &str) -> Option<String> {
+    let v: f64 = props.get(key)?.parse().ok()?;
+    Some(format!("{:.*} {unit}", decimals, v / div))
+}
+
+/// The properties the rows below spell out; any others follow as raw lines.
+const KNOWN: [&str; 31] = [
+    "name", "type", "status", "capacity", "present", "voltage_now", "current_now", "temp", "health", "technology",
+    "charge_now", "charge_full", "charge_full_design", "cycle_count", "online", "usb_type", "current_max", "voltage_max",
+    "scope", "capacity_level", "model_name", "manufacturer", "charge_type", "input_current_limit",
+    "constant_charge_current", "constant_charge_voltage", "charge_term_current", "precharge_current",
+    "voltage_min_design", "voltage_max_design", "constant_charge_current_max",
+];
+
+/// What the kernel says of each power supply, for Diagnostics: the battery
+/// first (its level, voltage, current, temperature, health, charge),
+/// then what charges it.
+pub fn power_rows(supplies: &[Supply]) -> Vec<(Row, Action)> {
+    let mut rows = vec![];
+    if supplies.is_empty() {
+        rows.push(info("Power", "The kernel lists no power supplies"));
+        return rows;
+    }
+    for sp in supplies {
+        let p = &sp.props;
+        let mut head = vec![];
+        if sp.kind == "Battery" {
+            match p.get("capacity").and_then(|c| c.parse::<i32>().ok()) {
+                Some(c) => head.push(format!("{c} %")),
+                None => head.push("level unknown".into()),
+            }
+            if let Some(st) = p.get("status") {
+                head.push(st.clone());
+            }
+        } else {
+            if !sp.kind.is_empty() {
+                head.push(sp.kind.clone());
+            }
+            if let Some(o) = p.get("online") {
+                head.push(if o == "0" { "offline".into() } else { "online".into() });
+            }
+        }
+        let title = if sp.kind == "Battery" { format!("Battery  ·  {}", sp.name) } else { sp.name.clone() };
+        rows.push(info(title, head.join("  ·  ")));
+        let mut line = |k: &str, v: Option<String>| {
+            if let Some(v) = v {
+                rows.push(info(format!("   {k}"), v));
+            }
+        };
+        line("Voltage", scaled(p, "voltage_now", 1e6, 3, "V"));
+        line("Current", scaled(p, "current_now", 1e3, 0, "mA"));
+        line("Temperature", scaled(p, "temp", 10.0, 1, "°C"));
+        line("Health", p.get("health").cloned());
+        line("Technology", p.get("technology").cloned());
+        let charge = match (scaled(p, "charge_now", 1e3, 0, "mAh"), scaled(p, "charge_full", 1e3, 0, "mAh")) {
+            (Some(n), Some(f)) => Some(format!("{n} of {f}")),
+            (Some(n), None) => Some(n),
+            _ => None,
+        };
+        line("Charge", charge);
+        line("Full when new", scaled(p, "charge_full_design", 1e3, 0, "mAh"));
+        line("Charge cycles", p.get("cycle_count").cloned());
+        line("Type", p.get("usb_type").cloned());
+        line("Level", p.get("capacity_level").cloned());
+        let model = match (p.get("manufacturer"), p.get("model_name")) {
+            (Some(m), Some(n)) => Some(format!("{m} {n}")),
+            (m, n) => m.or(n).cloned(),
+        };
+        line("Part", model);
+        let design = match (scaled(p, "voltage_min_design", 1e6, 1, "V"), scaled(p, "voltage_max_design", 1e6, 1, "V")) {
+            (Some(lo), Some(hi)) => Some(format!("{} to {hi}", lo.trim_end_matches(" V"))),
+            _ => None,
+        };
+        line("Design voltage", design);
+        // A charger's: what it takes from the port, and how it charges.
+        line("Charge type", p.get("charge_type").cloned());
+        line("Input limit", scaled(p, "input_current_limit", 1e3, 0, "mA").or_else(|| scaled(p, "current_max", 1e3, 0, "mA")));
+        line("Charge current", scaled(p, "constant_charge_current", 1e3, 0, "mA"));
+        line("Charge voltage", scaled(p, "constant_charge_voltage", 1e6, 2, "V"));
+        line("Ends at", scaled(p, "charge_term_current", 1e3, 0, "mA"));
+        line("Precharge", scaled(p, "precharge_current", 1e3, 0, "mA"));
+        line("Voltage limit", scaled(p, "voltage_max", 1e6, 3, "V"));
+        for (k, v) in p.iter().filter(|(k, _)| !KNOWN.contains(&k.as_str())) {
+            line(k, Some(v.clone()));
+        }
+    }
+    rows
 }
 
 /// A slot's state, then what can be done to it: the bootloader boots the
@@ -314,6 +581,49 @@ mod tests {
 
     fn slot(name: &str, active: bool, priority: u32, successful: bool) -> Slot {
         Slot { name: name.into(), booted: name == "a", active, priority, retries: 3, successful, unbootable: false }
+    }
+
+    #[test]
+    fn power_rows_in_units() {
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let supplies = [
+            Supply {
+                name: "cw221x".into(),
+                kind: "Battery".into(),
+                props: props(&[
+                    ("capacity", "78"),
+                    ("status", "Charging"),
+                    ("voltage_now", "3987000"),
+                    ("current_now", "-412000"),
+                    ("temp", "315"),
+                    ("charge_now", "3912000"),
+                    ("charge_full", "4890000"),
+                    ("cycle_count", "12"),
+                    ("manufacturer", "Cellwise"),
+                    ("model_name", "CW2217"),
+                    ("voltage_min_design", "3400000"),
+                    ("voltage_max_design", "4400000"),
+                    ("odd", "1"),
+                ]),
+            },
+            Supply { name: "usb".into(), kind: "USB".into(), props: props(&[("online", "1"), ("current_max", "2000000")]) },
+        ];
+        let rows: Vec<(String, String)> = power_rows(&supplies).into_iter().map(|(r, _)| (r.title.to_string(), r.detail.to_string())).collect();
+        let get = |t: &str| rows.iter().find(|(k, _)| k.trim() == t).map(|(_, v)| v.as_str());
+        assert_eq!(rows[0], ("Battery  ·  cw221x".into(), "78 %  ·  Charging".into()));
+        assert_eq!(get("Voltage"), Some("3.987 V"));
+        assert_eq!(get("Current"), Some("-412 mA"));
+        assert_eq!(get("Temperature"), Some("31.5 °C"));
+        assert_eq!(get("Charge"), Some("3912 mAh of 4890 mAh"));
+        assert_eq!(get("Charge cycles"), Some("12"));
+        // Properties with no row of their own follow raw; the known ones do not repeat.
+        assert_eq!(get("odd"), Some("1"));
+        assert_eq!(get("model_name"), None);
+        assert_eq!(get("Part"), Some("Cellwise CW2217"));
+        assert_eq!(get("Design voltage"), Some("3.4 to 4.4 V"));
+        assert_eq!(get("usb"), Some("USB  ·  online"));
+        assert_eq!(get("Input limit"), Some("2000 mA"));
+        assert_eq!(power_rows(&[])[0].0.detail.as_str(), "The kernel lists no power supplies");
     }
 
     #[test]

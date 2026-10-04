@@ -2,7 +2,9 @@
 
 A boot menu and recovery screen for a LinuxBoot stage, as a PC's firmware
 setup and boot menu would be: pick and start a boot entry; switch SSH,
-remote access and fastboot on and off; browse partitions read-only; view the log;
+remote access and fastboot on and off; browse partitions read-only, check
+their file systems (ext4, FAT32, exFAT, f2fs, XFS) and repair those on an SD card or USB
+(a repair follows a check that found errors, and a confirmation); view the log;
 reboot (into any mode the device tree offers) or power off. It runs on the
 device's panel, driven by its keys or touch, and the same UI, built for
 wasm, runs in a browser on a connected host.
@@ -59,7 +61,9 @@ differs between devices and stages:
 | `-android-partitions` | | GPT labels of partitions that may hold such an image, read raw; empty: the boot partition of the A/B slot the bootloader did not boot (its bootconfig's `androidboot.slot_suffix`), the stage being in the booted one. A partition's image wins over a file's |
 | `-logs` | | files shown on the Log screen before the backend's (the uinit's log) |
 | `-autoboot` | `10` | seconds |
-| `-settings` | | where the entries' order and default are kept: a file, or `DEV:PATH`, a file on block device `DEV` (a kernel name) from its root, mounted only to read or write it (past the boot scan's read-only mount, which comes back as it was). Empty: for this run only |
+| `-settings` | | where the entries' order and default, and whether to autoboot and the countdown's length (the menu's Autoboot screen; from the next start, and `-autoboot` is the default until chosen), are kept: a file, or `DEV:PATH`, a file on block device `DEV` (a kernel name) from its root, mounted only to read or write it (past the boot scan's read-only mount, which comes back as it was). Empty: for this run only |
+| `-fsck-dir` | `/usr/libexec/fsck` | the file system checkers for Check and Repair: `e2fsck`, `fsck.fat`, `fsck.exfat`, `fsck.f2fs`, `xfs_repair`. A file system whose checker is missing reports so; the stage packs them (fogona's `tools/linuxboot/fsck-tools.sh`) |
+| `-cryptsetup` | `/usr/libexec/cryptsetup/cryptsetup` | unlocks LUKS partitions (an encrypted pmOS root) with a passphrase typed on the on-screen keyboard, so they can be browsed and checked as `dm-N` partitions. Rescue only: booting an encrypted pmOS needs none of it, its initramfs asks for the passphrase. Needs `CONFIG_DM_CRYPT` in the stage kernel; without the binary the UI leaves unlocking out |
 | `-reboot-modes` | `bootloader,fastboot,recovery,download` | reboot modes offered when the device tree maps them; leave out any that strand the device (qcom's `edl` needs a long power-button press to leave) |
 | `-ssh-keys`, `-ssh-hostkey` | `/etc/ssh/…` | for u-root's sshd, on at start |
 | `-ui` | `/bin/bootmanager-ui` | empty for none |
@@ -73,6 +77,21 @@ differs between devices and stages:
 kexec handover on some arm64 devices needs u-root changes not upstream
 yet (a DTB passed with kexec_load, `/memory` from the running system, a
 gzip Image); use a u-root with them there.
+
+## An initramfs's unlocker
+
+The same binary is a passphrase prompt for an encrypted root, in place of
+unl0kr:
+
+    bootmanager-ui --unlock [--fb /dev/fb0] | cryptsetup open /dev/X root -
+
+It shows a passphrase field (with show/hide) and the on-screen keyboard, and
+prints what was typed on stdout, no newline, exiting 0. It needs no backend,
+no socket, no udev or libinput: touch and keys come from `/dev/input`.
+`CRYPTTAB_SOURCE` names the volume on screen, and a non-zero `CRYPTTAB_TRIED`
+says the last try failed, as pmOS's `fde-unlock` passes them. The pmOS side
+is the `bootmanager-unlocker` aport (`fde-unlock` and a mkinitfs file list),
+a draft that is not built or tested yet.
 
 ## The screen
 
@@ -180,7 +199,13 @@ as fastbootd does (`is-userspace:yes`), without logical partitions.
 
 ## Diagnostics
 
-**Tools -> Diagnostics** shows the A/B slots as a Qualcomm ABL keeps
+**Tools -> Diagnostics** starts with the power supplies the kernel lists
+(`/sys/class/power_supply`, or `-power-supply`): per battery its level,
+status, voltage, current, temperature, health and charge, per charger
+whether it is online and its limits, and any other property raw. The same
+level is the battery indicator on the carousel and the menu, pushed to the
+UI when it changes (polled every 5 s, and only when a battery is found). It
+then shows the A/B slots as a Qualcomm ABL keeps
 them, and what the bootloader's bootconfig says (its version, the booted
 slot, boot reason, verified boot state, serial). Per slot: active,
 priority, tries left or booted successfully, unbootable; and **Boot slot

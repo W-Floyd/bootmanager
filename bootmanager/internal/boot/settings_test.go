@@ -146,3 +146,56 @@ func TestSettingsOnDevice(t *testing.T) {
 	}
 	t.Logf("mounts kept: %v", after)
 }
+
+func TestAutobootSettings(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "bm.json")
+	newManager := func(flag int) *Manager {
+		return New(Config{Autoboot: flag, Settings: file, Emit: func(string, any) {}})
+	}
+	// Unset: the flag decides. Off by flag, a user's "on" counts down for the default.
+	if s := newManager(10).AutobootSettings(); !s.Enabled || s.Seconds != 10 || !s.Saved {
+		t.Errorf("flag 10: %+v", s)
+	}
+	m := newManager(0)
+	if s := m.AutobootSettings(); s.Enabled {
+		t.Errorf("flag 0: %+v", s)
+	}
+	if err := m.SetAutoboot(true, 0); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.AutobootSettings(); !s.Enabled || s.Seconds != defaultCountdown {
+		t.Errorf("on, no length: %+v", s)
+	}
+	// Kept, and read back by the next start.
+	if err := m.SetAutoboot(false, 25); err != nil {
+		t.Fatal(err)
+	}
+	if s := newManager(10).AutobootSettings(); s.Enabled || s.Seconds != 25 {
+		t.Errorf("after restart: %+v", s)
+	}
+	// A length alone leaves the entries' settings alone, and a bad one is refused.
+	for _, bad := range []int{-1, MaxCountdown + 1} {
+		if err := m.SetAutoboot(true, bad); err == nil {
+			t.Errorf("%d accepted", bad)
+		}
+	}
+	if s := m.AutobootSettings(); s.Enabled || s.Seconds != 25 {
+		t.Errorf("a refused change changed it: %+v", s)
+	}
+	// With no settings location it is for this run, and says so.
+	if s := New(Config{Autoboot: 10, Emit: func(string, any) {}}).AutobootSettings(); s.Saved {
+		t.Errorf("no file but saved: %+v", s)
+	}
+}
+
+// A settings file that cannot be read (its card is not up yet) is not
+// written over with defaults: a change is refused until it reads.
+func TestChangeRefusedWhileSettingsUnreadable(t *testing.T) {
+	m := New(Config{Autoboot: 10, Settings: "nonexistent0:linuxboot/bootmanager.json", Emit: func(string, any) {}})
+	if err := m.SetAutoboot(false, 0); err == nil {
+		t.Fatal("changed settings that could not be read")
+	}
+	if s := m.AutobootSettings(); !s.Enabled {
+		t.Errorf("a refused change took effect: %+v", s)
+	}
+}

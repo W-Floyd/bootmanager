@@ -16,14 +16,19 @@ pub fn route_of(s: &Screen) -> String {
     match s {
         Screen::Main => "/menu".into(),
         Screen::Boot => "/boot".into(),
+        Screen::Autoboot => "/autoboot".into(),
         Screen::Services => "/services".into(),
         Screen::Disks(_) => "/partitions".into(),
         Screen::Log(_) => "/log".into(),
-        Screen::Diagnostics(_) => "/diagnostics".into(),
+        Screen::Diagnostics => "/diagnostics".into(),
+        Screen::Battery => "/diagnostics/battery".into(),
+        Screen::BootInfo(_) => "/diagnostics/boot".into(),
         Screen::Files { dev, path, .. } => format!("/partitions/{dev}{}", encode(path.trim_end_matches('/'))),
         // The browser previews images itself; the viewer is the panel's.
         Screen::File { dev, path, .. } | Screen::Image { dev, path, .. } => format!("/file/{dev}{}", encode(path)),
         Screen::Text { dev, path, .. } => format!("/text/{dev}{}", encode(path)),
+        Screen::Fsck { dev, .. } => format!("/check/{dev}"),
+        Screen::Unlock { dev, .. } => format!("/unlock/{dev}"),
     }
 }
 
@@ -44,10 +49,15 @@ pub fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
     };
     match parts.as_slice() {
         ["boot"] => (vec![Screen::Main], Screen::Boot),
+        ["autoboot"] => (vec![Screen::Main], Screen::Autoboot),
         ["services"] => (vec![Screen::Main], Screen::Services),
         ["log"] => (vec![Screen::Main], Screen::Log(Load::Waiting)),
-        ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics(Load::Waiting)),
+        ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics),
+        ["diagnostics", "battery"] => (vec![Screen::Main, Screen::Diagnostics], Screen::Battery),
+        ["diagnostics", "boot"] => (vec![Screen::Main, Screen::Diagnostics], Screen::BootInfo(Load::Waiting)),
         ["partitions"] => (vec![Screen::Main], Screen::Disks(Load::Waiting)),
+        ["unlock", dev] => (vec![Screen::Main, Screen::Disks(Load::Waiting)], Screen::Unlock { dev: dev.to_string(), name: String::new() }),
+        ["check", dev] => (dir_stack(dev, &[]), Screen::Fsck { dev: dev.to_string(), disk: Load::Waiting, confirm: false }),
         ["partitions", dev, rest @ ..] => {
             let mut st = dir_stack(dev, rest);
             let screen = st.pop().unwrap();
@@ -77,9 +87,14 @@ mod tests {
         for (route, stack_len) in [
             ("/menu", 0),
             ("/boot", 1),
+            ("/autoboot", 1),
+            ("/diagnostics/battery", 2),
+            ("/diagnostics/boot", 2),
             ("/diagnostics", 1),
             ("/partitions", 1),
             ("/partitions/mmcblk0p2", 2),
+            ("/check/mmcblk0p2", 3),
+            ("/unlock/mmcblk0p2", 2),
             ("/partitions/mmcblk0p2/usr/share", 4),
             ("/file/mmcblk0p2/etc/os-release", 4),
             ("/text/mmcblk0p2/etc/os-release", 5),

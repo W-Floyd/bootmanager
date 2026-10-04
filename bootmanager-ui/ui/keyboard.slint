@@ -1,0 +1,143 @@
+// An on-screen keyboard, after Slint's own examples/virtual_keyboard (MIT,
+// SixtyFPS GmbH): Slint has no keyboard in its widgets, so this is one, and
+// it works the same way. A key press calls VirtualKeyboardHandler.key-pressed,
+// src/app.rs turns that into a key event on the window, and the focused
+// TextInput takes it like a key of a real keyboard (cursor, editing and a
+// password's masking are the TextInput's). It is shown while a text field
+// has focus (TextInputInterface.text-input-focused, in app.slint).
+//
+// The layout is this UI's: a digit row and a symbols layer, for a
+// passphrase on a portrait panel, in the menu's colours.
+
+import { Palette } from "theme.slint";
+
+export global VirtualKeyboardHandler {
+    callback key-pressed(/* key */ string);
+}
+
+component KeyButton inherits Rectangle {
+    in property <string> label;
+    // Relative width: letters are 1, the wide keys more.
+    in property <float> span: 1;
+    in property <bool> accent;
+    in property <bool> lit;
+    callback clicked();
+    horizontal-stretch: root.span;
+    border-radius: 7px;
+    background: ta.pressed ? #ffffff40 : root.lit ? Palette.accent : root.accent ? #ffffff26 : #ffffff14;
+    animate background { duration: 80ms; }
+    Text {
+        text: root.label;
+        font-size: 18px;
+        color: root.lit ? #07080c : #ffffff;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Keyboard inherits Rectangle {
+    // The shift is for one key, as on a phone; the symbols layer stays up
+    // until switched back.
+    in-out property <bool> shift;
+    in-out property <bool> symbols;
+
+    property <[string]> digits: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+    property <[string]> r1: root.symbols
+        ? ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")"]
+        : root.shift ? ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"] : ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"];
+    property <[string]> r2: root.symbols
+        ? ["-", "_", "=", "+", "[", "]", "{", "}", ";", ":"]
+        : root.shift ? ["A", "S", "D", "F", "G", "H", "J", "K", "L"] : ["a", "s", "d", "f", "g", "h", "j", "k", "l"];
+    property <[string]> r3: root.symbols
+        ? ["'", "\"", ",", ".", "/", "\\", "|"]
+        : root.shift ? ["Z", "X", "C", "V", "B", "N", "M"] : ["z", "x", "c", "v", "b", "n", "m"];
+
+    height: 5 * 46px + 6 * 5px;
+    background: #00000040;
+
+    function press(k: string) {
+        VirtualKeyboardHandler.key-pressed(k);
+        root.shift = false;
+    }
+
+    VerticalLayout {
+        padding: 5px;
+        spacing: 5px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            for k in root.digits: KeyButton {
+                label: k;
+                clicked => { root.press(k); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for k in root.r1: KeyButton {
+                label: k;
+                clicked => { root.press(k); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            if !root.symbols: Rectangle { horizontal-stretch: 0.5; }
+            for k in root.r2: KeyButton {
+                label: k;
+                clicked => { root.press(k); }
+            }
+            if !root.symbols: Rectangle { horizontal-stretch: 0.5; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            KeyButton {
+                label: root.symbols ? "" : "⇧";
+                span: 1.5;
+                accent: true;
+                lit: root.shift && !root.symbols;
+                clicked => {
+                    if (!root.symbols) {
+                        root.shift = !root.shift;
+                    }
+                }
+            }
+            for k in root.r3: KeyButton {
+                label: k;
+                clicked => { root.press(k); }
+            }
+            KeyButton {
+                label: "⌫";
+                span: 1.5;
+                accent: true;
+                clicked => { VirtualKeyboardHandler.key-pressed(Key.Backspace); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            KeyButton {
+                label: root.symbols ? "abc" : "?123";
+                span: 1.8;
+                accent: true;
+                clicked => {
+                    root.symbols = !root.symbols;
+                    root.shift = false;
+                }
+            }
+            KeyButton {
+                label: "space";
+                span: 5;
+                clicked => { root.press(" "); }
+            }
+            KeyButton {
+                label: ".";
+                clicked => { root.press("."); }
+            }
+            KeyButton {
+                label: "⏎";
+                span: 2;
+                lit: true;
+                clicked => { VirtualKeyboardHandler.key-pressed(Key.Return); }
+            }
+        }
+    }
+}

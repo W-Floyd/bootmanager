@@ -9,10 +9,13 @@ import "DejaVuSans.ttf";
 import "DejaVuSans-Bold.ttf";
 import { Palette, Card, Row } from "theme.slint";
 import { MenuList } from "menu.slint";
+import { Keyboard, VirtualKeyboardHandler } from "keyboard.slint";
 import { Carousel } from "carousel.slint";
 import { Splash } from "splash.slint";
+import { UnlockWindow } from "unlock.slint";
+import { BatteryIndicator } from "battery.slint";
 
-export { Card, Row }
+export { Card, Row, VirtualKeyboardHandler, UnlockWindow }
 
 // The top line: with no cutout, one line; with some, a line as tall as
 // they reach, its text left of them, as phosh lays out its top bar.
@@ -33,6 +36,10 @@ export component AppWindow inherits Window {
     // down from the top edge.
     property <length> side-pad: max(18px, root.corner-radius / 2);
     in property <string> busy;
+    // The battery indicator, top right, while there is a battery.
+    in property <bool> battery-present;
+    in property <int> battery-percent: -1;
+    in property <bool> battery-charging;
 
     // The carousel.
     in property <[Card]> cards;
@@ -65,6 +72,12 @@ export component AppWindow inherits Window {
     in property <[Row]> rows;
     in-out property <int> selected;
     callback activated(int);
+    // A passphrase field under the heading while a screen asks for one
+    // (text-entry), and the keyboard under the list while it has focus
+    // (keyboard.slint). Return in the field is `passphrase-accepted`.
+    in property <bool> text-entry;
+    in-out property <string> passphrase;
+    callback passphrase-accepted();
     callback back();
     callback close-menu();
     callback activity();
@@ -150,6 +163,15 @@ export component AppWindow inherits Window {
                 color: #ffffffb0;
                 overflow: elide;
             }
+        }
+
+        // Top right, in the band the title leaves clear.
+        if root.battery-present: BatteryIndicator {
+            x: parent.width - self.width - root.side-pad;
+            y: root.cutout-h > 0 ? 4px : 12px;
+            percent: root.battery-percent;
+            charging: root.battery-charging;
+            opacity: header.opacity;
         }
 
         // Errors and the like, in a pill that drops in.
@@ -301,6 +323,51 @@ export component AppWindow inherits Window {
                 }
             }
 
+            if root.text-entry: entry := FocusScope {
+                vertical-stretch: 0;
+                height: 56px;
+                forward-focus: field;
+                init => { field.focus(); }
+                // The volume keys, the only keys some phones have, would
+                // only move the cursor here: they leave the screen, so
+                // the field is never a trap.
+                capture-key-pressed(event) => {
+                    root.activity();
+                    if (event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Escape) {
+                        root.back();
+                        return accept;
+                    }
+                    reject
+                }
+                Rectangle {
+                    x: root.side-pad;
+                    width: parent.width - 2 * root.side-pad;
+                    height: 48px;
+                    border-radius: 10px;
+                    background: #ffffff14;
+                    border-width: 1px;
+                    border-color: field.has-focus ? Palette.accent : #ffffff20;
+                    if root.passphrase == "": Text {
+                        x: 14px;
+                        text: "Passphrase";
+                        font-size: 18px;
+                        color: #ffffff60;
+                        vertical-alignment: center;
+                    }
+                    field := TextInput {
+                        x: 14px;
+                        width: parent.width - 28px;
+                        text <=> root.passphrase;
+                        input-type: InputType.password;
+                        single-line: true;
+                        font-size: 20px;
+                        color: #ffffff;
+                        vertical-alignment: center;
+                        accepted => { root.passphrase-accepted(); }
+                    }
+                }
+            }
+
             list := MenuList {
                 compact: root.compact;
                 vertical-stretch: 1;
@@ -311,6 +378,8 @@ export component AppWindow inherits Window {
                 activity => { root.activity(); }
             }
 
+            if TextInputInterface.text-input-focused: Keyboard { }
+
             Rectangle {
                 height: 40px;
                 Text {
@@ -319,6 +388,14 @@ export component AppWindow inherits Window {
                     color: Palette.dim;
                 }
             }
+        }
+
+        // The menu has it too, top right of its heading.
+        if root.battery-present: BatteryIndicator {
+            x: parent.width - self.width - root.side-pad;
+            y: 26px;
+            percent: root.battery-percent;
+            charging: root.battery-charging;
         }
 
         // Over the heading only, so the list below still scrolls.

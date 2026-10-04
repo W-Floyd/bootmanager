@@ -63,12 +63,14 @@ type Manager struct {
 	images   []boot.OSImage // in the user's order
 	keys     []string       // images' keys (keysOf)
 	settings Settings
-	def      int  // the default entry
-	explicit bool // chosen, not the one the scan found first
-	first    int  // with no default chosen, the scan's first entry: its place now
-	scanned  bool
-	booting  bool
-	left     int // seconds of countdown left; -1 when none is running
+	// settingsLoaded: the settings file has been read (or there is none).
+	settingsLoaded bool
+	def            int  // the default entry
+	explicit       bool // chosen, not the one the scan found first
+	first          int  // with no default chosen, the scan's first entry: its place now
+	scanned        bool
+	booting        bool
+	left           int // seconds of countdown left; -1 when none is running
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -76,11 +78,28 @@ type Manager struct {
 
 func New(cfg Config) *Manager {
 	m := &Manager{cfg: cfg, left: -1, stop: make(chan struct{})}
-	var err error
-	if m.settings, err = parseSettingsFile(cfg.Settings).load(); err != nil {
-		log.Printf("settings %s: %v", cfg.Settings, err)
+	if err := m.loadSettings(); err != nil {
+		log.Printf("settings %s: %v (tried again at the scan)", cfg.Settings, err)
 	}
 	return m
+}
+
+// loadSettings reads the settings, once. Until it has worked they are the
+// defaults, and a change is refused rather than saved over what could not
+// be read: the card may not have probed yet, or the stage may still hold it
+// mounted (the boot scan, or the uinit's own writes).
+func (m *Manager) loadSettings() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.settingsLoaded {
+		return nil
+	}
+	s, err := parseSettingsFile(m.cfg.Settings).load()
+	if err != nil {
+		return err
+	}
+	m.settings, m.settingsLoaded = s, true
+	return nil
 }
 
 // setImages takes a scan's images, arranged as the settings say.
@@ -137,6 +156,19 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 // Run scans for entries, then counts down and boots the first one, unless
 // the countdown is cancelled first. It returns once either happens.
 func (m *Manager) Run() {
+	// The stage is ready: the card is up and its own writes are done. A
+	// few tries, as the card can be slow to appear.
+	for i := 0; i < 10; i++ {
+		err := m.loadSettings()
+		if err == nil {
+			break
+		}
+		if i == 9 {
+			log.Printf("settings %s: %v (changes are refused until it reads)", m.cfg.Settings, err)
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	imgs, err := m.scan()
 	m.setImages(imgs)
 	m.mu.Lock()
@@ -156,7 +188,10 @@ func (m *Manager) Run() {
 		log.Printf("  %d: %s%s", i, img.Label(), mark)
 	}
 	m.cfg.Emit("entries", m.List())
-	if len(imgs) == 0 || m.cfg.Autoboot <= 0 {
+	m.mu.Lock()
+	enabled, seconds := m.autobootLocked()
+	m.mu.Unlock()
+	if len(imgs) == 0 || !enabled {
 		return
 	}
 	if m.held() {
@@ -166,7 +201,7 @@ func (m *Manager) Run() {
 
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	for left := m.cfg.Autoboot; left > 0; left-- {
+	for left := seconds; left > 0; left-- {
 		if !m.setLeft(left) {
 			return
 		}
@@ -235,6 +270,61 @@ func (m *Manager) Cancelled() bool {
 		defer m.mu.Unlock()
 		return m.scanned && m.left < 0
 	}
+}
+
+// defaultCountdown is the length when autoboot was off by flag and is
+// switched on by the user, who chose no length.
+const defaultCountdown = 10
+
+// MaxCountdown is the longest countdown that can be chosen, in seconds.
+const MaxCountdown = 300
+
+// AutobootSettings is whether the stage autoboots at start and for how long
+// it counts down: the user's choice, else the -autoboot flag's. They apply
+// from the next start; a countdown already over is not run again.
+type AutobootSettings struct {
+	Enabled bool `json:"enabled"`
+	Seconds int  `json:"seconds"`
+	// Saved: there is a settings location, so a change outlives this run.
+	Saved bool `json:"saved"`
+}
+
+// autobootLocked is the effective setting. m.mu is held.
+func (m *Manager) autobootLocked() (enabled bool, seconds int) {
+	enabled = m.cfg.Autoboot > 0
+	if m.settings.Autoboot != nil {
+		enabled = *m.settings.Autoboot
+	}
+	seconds = m.cfg.Autoboot
+	if m.settings.Countdown > 0 {
+		seconds = m.settings.Countdown
+	}
+	if seconds <= 0 {
+		seconds = defaultCountdown
+	}
+	return enabled, seconds
+}
+
+func (m *Manager) AutobootSettings() AutobootSettings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	on, s := m.autobootLocked()
+	return AutobootSettings{Enabled: on, Seconds: s, Saved: m.cfg.Settings != ""}
+}
+
+// SetAutoboot chooses whether to autoboot and the countdown's length in
+// seconds (0: leave it), and saves it.
+func (m *Manager) SetAutoboot(enabled bool, seconds int) error {
+	if seconds < 0 || seconds > MaxCountdown {
+		return fmt.Errorf("countdown must be 1 to %d seconds", MaxCountdown)
+	}
+	return m.change(func() error {
+		m.settings.Autoboot = &enabled
+		if seconds > 0 {
+			m.settings.Countdown = seconds
+		}
+		return nil
+	})
 }
 
 func (m *Manager) Autoboot() Autoboot {
@@ -390,6 +480,9 @@ func (m *Manager) SetDefault(i int) error {
 // change applies f to the entries and settings and saves them, undoing
 // all of it if the save fails.
 func (m *Manager) change(f func() error) error {
+	if err := m.loadSettings(); err != nil {
+		return fmt.Errorf("settings not readable, so not changed: %w", err)
+	}
 	m.mu.Lock()
 	if m.booting {
 		m.mu.Unlock()
@@ -402,7 +495,7 @@ func (m *Manager) change(f func() error) error {
 		def      int
 		explicit bool
 		first    int
-	}{slices.Clone(m.images), slices.Clone(m.keys), Settings{slices.Clone(m.settings.Order), m.settings.Default}, m.def, m.explicit, m.first}
+	}{slices.Clone(m.images), slices.Clone(m.keys), m.settings.clone(), m.def, m.explicit, m.first}
 	err := f()
 	if err == nil {
 		m.scanMu.Lock()

@@ -25,6 +25,7 @@ fn main() {
     let mut fb = "/dev/fb0".to_string();
     let mut screenshot = None::<String>;
     let mut keys = String::new();
+    let mut unlock = false;
     let mut size = slint::PhysicalSize::new(720, 1600);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -33,6 +34,7 @@ fn main() {
             "--socket" => socket = val(),
             "--fb" => fb = val(),
             "--screenshot" => screenshot = Some(val()),
+            "--unlock" => unlock = true,
             "--keys" => keys = val(),
             "--size" => {
                 let v = val();
@@ -61,6 +63,25 @@ fn main() {
     let frame = p.frame.clone();
     slint::platform::set_platform(Box::new(p)).expect("platform");
 
+    if unlock {
+        // An initramfs's passphrase prompt: no backend (see unlock.rs).
+        let (volume, tried) = bootmanager_ui::unlock::from_env();
+        let ui = bootmanager_ui::unlock::window(&volume, tried);
+        if let Some(out) = &screenshot {
+            let steps: Vec<String> = keys.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+            run_script(ui.as_weak(), steps, 0, frame.clone(), out.clone());
+            ui.show().unwrap();
+            slint::run_event_loop().unwrap();
+            save_png(out, &frame.borrow());
+            return;
+        }
+        // Exits once a passphrase is accepted (the window's handler quits
+        // the loop); the passphrase is already on stdout by then.
+        ui.show().unwrap();
+        slint::run_event_loop().unwrap();
+        return;
+    }
+
     let ui = AppWindow::new().expect("create window");
     App::install(&ui, mode);
     transport::start(socket);
@@ -78,10 +99,11 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!("usage: bootmanager-ui [--socket PATH] [--fb DEV] [--screenshot PNG [--keys LIST] [--size WxH]]");
+    eprintln!("       bootmanager-ui --unlock [--fb DEV]   passphrase on stdout, for cryptsetup");
     std::process::exit(2)
 }
 
-fn run_script(ui: slint::Weak<AppWindow>, steps: Vec<String>, i: usize, frame: Rc<RefCell<Frame>>, out: String) {
+fn run_script<C: ComponentHandle + 'static>(ui: slint::Weak<C>, steps: Vec<String>, i: usize, frame: Rc<RefCell<Frame>>, out: String) {
     use slint::platform::{Key, WindowEvent};
     // The first step waits for the connection and the first replies; a
     // shot is taken of the frame drawn so far, at once.

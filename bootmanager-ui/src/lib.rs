@@ -13,6 +13,8 @@ pub mod screens;
 #[cfg(feature = "fbdev")]
 pub mod platform;
 #[cfg(feature = "fbdev")]
+pub mod unlock;
+#[cfg(feature = "fbdev")]
 pub mod transport;
 
 #[cfg(target_arch = "wasm32")]

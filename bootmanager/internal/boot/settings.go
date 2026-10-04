@@ -17,10 +17,25 @@ import (
 )
 
 // Settings are what the user chose of the entries, by key (keysOf): their
-// order, and the one to autoboot.
+// order, and the one to autoboot; and whether to autoboot at all and for
+// how long to count down. The last two are unset until chosen, so the
+// flags' defaults apply (-autoboot).
 type Settings struct {
 	Order   []string `json:"order,omitempty"`
 	Default string   `json:"default,omitempty"`
+	// Autoboot: nil until chosen.
+	Autoboot *bool `json:"autoboot,omitempty"`
+	// Countdown is the autoboot's length in seconds, 0 until chosen.
+	Countdown int `json:"countdown,omitempty"`
+}
+
+func (s Settings) clone() Settings {
+	s.Order = slices.Clone(s.Order)
+	if s.Autoboot != nil {
+		on := *s.Autoboot
+		s.Autoboot = &on
+	}
+	return s
 }
 
 // settingsFile is where Settings are kept: a file (PATH), or a file on a
