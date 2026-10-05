@@ -236,6 +236,16 @@ successful unless `-mark-successful` does.
   device, then the primary. The disk that makes the chosen slot bootable
   goes first, so a failure midway leaves both slots bootable.
 
+## Test fixtures
+
+No binary fixture is committed, and `go test ./...` needs no generated file.
+The GPT disks of the slot tests are synthesised in process by
+`bootmanager/internal/slots/gptgen` (a layout shaped like the phone's UFS
+LUNs, made-up numbers; a copy of go-qbootctl's generator), and the super
+metadata of the firmware tests by the `fakeSuper` builder in
+`internal/firmware`. `go generate ./internal/slots` writes the disk images to
+the git-ignored `testdata/` for sgdisk or hexdump.
+
 ## Dev builds
 
 `TAGS=dev sh build.sh OUT` adds **Services -> Dev uploads**, which takes

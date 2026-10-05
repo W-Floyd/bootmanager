@@ -4,21 +4,22 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"os"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// The head of a real super partition (fogona's: geometry and the first
-// metadata slot, which is all PartitionExtents needs to find a partition).
-// The extents are what device-mapper made of the same metadata on the phone
-// (dmsetup table vendor_a: 0 1094152 linear super 10194944).
-func TestPartitionExtentsReal(t *testing.T) {
-	b, err := os.ReadFile("testdata/super-fogona-slot0.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
+// A synthetic super laid out the way fogona's is: three partitions of one
+// linear extent each, the first at sector 2048, vendor_a last. The sizes and
+// starts are made up (they imitate, not copy, a real phone's); nothing here
+// is read from a device.
+func TestPartitionExtentsFogonaShape(t *testing.T) {
+	lin := func(sectors, start uint64) fakeExtent { return fakeExtent{sectors, start, targetLinear, 0} }
+	b := fakeSuper(t, [][]fakePart{{
+		{"product_a", []fakeExtent{lin(7494216, 2048)}},
+		{"system_a", []fakeExtent{lin(1277088, 7497728)}},
+		{"vendor_a", []fakeExtent{lin(1094152, 10194944)}},
+	}})
 	r := bytes.NewReader(b)
 	for name, want := range map[string]Extent{
 		"vendor_a":  {10194944, 1094152},
