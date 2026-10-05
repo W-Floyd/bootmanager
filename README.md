@@ -63,7 +63,6 @@ differs between devices and stages:
 | `-autoboot` | `10` | seconds |
 | `-settings` | | where the entries' order and default, and whether to autoboot and the countdown's length (the menu's Autoboot screen; from the next start, and `-autoboot` is the default until chosen), are kept: a file, or `DEV:PATH`, a file on block device `DEV` (a kernel name) from its root, mounted only to read or write it (past the boot scan's read-only mount, which comes back as it was), or `@FILE`, a file holding one of those, for a stage that finds its boot partition at run time (`-find-boot-files`) and writes the location once it has: until `FILE` exists the load is tried again, and an empty `FILE` means nowhere to keep them. Empty: for this run only |
 | `-find-boot-files` | off | a client: print where the stage keeps its files as `DEV FSTYPE DIR`, the first block device (a kernel name) whose file system has a `linuxboot` directory at its root (the file system is `/boot`, as on a microSD card's first partition) or under `boot/` (`/boot` is a directory of the root file system, as on UFS); a card's partitions first, waiting up to 2.5 s for the card. Exits non-zero when there is none |
-| `-firmware MANIFEST` | | a client: put in place the files a device needs but its stage cannot carry (a vendor's blobs), from the device's own stock partitions, and exit; non-zero if any is missing. MANIFEST is JSON, `{"files": [{"name", "dest", "sources": [...], "rebind"?}]}`: `dest` an absolute path in the stage; each source either `{"super": NAME, "path": P}` (a logical partition of Android's dynamic-partition `super`, found from its metadata and mounted through a loop device, so it must be one extent) or `{"partition": NAME, "path": P}` (a partition by GPT name), with an optional `fstype`; names are tried with the A/B slot suffix first (`androidboot.slot_suffix`), then without; `rebind` (`{"bus", "driver", "modalias"}`) re-probes a device whose driver asked for the file before it existed. A file already at `dest` is left alone. Nothing in the Boot Manager knows what a file is for |
 | `-fsck-dir` | `/usr/libexec/fsck` | the file system checkers for Check and Repair: `e2fsck`, `fsck.fat`, `fsck.exfat`, `fsck.f2fs`, `xfs_repair`. A file system whose checker is missing reports so; the stage packs them (fogona's `tools/linuxboot/fsck-tools.sh`) |
 | `-cryptsetup` | `/usr/libexec/cryptsetup/cryptsetup` | unlocks LUKS partitions (an encrypted pmOS root) with a passphrase typed on the on-screen keyboard, so they can be browsed and checked as `dm-N` partitions. Rescue only: booting an encrypted pmOS needs none of it, its initramfs asks for the passphrase. Needs `CONFIG_DM_CRYPT` in the stage kernel; without the binary the UI leaves unlocking out |
 | `-reboot-modes` | `bootloader,fastboot,recovery,download` | reboot modes offered when the device tree maps them; leave out any that strand the device (qcom's `edl` needs a long power-button press to leave) |
@@ -74,6 +73,19 @@ differs between devices and stages:
 | `-fastboot-gadget` | | the configfs USB gadget Fastboot joins; empty: the one bound to a UDC |
 | `-wait-ready` | off | start the UI and socket at once; hold the boot scan and countdown, disks, SSH, Remote UI and `-dev-once` until `stage.ready` |
 | `-send CMD` | | a client: send CMD to `-socket` (retrying 5 s for it to appear), print the reply, exit non-zero on an error |
+
+### Subcommands
+
+The binary is also a multi-call program. A subcommand is the first argument
+(`bootmanager qbootctl -a`) or the name the binary is run under (a symlink
+called `qbootctl`), and is handled before the flags above, which it does not
+see; it has its own.
+
+| subcommand | |
+|---|---|
+| `qbootctl [flags]` | the A/B slot tool of [go-qbootctl](https://github.com/W-Floyd/go-qbootctl): the subset of `qbootctl` that postmarketOS uses (`-a`, `-c`, `-m`, `-s`, `-u`, `-b`, `-n`, `-x`), in its output format, with `--dry-run`. It needs no udev; it does not set the UFS boot LUN |
+| `msm-firmware-loader [flags]` | [go-msm-firmware-loader](https://github.com/W-Floyd/go-msm-firmware-loader): mounts a Qualcomm device's firmware partitions read-only, links their blobs into one directory and points `firmware_class.path` at it. Needs no udev or other program; `--dry-run`, `--teardown` |
+| `reprobe [--dry-run]` | for every bus in `/sys/bus`, writes the name of each device that has **no driver** to the bus's `drivers_probe`, once, so a driver that gave up for want of firmware (`Direct firmware load ... failed`) is probed again after the loader has run. A device that has a driver is never written to, so nothing running is rebound. It costs one probe attempt per unbound device, which for drivers that have none to find is a failed match; `--dry-run` only lists them. One line per device and a summary go to stderr; exit 0 |
 
 `UROOT` names the u-root checkout for `go.work` (default `~/u-root`). The
 kexec handover on some arm64 devices needs u-root changes not upstream
@@ -239,12 +251,10 @@ successful unless `-mark-successful` does.
 ## Test fixtures
 
 No binary fixture is committed, and `go test ./...` needs no generated file.
-The GPT disks of the slot tests are synthesised in process by
-`bootmanager/internal/slots/gptgen` (a layout shaped like the phone's UFS
-LUNs, made-up numbers; a copy of go-qbootctl's generator), and the super
-metadata of the firmware tests by the `fakeSuper` builder in
-`internal/firmware`. `go generate ./internal/slots` writes the disk images to
-the git-ignored `testdata/` for sgdisk or hexdump.
+The A/B slot code and its tests, with the generator of synthetic GPT disks
+they run on, are in go-qbootctl; the loader's, with its synthetic super
+metadata, in go-msm-firmware-loader. This module's tests build what they need
+in process.
 
 ## Dev builds
 
