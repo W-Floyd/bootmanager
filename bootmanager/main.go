@@ -109,6 +109,9 @@ func main() {
 	if *findBootFiles {
 		os.Exit(findBootFilesCmd())
 	}
+	if *firmwareManifest != "" {
+		os.Exit(firmwareCmd())
+	}
 	if *sendCmd != "" {
 		os.Exit(send(*socketPath, *sendCmd))
 	}
