@@ -3,13 +3,15 @@ package slots
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
+
+	"bootmanager.local/bootmanager/internal/slots/gptgen"
 )
 
-// memDisk holds a disk's first and last sectors, as dumped from a
-// Moto G Play (2024)'s UFS: the GPTs and nothing between.
+// memDisk holds a disk's first and last blocks, where the GPTs are, and
+// nothing between: an Image of gptgen, which synthesises a layout shaped
+// like a Moto G Play (2024)'s UFS (made-up numbers).
 type memDisk struct {
 	name       string
 	bs, blocks int64
@@ -53,17 +55,20 @@ func (d *memDisk) Blocks() int64    { return d.blocks }
 func (d *memDisk) Sync() error      { return nil }
 func (d *memDisk) Close() error     { return nil }
 
+// fixture is the named disk of gptgen.Fogona(4096), built in memory.
 func fixture(t *testing.T, name string) *memDisk {
 	t.Helper()
-	head, err := os.ReadFile("testdata/" + name + "-head.bin")
+	ims, err := gptgen.FogonaImages(4096)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tail, err := os.ReadFile("testdata/" + name + "-tail.bin")
-	if err != nil {
-		t.Fatal(err)
+	for _, im := range ims {
+		if im.Name == name {
+			return &memDisk{name: name, bs: 4096, blocks: im.Blocks, head: im.Head, tail: im.Tail}
+		}
 	}
-	return &memDisk{name: name, bs: 4096, blocks: 241664, head: head, tail: tail}
+	t.Fatalf("no disk %s", name)
+	return nil
 }
 
 func testStore(t *testing.T) (*Store, *memDisk, *memDisk) {
