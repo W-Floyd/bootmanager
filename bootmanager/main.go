@@ -106,12 +106,12 @@ var devExt interface {
 }
 
 func main() {
+	if code, ok := subcommand(os.Args, os.Stdout, os.Stderr); ok {
+		os.Exit(code)
+	}
 	flag.Parse()
 	if *findBootFiles {
 		os.Exit(findBootFilesCmd())
-	}
-	if *firmwareManifest != "" {
-		os.Exit(firmwareCmd())
 	}
 	if *sendCmd != "" {
 		os.Exit(send(*socketPath, *sendCmd))
