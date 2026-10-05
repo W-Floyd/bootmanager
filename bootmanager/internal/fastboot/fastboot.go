@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/slots"
+	qbootctl "github.com/W-Floyd/go-qbootctl"
 )
 
 // Transport is one fastboot connection. Read returns one command packet,
@@ -90,9 +90,9 @@ const (
 	dataChunk   = 64 << 10 // one read of the data phase: one USB request
 )
 
-// SlotStore is what the server needs of slots.Store.
+// SlotStore is what the server needs of qbootctl.Store.
 type SlotStore interface {
-	List() ([]slots.Slot, error)
+	List() ([]qbootctl.Slot, error)
 	SetActive(slot string) error
 }
 
@@ -302,7 +302,7 @@ func (s *Server) getvar(name string) (string, error) {
 
 var slotVars = []string{"slot-successful", "slot-unbootable", "slot-retry-count"}
 
-func slotVar(name string, sl slots.Slot) string {
+func slotVar(name string, sl qbootctl.Slot) string {
 	yesNo := func(b bool) string {
 		if b {
 			return "yes"

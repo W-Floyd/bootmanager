@@ -30,9 +30,10 @@ import (
 	"sync"
 	"time"
 
+	qbootctl "github.com/W-Floyd/go-qbootctl"
+
 	"bootmanager.local/bootmanager/internal/boot"
 	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/slots"
 	"bootmanager.local/bootmanager/internal/storage"
 	"bootmanager.local/bootmanager/internal/svc"
 	"bootmanager.local/bootmanager/internal/uiproc"
@@ -69,7 +70,7 @@ type app struct {
 	services []*svc.Service // until svcs is made from them
 	svcs     *svc.Set
 	disks    *storage.Browser
-	slots    *slots.Store
+	slots    *qbootctl.Store
 	ui       *uiproc.Supervisor
 	web      *webServer
 	battery  batteryLevel

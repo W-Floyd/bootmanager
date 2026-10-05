@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"bootmanager.local/bootmanager/internal/slots"
+	qbootctl "github.com/W-Floyd/go-qbootctl"
 )
 
 type fakeSlots struct {
@@ -22,12 +22,12 @@ type fakeSlots struct {
 	active string
 }
 
-func (f *fakeSlots) List() ([]slots.Slot, error) {
+func (f *fakeSlots) List() ([]qbootctl.Slot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []slots.Slot
+	var out []qbootctl.Slot
 	for _, n := range []string{"a", "b"} {
-		sl := slots.Slot{Name: n, Booted: n == "a"}
+		sl := qbootctl.Slot{Name: n, Booted: n == "a"}
 		if n == f.active {
 			sl.Active, sl.Priority, sl.Retries = true, 3, 7
 		}

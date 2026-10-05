@@ -6,9 +6,10 @@ import (
 	"log"
 	"strings"
 
+	qbootctl "github.com/W-Floyd/go-qbootctl"
+
 	"bootmanager.local/bootmanager/internal/boot"
 	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/slots"
 )
 
 var markSuccessful = flag.Bool("mark-successful", false, "mark the booted A/B slot successful once the stage is ready, as Android does once it is up, so the bootloader stops counting its tries down")
@@ -29,21 +30,21 @@ type infoRow struct {
 }
 
 type slotsInfo struct {
-	Slots      []slots.Slot `json:"slots"`
-	SlotsError string       `json:"slots_error"`
-	Bootloader []infoRow    `json:"bootloader"`
+	Slots      []qbootctl.Slot `json:"slots"`
+	SlotsError string          `json:"slots_error"`
+	Bootloader []infoRow       `json:"bootloader"`
 }
 
-func newSlots() *slots.Store {
+func newSlots() *qbootctl.Store {
 	slot, _ := strings.CutPrefix(boot.Bootconfig(*blDir)["androidboot.slot_suffix"], "_")
-	return &slots.Store{Open: slots.OpenDisks, Booted: slot}
+	return &qbootctl.Store{Open: qbootctl.OpenDisks, Booted: slot}
 }
 
 func (a *app) slotsInfo() slotsInfo {
-	info := slotsInfo{Slots: []slots.Slot{}, Bootloader: []infoRow{}}
+	info := slotsInfo{Slots: []qbootctl.Slot{}, Bootloader: []infoRow{}}
 	var err error
 	if info.Slots, err = a.slots.List(); err != nil {
-		info.Slots, info.SlotsError = []slots.Slot{}, err.Error()
+		info.Slots, info.SlotsError = []qbootctl.Slot{}, err.Error()
 	}
 	bc := boot.Bootconfig(*blDir)
 	for _, k := range bootloaderInfo {
