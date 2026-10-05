@@ -106,6 +106,9 @@ var devExt interface {
 
 func main() {
 	flag.Parse()
+	if *findBootFiles {
+		os.Exit(findBootFilesCmd())
+	}
 	if *sendCmd != "" {
 		os.Exit(send(*socketPath, *sendCmd))
 	}

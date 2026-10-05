@@ -41,11 +41,39 @@ func (s Settings) clone() Settings {
 // settingsFile is where Settings are kept: a file (PATH), or a file on a
 // block device's file system (DEV:PATH, DEV a kernel name, PATH from the
 // file system's root). The device is mounted only to read or write it.
-type settingsFile struct{ dev, path string }
+//
+// A third form, @FILE, names a file that holds one of the first two. A stage
+// that does not know where its boot partition is when it starts the Boot
+// Manager writes it once it has found it (FindBootFiles); until the file
+// exists the location is unknown, which is an error, not "no settings", so
+// the load is tried again. An empty file means there is nowhere to keep them.
+type settingsFile struct{ dev, path, ref string }
+
+// resolved is the location an @FILE names, or f itself.
+func (f settingsFile) resolved() (settingsFile, error) {
+	if f.ref == "" {
+		return f, nil
+	}
+	b, err := os.ReadFile(f.ref)
+	if err != nil {
+		return settingsFile{}, fmt.Errorf("settings location: %w", err)
+	}
+	return parseSettingsFile(strings.TrimSpace(string(b))), nil
+}
+
+// persists is whether a change can be kept: there is a location, and it is
+// known.
+func (f settingsFile) persists() bool {
+	r, err := f.resolved()
+	return err == nil && r.path != ""
+}
 
 func parseSettingsFile(s string) settingsFile {
+	if ref, ok := strings.CutPrefix(s, "@"); ok {
+		return settingsFile{ref: ref}
+	}
 	if dev, path, ok := strings.Cut(s, ":"); ok && !strings.Contains(dev, "/") {
-		return settingsFile{dev, strings.TrimPrefix(path, "/")}
+		return settingsFile{dev: dev, path: strings.TrimPrefix(path, "/")}
 	}
 	return settingsFile{path: s}
 }
@@ -95,11 +123,15 @@ func arrange(imgs []boot.OSImage, s Settings) (out []boot.OSImage, keys []string
 
 func (f settingsFile) load() (Settings, error) {
 	var s Settings
+	f, err := f.resolved()
+	if err != nil {
+		return s, err
+	}
 	if f.path == "" {
 		return s, nil
 	}
 	var b []byte
-	err := f.withRoot(false, func(root string) error {
+	err = f.withRoot(false, func(root string) error {
 		var err error
 		b, err = os.ReadFile(filepath.Join(root, f.path))
 		return err
@@ -114,6 +146,10 @@ func (f settingsFile) load() (Settings, error) {
 }
 
 func (f settingsFile) save(s Settings) error {
+	f, err := f.resolved()
+	if err != nil {
+		return err
+	}
 	if f.path == "" {
 		return nil
 	}

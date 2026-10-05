@@ -321,7 +321,7 @@ func (m *Manager) AutobootSettings() AutobootSettings {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	on, s := m.autobootLocked()
-	return AutobootSettings{Enabled: on, Seconds: s, Saved: m.cfg.Settings != ""}
+	return AutobootSettings{Enabled: on, Seconds: s, Saved: parseSettingsFile(m.cfg.Settings).persists()}
 }
 
 // SetAutoboot chooses whether to autoboot and the countdown's length in

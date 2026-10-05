@@ -103,8 +103,9 @@ func TestMoveAndDefault(t *testing.T) {
 
 func TestSettingsFile(t *testing.T) {
 	for in, want := range map[string]settingsFile{
-		"mmcblk0p1:linuxboot/bootmanager.json": {"mmcblk0p1", "linuxboot/bootmanager.json"},
-		"/tmp/bm.json":                         {"", "/tmp/bm.json"},
+		"mmcblk0p1:linuxboot/bootmanager.json": {dev: "mmcblk0p1", path: "linuxboot/bootmanager.json"},
+		"/tmp/bm.json":                         {path: "/tmp/bm.json"},
+		"@/tmp/spec":                           {ref: "/tmp/spec"},
 		"":                                     {},
 	} {
 		if got := parseSettingsFile(in); got != want {
@@ -124,7 +125,7 @@ func TestSettingsOnDevice(t *testing.T) {
 	if dev == "" {
 		t.Skip("BM_SETTINGS_DEV not set")
 	}
-	f := settingsFile{dev, "bootmanager-test.json"}
+	f := settingsFile{dev: dev, path: "bootmanager-test.json"}
 	before, err := mountsOf("/dev/" + dev)
 	if err != nil {
 		t.Fatal(err)
@@ -197,5 +198,54 @@ func TestChangeRefusedWhileSettingsUnreadable(t *testing.T) {
 	}
 	if s := m.AutobootSettings(); !s.Enabled {
 		t.Errorf("a refused change took effect: %+v", s)
+	}
+}
+
+func TestSettingsRef(t *testing.T) {
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "spec")
+	real := filepath.Join(dir, "bootmanager.json")
+	f := parseSettingsFile("@" + ref)
+
+	// Before the stage has written the location: an error, not "no settings",
+	// so the load is tried again.
+	if _, err := f.load(); err == nil {
+		t.Error("a missing location file read as no settings")
+	}
+	if f.persists() {
+		t.Error("persists before the location is known")
+	}
+
+	// Known: the settings are read from, and saved to, where it says.
+	if err := os.WriteFile(ref, []byte(real+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !f.persists() {
+		t.Error("does not persist once the location is known")
+	}
+	want := Settings{Order: []string{"Android", "postmarketOS"}, Default: "postmarketOS", Countdown: 3}
+	if err := f.save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.load()
+	if err != nil || got.Default != want.Default || !slices.Equal(got.Order, want.Order) || got.Countdown != 3 {
+		t.Errorf("load = %+v, %v; want %+v", got, err, want)
+	}
+	if _, err := os.Stat(real); err != nil {
+		t.Errorf("not saved where the location says: %v", err)
+	}
+
+	// An empty location file: nowhere to keep them, and no error.
+	if err := os.WriteFile(ref, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := f.load(); err != nil || s.Default != "" {
+		t.Errorf("an empty location: %+v, %v", s, err)
+	}
+	if f.persists() {
+		t.Error("persists with nowhere to keep them")
+	}
+	if err := f.save(want); err != nil {
+		t.Errorf("saving with nowhere to keep them: %v", err)
 	}
 }
