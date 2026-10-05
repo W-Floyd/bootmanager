@@ -14,6 +14,7 @@ import (
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"msm-firmware-loader": msmfw.Main,
 	"qbootctl":            qbootctl.Main,
+	"reprobe":             reprobeMain,
 }
 
 // subcommand runs the subcommand argv names, if any: ok is false when argv
