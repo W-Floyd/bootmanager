@@ -169,7 +169,19 @@ func (m *Manager) Run() {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	// The card can be up and mounted by the uinit yet not scannable for a
+	// moment: a scan that finds nothing then never counts down. Try again,
+	// still "scanning" for the UI, before settling on no entries.
 	imgs, err := m.scan()
+	for i := 0; i < 10 && len(imgs) == 0; i++ {
+		log.Printf("scan found 0 entries (%v), trying again", err)
+		select {
+		case <-m.stop:
+			return
+		case <-time.After(time.Second):
+		}
+		imgs, err = m.scan()
+	}
 	m.setImages(imgs)
 	m.mu.Lock()
 	m.scanned, imgs = true, m.images
