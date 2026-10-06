@@ -256,6 +256,41 @@ they run on, are in go-qbootctl; the loader's, with its synthetic super
 metadata, in go-msm-firmware-loader. This module's tests build what they need
 in process.
 
+## What stopped the autoboot, and the stage's logs
+
+Any input stops the countdown, so the logs say which input.
+
+- **Input log.** The UI (stderr, which the stage's uinit keeps) logs the first
+  40 events of each input device, and every event while the countdown is
+  shown, 200 lines at most (then one `input log suppressed` line):
+  `bootmanager-ui: ev t=3.041 event2 gt9916 EV_ABS ABS_MT_POSITION_X 540`.
+  `t` is seconds since the UI started; the device is its event node and name;
+  codes are named for keys and axes (`BTN_TOUCH`, `ABS_MT_TRACKING_ID`,
+  `KEY_VOLUMEUP`). The devices, with a touchscreen's axis ranges, are listed
+  as `bootmanager-ui: input /dev/input/event2 NAME (touch) x 0..1079 y 0..2399`,
+  and `autoboot countdown shown` / `gone` marks the countdown in the same log.
+- **Cancel reason.** When a touch or key stops the countdown the UI logs
+  `bootmanager-ui: t=… activity cancels the autoboot: last input EVENT, N ms ago`
+  and sends that event with `autoboot.cancel {reason, age_ms}`. The backend
+  logs `autoboot: cancelled by ui: EVENT, input N ms earlier (3.4 s into the
+  countdown)`. Any other cancel names itself instead (`boot start`,
+  `teardown`, `a file system check`, `switching fastboot on`, `hold file`,
+  `internal call`). The rest of the countdown's life is logged too:
+  `autoboot: countdown started (3 s, entry NAME)`, `autoboot: not started
+  (no boot entries | autoboot is off | hold file PATH exists)`,
+  `autoboot: booting NAME`.
+- **Logs that outlive the stage.** At teardown, before a handover or a power
+  action, the Boot Manager copies `/tmp/uinit.log`, `/tmp/record_boot.log` and
+  its own log (`-log`) to the directory of the settings file (the boot files
+  directory the `-settings` location is in, on the same device) as
+  `stage-uinit.log`, `stage-record_boot.log` and `stage-bootmanager.log`,
+  replaced at each boot. Each starts with a line `# bootmanager: copy of SRC,
+  taken at Boot Manager uptime N s`; only the last 1 MiB of a log is kept. It
+  goes through the same write as the settings (the boot scan's read-only mounts
+  of the device are unmounted and restored), takes at most 4 s, and a failure
+  is logged and ignored: it never delays or stops the boot. With no settings
+  location, or its device gone, nothing is written.
+
 ## Dev builds
 
 `TAGS=dev sh build.sh OUT` adds **Services -> Dev uploads**, which takes
