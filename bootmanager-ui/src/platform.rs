@@ -279,6 +279,26 @@ impl Gradient {
                 ch(0, 16) << 16 | ch(1, 8) << 8 | ch(2, 0)
             };
             let run = &mut row[xs..xe];
+            if dv == [0; 4] {
+                // One colour and one keep along the run (a vertical
+                // gradient): only the dither differs, by phase.
+                let keep = st[3];
+                let add: [[i32; 3]; 8] = std::array::from_fn(|k| [st[0] + pat[k], st[1] + pat[k], st[2] + pat[k]]);
+                let one = |under: u32, k: usize| {
+                    let ch = |i: usize, shift: u32| (((under >> shift & 0xff) as i32 * keep + add[k][i]) >> 16).clamp(0, 255) as u32;
+                    ch(0, 16) << 16 | ch(1, 8) << 8 | ch(2, 0)
+                };
+                let mut chunks = run.chunks_exact_mut(8);
+                for c in &mut chunks {
+                    for k in 0..8 {
+                        c[k].0 = one(c[k].0, k);
+                    }
+                }
+                for (k, p) in chunks.into_remainder().iter_mut().enumerate() {
+                    p.0 = one(p.0, k);
+                }
+                continue;
+            }
             let mut v: [[i32; 8]; 4] = std::array::from_fn(|i| std::array::from_fn(|k| st[i] + k as i32 * dv[i]));
             let mut chunks = run.chunks_exact_mut(8);
             for chunk in &mut chunks {
@@ -312,7 +332,13 @@ impl Gradient {
                 // One colour along the run (a vertical gradient): eight
                 // pixels, repeated.
                 let tile: [u32; 8] = std::array::from_fn(|k| px(st, k));
-                for (i, p) in run.iter_mut().enumerate() {
+                let mut chunks = run.chunks_exact_mut(8);
+                for c in &mut chunks {
+                    for k in 0..8 {
+                        c[k].0 = tile[k];
+                    }
+                }
+                for (i, p) in chunks.into_remainder().iter_mut().enumerate() {
                     p.0 = tile[i & 7];
                 }
                 continue;
@@ -804,7 +830,12 @@ impl Timing {
             return;
         }
         let n = self.frames;
-        crate::fps::publish(n, span.as_millis());
+        // Not after an idle spell: the span is then mostly nothing, and a
+        // new rate would change the counter's text, which draws a frame,
+        // which would publish again.
+        if span < Duration::from_millis(1500) {
+            crate::fps::publish(n, span.as_millis());
+        }
         crate::prof::dump();
         let g = GRADIENTS.take();
         let cpu = unsafe { libc::sched_getcpu() };

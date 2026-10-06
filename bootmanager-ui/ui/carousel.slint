@@ -459,7 +459,43 @@ export component Carousel inherits FocusScope {
             root.go(root.selected + round(root.drag));
         }
 
-        for card[i] in root.cards: CardView {
+        // The cards are drawn inside a band of their own height, so a
+        // card's overdrawn parts (the hill circles reach well past it) do
+        // not widen the area the renderer repaints down to the screen's
+        // foot. A launching card fills the screen, and so does the band.
+        band := Rectangle {
+            y: root.launching >= 0 ? 0 : root.band-y + (root.band-h - root.card-h) / 2 - 4px;
+            height: root.launching >= 0 ? root.height : root.card-h + 28px;
+            clip: true;
+
+        // Each card is cut off where the next card in front covers it: the
+        // back cards hide behind the ones before them, and the software
+        // renderer would otherwise draw them in full (about six times
+        // over, per pixel, on a swipe). The cut keeps clear of the front
+        // card's rounded corner and its shadow, and applies only to a
+        // card well behind (a smaller one by at least 22 px of height) and
+        // opaque; with a launch, the reveal or the menu on it is off.
+        for card[i] in root.cards: occ := Rectangle {
+            property <float> d: i - root.pos - root.drag;
+            property <float> ad: abs(self.d);
+            property <float> dj: self.d < 0 ? self.d + 1 : self.d - 1;
+            property <float> adj: abs(self.dj);
+            property <float> scale: max(0.6, 1 - 0.19 * self.ad);
+            property <float> scalej: max(0.6, 1 - 0.19 * self.adj);
+            property <length> hb: root.card-h * self.scale;
+            property <length> wj: root.card-w * self.scalej;
+            property <length> hj: root.card-h * self.scalej;
+            property <float> sidej: self.dj < 0 ? -1 : 1;
+            property <length> xj: (root.width - self.wj) / 2 + self.sidej * root.card-w * root.spread * (min(self.adj, 1) + 0.72 * max(self.adj - 1, 0));
+            property <bool> occl: root.launching < 0 && root.revealed && self.ad > self.adj && self.adj <= 1.4 && (self.hj - self.hb) / 2 >= 22px;
+            property <length> cut-left: !self.occl || self.d < 0 ? 0px : self.xj + self.wj - self.wj * 0.07 - 2px;
+            property <length> cut-right: !self.occl || self.d > 0 ? root.width : self.xj + self.wj * 0.07 + 2px;
+            x: self.cut-left;
+            width: max(0px, self.cut-right - self.cut-left);
+            clip: true;
+            z: cv.z;
+
+        cv := CardView {
             property <float> d: i - root.pos - root.drag;
             property <float> ad: abs(self.d);
             property <float> side: self.d < 0 ? -1 : 1;
@@ -490,12 +526,16 @@ export component Carousel inherits FocusScope {
 
             width: self.w0 + (root.width - self.w0) * self.lt;
             height: self.h0 + (root.height - self.h0) * self.lt;
-            x: self.x0 * (1 - self.lt) + self.side * root.width * self.ft;
-            y: self.y0 * (1 - self.lt);
+            x: self.x0 * (1 - self.lt) + self.side * root.width * self.ft - occ.cut-left;
+            y: self.y0 * (1 - self.lt) - band.y;
             // Clamped: the renderer does not clamp opacity, and over 1 it
             // brightens every translucent layer inside.
-            opacity: (root.revealed ? 1 : 0) * (1 - self.ft) * max(0, min(1, 2.4 - self.ad + self.lt));
-            animate opacity { duration: 600ms; }
+            // Only the reveal and the launch are animated (rv, ft, lt): an
+            // animation on the whole product restarted on every card every
+            // frame of a drag, and lagged behind the finger.
+            property <float> rv: root.revealed ? 1 : 0;
+            animate rv { duration: 600ms; }
+            opacity: self.rv * (1 - self.ft) * max(0, min(1, 2.4 - self.ad + self.lt));
 
             clicked => {
                 root.activity();
@@ -514,6 +554,8 @@ export component Carousel inherits FocusScope {
                     root.editing = i;
                 }
             }
+        }
+        }
         }
     }
 
