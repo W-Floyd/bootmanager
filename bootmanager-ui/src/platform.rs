@@ -453,6 +453,8 @@ pub struct Fb {
     rgb: [FbBitfield; 3],
     /// The display mode's refresh rate in Hz, when DRM says.
     refresh: Option<f64>,
+    /// The fbdev file, kept open for FBIO_WAITFORVSYNC.
+    fd: RawFd,
 }
 
 // --- DRM (drm/drm_mode.h), only to learn the refresh rate: fbdev emulation
@@ -603,6 +605,7 @@ impl Fb {
             bytes: var.bits_per_pixel as usize / 8,
             rgb: [var.red, var.green, var.blue],
             refresh: drm_refresh(var.xres as usize, var.yres as usize),
+            fd: std::os::fd::IntoRawFd::into_raw_fd(file),
         };
         eprintln!(
             "bootmanager-ui: {} {}x{} ({} mm) {} bpp, rgb at {}/{}/{}, stride {}, {}",
@@ -634,6 +637,20 @@ impl Fb {
     fn pack(&self, p: Px) -> u32 {
         let ch = |v: u32, f: &FbBitfield| ((v & 0xff) >> (8 - f.length.min(8))) << f.offset;
         ch(p.0 >> 16, &self.rgb[0]) | ch(p.0 >> 8, &self.rgb[1]) | ch(p.0, &self.rgb[2])
+    }
+
+    /// Whether the driver implements FBIO_WAITFORVSYNC (drm_fb_helper does).
+    fn can_wait_vsync(&self) -> bool {
+        self.fd >= 0 && self.wait_vsync().is_some()
+    }
+
+    /// Waits for the next vertical blank; how long it took, or None if the
+    /// ioctl failed.
+    fn wait_vsync(&self) -> Option<Duration> {
+        const FBIO_WAITFORVSYNC: libc::c_ulong = 0x4004_4620;
+        let crtc: u32 = 0;
+        let t = Instant::now();
+        (unsafe { libc::ioctl(self.fd, FBIO_WAITFORVSYNC as _, &crtc) } == 0).then(|| t.elapsed())
     }
 
     fn present(&self, frame: &Frame, x: usize, y: usize, w: usize, h: usize) {
@@ -985,6 +1002,11 @@ impl Platform for FbPlatform {
         // refresh, however often input asks (a touch panel reports faster
         // than the display shows, and a drag moves the cards on each report).
         let mut last_frame = Instant::now() - frame;
+        // With the panel's vertical blank to wait on, a frame may start a
+        // little early (the wait paces it); without, the timer does.
+        let mut vsync_ok = matches!(&self.target, Target::Fb(fb) if fb.can_wait_vsync());
+        let mut vsync_misses = 0;
+        let mut gate = if vsync_ok { frame * 3 / 4 } else { frame };
 
         loop {
             let frame_start = Instant::now();
@@ -996,8 +1018,28 @@ impl Platform for FbPlatform {
             if self.shared.quit.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            if last_frame.elapsed() >= frame && self.draw() {
+            if last_frame.elapsed() >= gate && self.draw() {
                 last_frame = frame_start;
+                // The next frame starts at a vertical blank, not wherever
+                // the timer fell: a frame drawn just after the scan-out
+                // passed shows for two refreshes, and one drawn mid-scan
+                // tears. The wait ends at the blank; input arriving during
+                // it is handled in the next turn of the loop.
+                if let (Target::Fb(fb), true) = (&self.target, vsync_ok) {
+                    match fb.wait_vsync() {
+                        // A blank that comes at once, or never, is no pacing:
+                        // go back to the timer.
+                        Some(d) if d >= Duration::from_micros(300) && d <= Duration::from_millis(40) => vsync_misses = 0,
+                        _ => {
+                            vsync_misses += 1;
+                            if vsync_misses >= 5 {
+                                vsync_ok = false;
+                                gate = frame;
+                                eprintln!("bootmanager-ui: no usable vertical blank, pacing by timer");
+                            }
+                        }
+                    }
+                }
             }
 
             // How long poll may sleep: the next Slint timer, the rest of the
