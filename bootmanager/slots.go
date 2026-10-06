@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	qbootctl "github.com/W-Floyd/go-qbootctl"
@@ -36,8 +37,19 @@ type slotsInfo struct {
 }
 
 func newSlots() *qbootctl.Store {
-	slot, _ := strings.CutPrefix(boot.Bootconfig(*blDir)["androidboot.slot_suffix"], "_")
+	cmdline, _ := os.ReadFile("/proc/cmdline")
+	slot := bootedSlot(boot.Bootconfig(*blDir), string(cmdline))
 	return &qbootctl.Store{Open: qbootctl.OpenDisks, Booted: slot}
+}
+
+// bootedSlot is the slot the bootloader booted ("a"): from the bootconfig it
+// handed the stage if that has one, else from the kernel command line, where
+// ABL also puts androidboot.slot_suffix. Without any slot, nothing is marked.
+func bootedSlot(bootconfig map[string]string, cmdline string) string {
+	if slot, _ := strings.CutPrefix(bootconfig["androidboot.slot_suffix"], "_"); slot != "" {
+		return slot
+	}
+	return qbootctl.BootedSlot(cmdline)
 }
 
 func (a *app) slotsInfo() slotsInfo {
