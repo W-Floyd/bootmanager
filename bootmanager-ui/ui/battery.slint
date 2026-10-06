@@ -11,9 +11,10 @@ export component BatteryIndicator inherits Rectangle {
     in property <bool> charging;
     property <color> ink: #ffffffc0;
     property <color> base: root.charging ? Palette.accent : root.percent >= 0 && root.percent <= 15 ? Palette.danger : root.percent >= 0 && root.percent <= 30 ? Palette.alert : #aab4bd;
-    // Kept bright, so the level reads at a glance; the label has its own
-    // dark backing, so white is clear on any fill.
-    property <color> fill: root.base;
+    // Deep enough that the white label reads on it with no backing: a
+    // backing box hid the level, and software rendering has no shadow to
+    // lift the text instead.
+    property <color> fill: root.base.darker(0.45);
 
     width: 36px + 2px;
     height: 17px;
@@ -35,7 +36,7 @@ export component BatteryIndicator inherits Rectangle {
             border-radius: 2.5px;
             background: root.fill;
         }
-        // The label on a dark backing, centred on the cell.
+        // The label, centred on the cell.
         Rectangle {
             // Sized from the digits and the bolt, not from the layout's
             // measure, so it cannot grow past the cell.
@@ -44,8 +45,6 @@ export component BatteryIndicator inherits Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2 - 1.5px;
             border-radius: 3px;
-            // Translucent, so the fill still shows through the level.
-            background: #00000099;
             HorizontalLayout {
                 padding-left: 3px;
                 padding-right: 3px;
