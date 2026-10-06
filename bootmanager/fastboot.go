@@ -25,7 +25,7 @@ const rescanDelay = 2 * time.Second
 
 func (a *app) startFastboot() (func(), error) {
 	// Switching it on means staying in the stage.
-	a.boot.Cancel()
+	a.boot.CancelBy("switching fastboot on")
 	var mu sync.Mutex
 	var rescan *time.Timer
 	s := &fastboot.Server{

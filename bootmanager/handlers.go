@@ -53,7 +53,15 @@ func (a *app) register() {
 		err := a.boot.SetDefault(x.Index)
 		return a.boot.List(), err
 	})
-	rpc.Handle(s, "autoboot.cancel", func(none) (any, error) { a.boot.Cancel(); return nil, nil })
+	// A UI says what it saw last: the input event that made it ask, and
+	// how long before. That goes in the log, as the cause of the cancel.
+	rpc.Handle(s, "autoboot.cancel", func(x struct {
+		Reason string `json:"reason"`
+		AgeMs  int64  `json:"age_ms"`
+	}) (any, error) {
+		a.boot.CancelBy(cancelReason(x.Reason, x.AgeMs))
+		return nil, nil
+	})
 	// Whether to autoboot and for how long, from the next start. Saving
 	// may remount the partition the settings are on, as boot.move does.
 	rpc.Handle(s, "autoboot.settings", func(none) (any, error) { return a.boot.AutobootSettings(), nil })
@@ -163,4 +171,22 @@ func (a *app) power(x struct{ Action, Mode string }) (any, error) {
 		return nil, power.PowerOff()
 	}
 	return nil, power.Reboot(x.Mode)
+}
+
+// cancelReason is the cause of an autoboot.cancel for the log: what the UI
+// sent, or that it sent nothing (an older UI, or a script).
+func cancelReason(reason string, ageMs int64) string {
+	if reason == "" {
+		return "rpc autoboot.cancel (no reason given)"
+	}
+	reason = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, reason)
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return fmt.Sprintf("ui: %s, input %d ms earlier", reason, ageMs)
 }

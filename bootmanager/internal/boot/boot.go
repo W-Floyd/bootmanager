@@ -70,7 +70,8 @@ type Manager struct {
 	first          int  // with no default chosen, the scan's first entry: its place now
 	scanned        bool
 	booting        bool
-	left           int // seconds of countdown left; -1 when none is running
+	left           int       // seconds of countdown left; -1 when none is running
+	countStart     time.Time // when the countdown began; zero before
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -204,18 +205,31 @@ func (m *Manager) Run() {
 	enabled, seconds := m.autobootLocked()
 	m.mu.Unlock()
 	if len(imgs) == 0 || !enabled {
+		why := "no boot entries"
+		if len(imgs) > 0 {
+			why = "autoboot is off"
+		}
+		log.Printf("autoboot: not started (%s)", why)
 		return
 	}
 	if m.held() {
-		m.Cancel()
+		log.Printf("autoboot: not started (hold file %s exists)", m.cfg.HoldFile)
+		m.cancel("hold file", false)
 		return
 	}
 
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	label := imgs[min(max(def, 0), len(imgs)-1)].Label()
 	for left := seconds; left > 0; left-- {
 		if !m.setLeft(left) {
 			return
+		}
+		if left == seconds {
+			m.mu.Lock()
+			m.countStart = time.Now()
+			m.mu.Unlock()
+			log.Printf("autoboot: countdown started (%d s, entry %s)", seconds, label)
 		}
 		select {
 		case <-m.stop:
@@ -223,10 +237,12 @@ func (m *Manager) Run() {
 		case <-t.C:
 		}
 	}
-	m.Cancel()
+	m.cancel("countdown over", false)
 	if m.held() {
+		log.Printf("autoboot: not booting (hold file %s exists at the end of the countdown)", m.cfg.HoldFile)
 		return
 	}
+	log.Printf("autoboot: booting %s", label)
 	if err := m.Start(def); err != nil {
 		log.Printf("autoboot: %v", err)
 		m.cfg.Emit("error", map[string]string{"message": err.Error()})
@@ -260,12 +276,31 @@ func (m *Manager) setLeft(n int) bool {
 }
 
 // Cancel stops the countdown for good, running or not yet started.
-func (m *Manager) Cancel() {
-	m.stopOnce.Do(func() { close(m.stop) })
+func (m *Manager) Cancel() { m.CancelBy("internal call") }
+
+// CancelBy is Cancel, saying in the log what asked for it. Only the call
+// that stops the countdown is logged, as
+//
+//	autoboot: cancelled by REASON (3.4 s into the countdown)
+//
+// or "(countdown not started)" when it had not begun.
+func (m *Manager) CancelBy(reason string) { m.cancel(reason, true) }
+
+func (m *Manager) cancel(reason string, report bool) {
+	first := false
+	m.stopOnce.Do(func() { close(m.stop); first = true })
 	m.mu.Lock()
 	was := m.left
 	m.left = -1
+	start := m.countStart
 	m.mu.Unlock()
+	if first && report {
+		if start.IsZero() {
+			log.Printf("autoboot: cancelled by %s (countdown not started)", reason)
+		} else {
+			log.Printf("autoboot: cancelled by %s (%.1f s into the countdown)", reason, time.Since(start).Seconds())
+		}
+	}
 	if was > 0 {
 		log.Printf("autoboot stopped with %d s left", was)
 	}
@@ -375,7 +410,7 @@ func (m *Manager) Image(i int) (boot.OSImage, error) {
 
 // Start boots entry i; it returns only on failure.
 func (m *Manager) Start(i int) error {
-	m.Cancel()
+	m.CancelBy("boot start")
 	img, err := m.Image(i)
 	if err != nil {
 		return err

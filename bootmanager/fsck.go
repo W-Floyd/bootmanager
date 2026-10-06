@@ -48,7 +48,7 @@ func (a *app) registerFsck() {
 		}
 		defer fsckBusy.Unlock()
 
-		a.boot.Cancel()
+		a.boot.CancelBy("a file system check")
 		a.disks.Unmount(x.Dev)
 		if err := a.boot.Release(); err != nil {
 			return nil, err

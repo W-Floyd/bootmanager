@@ -104,7 +104,7 @@ func (dev) resume(a *app) (bool, int) {
 	}
 	log.Printf("restarted in place: ui pid %d, services %v", h.UIPid, h.Services)
 	if h.Cancelled {
-		a.boot.Cancel()
+		a.boot.CancelBy("an earlier run (restarted in place)")
 	}
 	// Children by pid; in-process servers, and children that died, anew.
 	for name, pid := range h.Services {

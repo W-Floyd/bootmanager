@@ -225,7 +225,7 @@ func main() {
 // teardown ends whatever must not outlive the stage, before a handover or
 // a power action.
 func (a *app) teardown() {
-	a.boot.Cancel()
+	a.boot.CancelBy("teardown")
 	a.ui.Stop()
 	a.svcs.StopAll()
 	a.disks.UnmountAll()
