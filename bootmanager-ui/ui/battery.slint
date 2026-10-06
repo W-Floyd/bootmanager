@@ -37,15 +37,18 @@ export component BatteryIndicator inherits Rectangle {
         }
         // The label on a dark backing, centred on the cell.
         Rectangle {
-            width: label.preferred-width + 6px;
+            // Sized from the digits and the bolt, not from the layout's
+            // measure, so it cannot grow past the cell.
+            width: min(30px, 6px + (root.charging ? 8px : 0px) + (root.percent >= 100 ? 3 : root.percent >= 10 ? 2 : 1) * 6.5px);
             height: 12px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2 - 1.5px;
             border-radius: 3px;
             // Translucent, so the fill still shows through the level.
             background: #00000099;
-            label := HorizontalLayout {
-                x: 3px;
+            HorizontalLayout {
+                padding-left: 3px;
+                padding-right: 3px;
                 spacing: 1px;
                 if root.charging: Path {
                     width: 7px;
