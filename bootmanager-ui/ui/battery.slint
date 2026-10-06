@@ -36,35 +36,27 @@ export component BatteryIndicator inherits Rectangle {
             border-radius: 2.5px;
             background: root.fill;
         }
-        // The label, centred on the cell.
-        Rectangle {
-            // Sized from the digits and the bolt, not from the layout's
-            // measure, so it cannot grow past the cell.
-            width: min(30px, 6px + (root.charging ? 8px : 0px) + (root.percent >= 100 ? 3 : root.percent >= 10 ? 2 : 1) * 6.5px);
-            height: 12px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2 - 1.5px;
-            border-radius: 3px;
-            HorizontalLayout {
-                padding-left: 3px;
-                padding-right: 3px;
-                spacing: 1px;
-                if root.charging: Path {
-                    width: 7px;
-                    y: (parent.height - self.height) / 2;
-                    height: 10px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: "M 14 1 L 4 14 L 11 14 L 9 23 L 20 9 L 13 9 Z";
-                    fill: #ffffff;
-                }
-                Text {
-                    text: root.percent >= 0 ? root.percent + "" : "?";
-                    font-size: 11px;
-                    font-weight: 700;
-                    color: #ffffff;
-                    vertical-alignment: center;
-                }
+        // The label, centred on the cell: the layout fills it and packs the
+        // bolt and the digits in the middle.
+        HorizontalLayout {
+            alignment: center;
+            spacing: 1px;
+            if root.charging: Path {
+                width: 7px;
+                height: 10px;
+                y: (parent.height - self.height) / 2;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M 14 1 L 4 14 L 11 14 L 9 23 L 20 9 L 13 9 Z";
+                fill: #ffffff;
+            }
+            Text {
+                text: root.percent >= 0 ? root.percent + "" : "?";
+                font-size: 11px;
+                font-weight: 700;
+                color: #ffffff;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }

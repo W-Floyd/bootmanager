@@ -40,6 +40,8 @@ export component AppWindow inherits Window {
     in property <bool> battery-present;
     in property <int> battery-percent: -1;
     in property <bool> battery-charging;
+    // The frame rate, bottom left, in a dev stage; empty hides it.
+    in property <string> fps-text;
 
     // The carousel.
     in property <[Card]> cards;
@@ -172,6 +174,22 @@ export component AppWindow inherits Window {
             percent: root.battery-percent;
             charging: root.battery-charging;
             opacity: header.opacity;
+        }
+
+        if root.fps-text != "": Rectangle {
+            x: max(6px, root.corner-radius / 2);
+            y: parent.height - self.height - 6px;
+            width: fps-label.preferred-width + 10px;
+            height: 16px;
+            border-radius: 4px;
+            background: #000000a0;
+            fps-label := Text {
+                text: root.fps-text;
+                font-size: 11px;
+                color: #ffffff;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         // Errors and the like, in a pill that drops in.

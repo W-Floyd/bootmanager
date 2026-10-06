@@ -40,12 +40,54 @@ pub struct Px(pub u32);
 
 impl TargetPixel for Px {
     fn blend(&mut self, c: PremultipliedRgbaColor) {
-        let a = (255 - c.alpha) as u32;
-        let ch = |shift: u32, add: u8| (((self.0 >> shift) & 0xff) * a / 255 + add as u32) & 0xff;
-        self.0 = ch(16, c.red) << 16 | ch(8, c.green) << 8 | ch(0, c.blue);
+        let k = BlendKernel::new(c);
+        self.0 = k.apply(self.0);
+    }
+    fn blend_slice(slice: &mut [Self], c: PremultipliedRgbaColor) {
+        if c.alpha == u8::MAX {
+            slice.fill(Px::from_rgb(c.red, c.green, c.blue));
+        } else if c.alpha != 0 || c.red != 0 || c.green != 0 || c.blue != 0 {
+            // One kernel for the run; the loop vectorises.
+            let k = BlendKernel::new(c);
+            for p in slice {
+                p.0 = k.apply(p.0);
+            }
+        }
     }
     fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         Px((r as u32) << 16 | (g as u32) << 8 | b as u32)
+    }
+}
+
+/// `under * (1 - alpha) + colour` per channel, with no division: the red and
+/// blue lanes share one multiply (0x00ff00ff), green has its own, and the
+/// divide by 255 is the usual (t + 128 + (t + 128 >> 8)) >> 8. The sum
+/// saturates per lane, where a rounding error would otherwise wrap a
+/// channel.
+struct BlendKernel {
+    keep: u32,
+    rb: u32,
+    g: u32,
+}
+
+impl BlendKernel {
+    #[inline(always)]
+    fn new(c: PremultipliedRgbaColor) -> Self {
+        BlendKernel { keep: (255 - c.alpha) as u32, rb: (c.red as u32) << 16 | c.blue as u32, g: (c.green as u32) << 8 }
+    }
+
+    #[inline(always)]
+    fn apply(&self, px: u32) -> u32 {
+        const LANES: u32 = 0x00ff_00ff;
+        let t = (px & LANES) * self.keep + 0x0080_0080;
+        let rb = ((t + ((t >> 8) & LANES)) >> 8) & LANES;
+        let t = ((px >> 8) & 0xff) * self.keep + 0x80;
+        let g = ((t + (t >> 8)) >> 8) & 0xff;
+        let rb = rb + self.rb;
+        let rb = (rb | (((rb >> 8) & 0x0001_0001) * 255)) & LANES;
+        let g = g + (self.g >> 8);
+        let g = (g | ((g >> 8) * 255)) & 0xff;
+        rb | g << 8
     }
 }
 
@@ -570,6 +612,8 @@ impl Fb {
 
     fn present(&self, frame: &Frame, x: usize, y: usize, w: usize, h: usize) {
         let x1 = (x + w).min(self.xres).min(frame.width);
+        // XRGB8888 in the panel's own layout: rows copy as they are.
+        let direct = self.bytes == 4 && self.rgb.iter().zip([16, 8, 0]).all(|(f, o)| f.offset == o && f.length == 8);
         for row in y..(y + h).min(self.yres).min(frame.height) {
             let off = (row + self.yoffset) * self.stride + x * self.bytes;
             let n = x1.saturating_sub(x);
@@ -578,6 +622,12 @@ impl Fb {
             }
             let src = &frame.px[row * frame.width + x..][..n];
             let dst = unsafe { std::slice::from_raw_parts_mut(self.mem.add(off), n * self.bytes) };
+            if direct {
+                // SAFETY: Px is a repr(transparent) u32, and the panel is little-endian here.
+                let bytes = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u8, n * 4) };
+                dst.copy_from_slice(bytes);
+                continue;
+            }
             for (d, s) in dst.chunks_exact_mut(self.bytes).zip(src) {
                 let v = self.pack(*s);
                 match self.bytes {
@@ -754,6 +804,8 @@ impl Timing {
             return;
         }
         let n = self.frames;
+        crate::fps::publish(n, span.as_millis());
+        crate::prof::dump();
         let g = GRADIENTS.take();
         let cpu = unsafe { libc::sched_getcpu() };
         let khz = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")).unwrap_or_default();
@@ -800,6 +852,11 @@ impl FbPlatform {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale_for(size.width, mm) });
         window.set_size(size);
+        let dev = std::path::Path::new("/etc/bootmanager/dev").exists();
+        crate::fps::ON.store(dev, Ordering::Relaxed);
+        if dev {
+            crate::prof::start();
+        }
         Ok(FbPlatform {
             window,
             target,
@@ -807,7 +864,7 @@ impl FbPlatform {
             shared: Arc::new(Shared { queue: Mutex::default(), wake: wake_w, quit: AtomicBool::new(false) }),
             wake,
             start: Instant::now(),
-            timing: std::path::Path::new("/etc/bootmanager/dev").exists().then(|| RefCell::new(Timing::new())),
+            timing: dev.then(|| RefCell::new(Timing::new())),
         })
     }
 
@@ -1024,6 +1081,31 @@ impl Platform for FbPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The packed blend is the per-channel formula to within a rounding
+    /// step, and a valid premultiplied colour never wraps a channel.
+    #[test]
+    fn blend_kernel() {
+        let mut worst = 0i32;
+        for alpha in (0..=255u32).step_by(5) {
+            for colour in [0u32, 17, 100, 255] {
+                // Premultiplied: no channel above alpha.
+                let c = (colour.min(alpha)) as u8;
+                let pc = PremultipliedRgbaColor { red: c, green: c / 2, blue: c, alpha: alpha as u8 };
+                for under in [0x000000u32, 0xffffff, 0x123456, 0xfe01fd, 0x808080] {
+                    let k = BlendKernel::new(pc);
+                    let got = k.apply(under);
+                    for (shift, add) in [(16, pc.red), (8, pc.green), (0, pc.blue)] {
+                        let u = ((under >> shift) & 0xff) as f64;
+                        let want = (u * (255 - alpha) as f64 / 255. + add as f64).min(255.);
+                        let have = ((got >> shift) & 0xff) as f64;
+                        worst = worst.max((have - want).abs().ceil() as i32);
+                    }
+                }
+            }
+        }
+        assert!(worst <= 1, "off by {worst}");
+    }
 
     /// The float fill Gradient replaced, per pixel, as the reference.
     fn reference(f: &mut Frame, stops: &[(f32, [f32; 4])], angle: f32, (x, y, w, h): (f32, f32, f32, f32)) {

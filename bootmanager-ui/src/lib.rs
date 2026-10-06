@@ -6,6 +6,7 @@ slint::include_modules!();
 
 pub mod app;
 pub mod cards;
+pub mod fps;
 pub mod inputlog;
 pub mod proto;
 pub mod routes;
@@ -13,6 +14,8 @@ pub mod screens;
 
 #[cfg(feature = "fbdev")]
 pub mod platform;
+#[cfg(feature = "fbdev")]
+pub mod prof;
 #[cfg(feature = "fbdev")]
 pub mod unlock;
 #[cfg(feature = "fbdev")]

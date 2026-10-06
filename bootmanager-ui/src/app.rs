@@ -114,6 +114,8 @@ pub struct App {
     last_route: RefCell<String>,
     /// Re-reads the power supplies while Diagnostics is on show.
     power_timer: slint::Timer,
+    /// Dev stage only: reads the frame rate for the on-screen counter.
+    fps_timer: slint::Timer,
 }
 
 impl State {
@@ -165,6 +167,7 @@ impl App {
             on_route: RefCell::new(None),
             last_route: RefCell::new("/".into()),
             power_timer: slint::Timer::default(),
+            fps_timer: slint::Timer::default(),
         });
         let weak = Rc::downgrade(&app);
         let on = move |f: fn(&Rc<App>)| {
@@ -221,6 +224,25 @@ impl App {
                 a.refresh_power()
             }
         });
+        if crate::fps::enabled() {
+            // Dev stage: the frame rate, bottom left. It reads 0 once the UI
+            // has been idle for a second and a half (no damage, no frames).
+            let weak = ui.as_weak();
+            let (mut last_tick, mut idle) = (0u32, 0u32);
+            let mut shown = String::new();
+            app.fps_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(500), move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let (x10, tick) = crate::fps::read();
+                idle = if tick == last_tick { idle + 1 } else { 0 };
+                last_tick = tick;
+                let text = if idle >= 3 { "0 fps".to_string() } else { format!("{}.{} fps", x10 / 10, x10 % 10) };
+                // Setting it draws a frame; only when it changed, or an idle UI would never rest.
+                if text != shown {
+                    ui.set_fps_text(text.clone().into());
+                    shown = text;
+                }
+            });
+        }
         app.render();
         // Up from black once there is a first frame to fade to.
         let weak = ui.as_weak();
