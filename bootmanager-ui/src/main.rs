@@ -21,6 +21,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 fn main() {
+    bootmanager_ui::inputlog::init();
     let mut socket = "/tmp/bootmanager.sock".to_string();
     let mut fb = "/dev/fb0".to_string();
     let mut screenshot = None::<String>;

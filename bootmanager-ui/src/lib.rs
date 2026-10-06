@@ -6,6 +6,7 @@ slint::include_modules!();
 
 pub mod app;
 pub mod cards;
+pub mod inputlog;
 pub mod proto;
 pub mod routes;
 pub mod screens;

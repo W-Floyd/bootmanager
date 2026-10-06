@@ -328,6 +328,7 @@ impl App {
         let mut s = self.state.borrow_mut();
         match event {
             Event::Autoboot(a) => {
+                crate::inputlog::set_countdown(a.remaining >= 0);
                 (s.countdown, s.countdown_label) = (a.remaining, a.label);
                 s.countdown_total = s.countdown_total.max(a.remaining);
             }
@@ -552,7 +553,13 @@ impl App {
     fn activity(self: &Rc<Self>) {
         if self.state.borrow().countdown >= 0 {
             self.state.borrow_mut().countdown = -1;
-            self.call("autoboot.cancel", json!({}), App::report);
+            // The backend logs why: the input event the UI saw last, and how
+            // long before this it was. A cancel with no event near it was
+            // not a person.
+            let (reason, age_ms) = crate::inputlog::last_event()
+                .unwrap_or_else(|| ("no input event seen by this UI (web UI, or not from a device)".to_string(), 0));
+            eprintln!("bootmanager-ui: t={:.3} activity cancels the autoboot: last input {reason}, {age_ms} ms ago", crate::inputlog::t());
+            self.call("autoboot.cancel", json!({ "reason": reason, "age_ms": age_ms }), App::report);
         }
     }
 

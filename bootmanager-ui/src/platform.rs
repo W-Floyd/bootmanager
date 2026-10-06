@@ -13,6 +13,7 @@
 //! `Target::Memory` renders to the buffer only, for --screenshot.
 
 use crate::app::scale_for;
+use crate::inputlog;
 use evdev::raw_stream::RawDevice;
 use evdev::{AbsoluteAxisCode, EventSummary, KeyCode, SynchronizationCode};
 use slint::platform::software_renderer::{
@@ -636,6 +637,10 @@ struct Input {
     /// The multitouch slot the next ABS_MT_* events are for; only the first
     /// contact (slot 0) drives the pointer.
     slot: i32,
+    /// "event2 name", for the input log.
+    label: Arc<str>,
+    /// Events seen from it, for the input log.
+    logged: u32,
 }
 
 impl Input {
@@ -647,8 +652,17 @@ impl Input {
         let axes = range(AbsoluteAxisCode::ABS_MT_POSITION_X)
             .zip(range(AbsoluteAxisCode::ABS_MT_POSITION_Y))
             .or_else(|| range(AbsoluteAxisCode::ABS_X).zip(range(AbsoluteAxisCode::ABS_Y)));
-        eprintln!("bootmanager-ui: input {} {}{}", path.display(), dev.name().unwrap_or(""), if axes.is_some() { " (touch)" } else { "" });
-        Some(Input { path, dev, axes, x: 0, y: 0, down: false, was_down: false, slot: 0 })
+        let range_text = axes.map_or(String::new(), |((x0, x1), (y0, y1))| format!(" x {x0}..{x1} y {y0}..{y1}"));
+        eprintln!(
+            "bootmanager-ui: input {} {}{}{}",
+            path.display(),
+            dev.name().unwrap_or(""),
+            if axes.is_some() { " (touch)" } else { "" },
+            range_text
+        );
+        let node = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let label: Arc<str> = format!("{node} {}", dev.name().unwrap_or("")).trim_end().into();
+        Some(Input { path, dev, axes, x: 0, y: 0, down: false, was_down: false, slot: 0, label, logged: 0 })
     }
 }
 
@@ -869,6 +883,7 @@ impl Platform for FbPlatform {
             self.scan_inputs(&mut inputs);
         }
         let mut last_scan = Instant::now();
+        let mut input_log = inputlog::Log::default();
         let mut power_down: Option<Instant> = None;
         let mut power_fired = false;
         // An animation frame: one refresh of the panel, 60 Hz where DRM
@@ -944,6 +959,7 @@ impl Platform for FbPlatform {
                 let d = &mut inputs[i];
                 let Ok(events) = d.dev.fetch_events().map(|e| e.collect::<Vec<_>>()) else { continue };
                 for ev in events {
+                    inputlog::event(&mut input_log, &mut d.logged, &d.label, ev.event_type().0, ev.code(), ev.value());
                     match ev.destructure() {
                         EventSummary::Key(_, KeyCode::KEY_POWER, 1) => (power_down, power_fired) = (Some(Instant::now()), false),
                         EventSummary::Key(_, KeyCode::KEY_POWER, 0) => {
