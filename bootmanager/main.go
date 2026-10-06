@@ -229,7 +229,36 @@ func (a *app) teardown() {
 	a.ui.Stop()
 	a.svcs.StopAll()
 	a.disks.UnmountAll()
+	a.persistLogs()
 	a.boot.Unmount()
+}
+
+// started is when this process began, the "uptime" of the log copies.
+var started = time.Now()
+
+// stageLogs are the logs a stage keeps in /tmp, which are gone once the next
+// system starts, and the names their copies get beside the settings file.
+var stageLogs = []struct{ src, name string }{
+	{"/tmp/uinit.log", "stage-uinit.log"},
+	{"/tmp/record_boot.log", "stage-record_boot.log"},
+}
+
+// persistTimeout bounds persistLogs: it must never hold a handover up.
+const persistTimeout = 4 * time.Second
+
+// persistLogs keeps copies of the stage's logs, and this one, on the boot
+// partition (see boot.Manager.PersistLogs). A failure is logged and the
+// teardown goes on.
+func (a *app) persistLogs() {
+	var copies []boot.LogCopy
+	for _, l := range stageLogs {
+		copies = append(copies, boot.LogCopy{Src: l.src, Name: l.name})
+	}
+	copies = append(copies, boot.LogCopy{Src: *logPath, Name: "stage-bootmanager.log"})
+	log.Printf("keeping the stage's logs on the boot partition")
+	if err := a.boot.PersistLogs(copies, time.Since(started), persistTimeout); err != nil {
+		log.Printf("keeping the stage's logs: %v", err)
+	}
 }
 
 func (a *app) logFiles() []string {
