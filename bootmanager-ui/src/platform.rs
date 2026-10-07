@@ -565,6 +565,18 @@ extern "C" fn on_term(_: libc::c_int) {
     unsafe { libc::_exit(0) };
 }
 
+/// Gives the console back to the kernel: text mode again. A UI that exits
+/// on its own (the initramfs unlocker) must do this, not leave it for a
+/// SIGTERM: the kernel refuses a switch away from a console left in graphics
+/// mode, so the system that starts next (greetd's VT 7) waits for ever.
+/// The panel is redrawn by fbcon as it does; draw the last frame after.
+pub fn release_console() {
+    let fd = TTY_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        unsafe { libc::ioctl(fd, KDSETMODE as _, KD_TEXT) };
+    }
+}
+
 fn fb_name() -> String {
     std::fs::read_to_string("/sys/class/graphics/fb0/name").unwrap_or_default().trim().to_string()
 }

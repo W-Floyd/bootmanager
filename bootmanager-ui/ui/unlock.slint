@@ -18,6 +18,10 @@ export component UnlockWindow inherits Window {
     in property <string> message;
     in-out property <string> passphrase;
     in-out property <bool> reveal;
+    // The passphrase has gone to cryptsetup: this is the last frame, which
+    // stays on the panel through the rest of the initramfs and until the
+    // system's own screen takes over, so it says what is happening.
+    in-out property <bool> working;
     callback accepted();
 
     VerticalLayout {
@@ -95,5 +99,28 @@ export component UnlockWindow inherits Window {
     Keyboard {
         y: parent.height - self.height;
         width: parent.width;
+    }
+
+    if root.working: Rectangle {
+        background: #07080c;
+        VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            Text {
+                text: "Unlocking…";
+                font-size: 26px;
+                font-weight: 700;
+                color: #ffffff;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "Starting the system";
+                font-size: 14px;
+                color: Palette.dim;
+                horizontal-alignment: center;
+            }
+        }
+        // Swallows touches: nothing under it is to be pressed now.
+        TouchArea { }
     }
 }
