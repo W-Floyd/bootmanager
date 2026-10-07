@@ -25,6 +25,10 @@ type Distro interface {
 	// system's own unlocker asks for the passphrase when the key does not
 	// open the root, so a wrong key costs only the prompt.
 	UnlockKey(pass []byte) (files []initrd.File, cmdline []string)
+	// Options are the command-line switches particular to this
+	// distribution's systems (a splash screen, say), each with an Applies
+	// that tells its systems from others.
+	Options() []Option
 }
 
 // All are the distributions known, tried in order.

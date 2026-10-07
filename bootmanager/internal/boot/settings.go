@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,10 +33,15 @@ type Settings struct {
 	// default entry is not among the entries, so this is what says there is
 	// something to unlock and then boot.
 	DefaultVolume string `json:"default_volume,omitempty"`
+	// Options are the command-line switches the user set, by ID (see
+	// distro.Options): "on" or "off". One not here leaves an entry's own
+	// words alone.
+	Options map[string]string `json:"options,omitempty"`
 }
 
 func (s Settings) clone() Settings {
 	s.Order = slices.Clone(s.Order)
+	s.Options = maps.Clone(s.Options)
 	if s.Autoboot != nil {
 		on := *s.Autoboot
 		s.Autoboot = &on

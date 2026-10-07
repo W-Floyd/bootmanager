@@ -499,6 +499,14 @@ func (m *Manager) Handover(img boot.OSImage) error {
 		m.cfg.Emit("busy", map[string]string{"text": ""})
 	}()
 
+	// The options the user set, on the entry's own command line first: what
+	// a dev build then adds for one try goes after, and wins.
+	if li, ok := img.(*boot.LinuxImage); ok {
+		if edited := m.optionsCmdline(li.Cmdline); edited != li.Cmdline {
+			log.Printf("booting %s: command line by options: %s", img.Label(), edited)
+			li.Cmdline = edited
+		}
+	}
 	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.CmdlineExtra != nil {
 		if extra := strings.TrimSpace(m.cfg.CmdlineExtra()); extra != "" {
 			li.Cmdline += " " + extra

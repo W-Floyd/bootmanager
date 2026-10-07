@@ -73,6 +73,17 @@ func (a *app) register() {
 		err := a.boot.SetAutoboot(x.Enabled, x.Seconds)
 		return a.boot.AutobootSettings(), err
 	})
+	// The command-line options kept for every boot (a splash, quiet): their
+	// states, and one changed. Saving remounts like autoboot.set.
+	rpc.Handle(s, "boot.options", func(none) (any, error) { return a.boot.Options(), nil })
+	rpc.Handle(s, "boot.option.set", func(x struct {
+		ID    string
+		State string
+	}) (any, error) {
+		a.disks.UnmountAll()
+		err := a.boot.SetOption(x.ID, x.State)
+		return a.boot.Options(), err
+	})
 	rpc.Handle(s, "service.list", func(none) (any, error) { return a.svcs.List(), nil })
 	rpc.Handle(s, "service.set", afterReady(a, func(x struct {
 		Name    string
