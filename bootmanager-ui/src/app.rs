@@ -58,6 +58,11 @@ pub struct State {
     /// left is dropped.
     generation: u64,
     pub entries: Option<Vec<proto::Entry>>,
+    /// Encrypted volumes not open, one tile each after the entries.
+    pub locked: Vec<proto::LockedVolume>,
+    /// The unlock screen was opened from a tile, not from Disks: when it
+    /// succeeds the menu closes, on the carousel and the entries it found.
+    unlock_from_tile: bool,
     /// The default entry, and whether the user chose it.
     pub default: usize,
     pub explicit: bool,
@@ -127,6 +132,7 @@ impl State {
     fn take_entries(&mut self, e: proto::Entries) {
         (self.default, self.explicit) = (e.default.min(e.entries.len().saturating_sub(1)), e.explicit);
         self.entries = Some(e.entries);
+        self.locked = e.locked;
     }
 }
 
@@ -141,6 +147,8 @@ impl App {
                 actions: vec![],
                 generation: 0,
                 entries: None,
+                locked: Vec::new(),
+                unlock_from_tile: false,
                 default: 0,
                 explicit: false,
                 centred: false,
@@ -693,7 +701,11 @@ impl App {
         if crate::fps::enabled() {
             eprintln!("bootmanager-ui: t={:.3} close_menu", crate::inputlog::t());
         }
-        self.state.borrow_mut().menu_open = false;
+        {
+            let mut s = self.state.borrow_mut();
+            s.menu_open = false;
+            s.unlock_from_tile = false;
+        }
         self.render();
         // Not from inside the key press that closes the menu: the focus it
         // moves is the one that press was delivered to, and the move did
@@ -734,14 +746,39 @@ impl App {
         });
     }
 
-    /// A card chosen on the carousel: boot its entry, or open the menu.
+    /// A card chosen on the carousel: boot its entry, ask for an encrypted
+    /// volume's passphrase, or open the menu.
     fn activate_card(self: &Rc<Self>, i: usize) {
-        let entries = self.state.borrow().entries.as_ref().map_or(0, |e| e.len());
+        let (entries, volume) = {
+            let s = self.state.borrow();
+            let n = s.entries.as_ref().map_or(0, |e| e.len());
+            (n, i.checked_sub(n).and_then(|k| s.locked.get(k)).cloned())
+        };
         if i < entries {
             self.launch(i);
+        } else if let Some(v) = volume {
+            self.open_unlock_tile(v);
         } else {
             self.open_menu();
         }
+    }
+
+    /// The passphrase screen for a locked volume's tile. It is the menu's
+    /// Unlock screen with nothing under it: Back and a success both close the
+    /// menu, to the carousel.
+    fn open_unlock_tile(self: &Rc<Self>, v: proto::LockedVolume) {
+        {
+            let mut s = self.state.borrow_mut();
+            if s.launching >= 0 {
+                return;
+            }
+            s.menu_open = true;
+            s.stack.clear();
+            s.unlock = UnlockRun::Idle;
+            s.unlock_from_tile = true;
+        }
+        let name = if v.source.is_empty() { v.name.clone() } else { v.source.clone() };
+        self.show(Screen::Unlock { dev: v.dev, name }, 0);
     }
 
     /// Boots entry i, its card taking the screen until the handover; a
@@ -787,8 +824,16 @@ impl App {
         };
         self.call("disk.unlock", json!({"dev": dev, "passphrase": pass}), |a, r: Result<proto::Unlocked, _>| match r {
             Ok(_) => {
-                a.state.borrow_mut().unlock = UnlockRun::Idle;
-                a.back();
+                let from_tile = {
+                    let mut s = a.state.borrow_mut();
+                    s.unlock = UnlockRun::Idle;
+                    std::mem::take(&mut s.unlock_from_tile)
+                };
+                if from_tile {
+                    a.close_menu();
+                } else {
+                    a.back();
+                }
             }
             Err(e) => a.state.borrow_mut().unlock = UnlockRun::Failed(e),
         });
@@ -868,7 +913,8 @@ impl App {
         let Some(ui) = self.ui.upgrade() else { return };
         let connected = self.client.connected();
         let mut s = self.state.borrow_mut();
-        let cards = cards::build(s.entries.as_deref().unwrap_or_default(), s.default);
+        let cards = cards::build(s.entries.as_deref().unwrap_or_default(), &s.locked, s.default);
+        ui.set_boot_entries(s.entries.as_ref().map_or(0, |e| e.len()) as i32);
         if cards != s.cards {
             ui.set_cards(ModelRc::new(VecModel::from(cards.clone())));
             s.cards = cards;

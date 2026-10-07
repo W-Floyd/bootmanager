@@ -76,6 +76,7 @@ type Manager struct {
 	explicit       bool // chosen, not the one the scan found first
 	first          int  // with no default chosen, the scan's first entry: its place now
 	scanned        bool
+	locked         []Locked // encrypted volumes found and not open
 	booting        bool
 	left           int       // seconds of countdown left; -1 when none is running
 	countStart     time.Time // when the countdown began; zero before
@@ -129,6 +130,9 @@ type Entry struct {
 type Entries struct {
 	Scanning bool    `json:"scanning"`
 	Entries  []Entry `json:"entries"`
+	// Locked are encrypted volumes not open: entries may be inside, and
+	// unlocking one (disk.unlock) finds them.
+	Locked []Locked `json:"locked"`
 	// Default is the entry the autoboot boots; Explicit, that the user
 	// chose it, rather than it being the one the scan found first.
 	Default  int  `json:"default"`
@@ -154,6 +158,10 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	if err != nil {
 		return nil, err
 	}
+	locked := findLocked(devs.FilterZeroSize())
+	m.mu.Lock()
+	m.locked = locked
+	m.mu.Unlock()
 	imgs = append(imgs, bootDirEntries(m.pool.MountPoints)...)
 	f := cmdline.NewUpdateFilter("", []string{"console"}, []string{"console"})
 	boot.ApplyLinuxModifiers(imgs, func(li *boot.LinuxImage) {
@@ -398,7 +406,7 @@ func (m *Manager) Autoboot() Autoboot {
 func (m *Manager) List() Entries {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Default: m.def, Explicit: m.explicit}
+	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Locked: append([]Locked{}, m.locked...), Default: m.def, Explicit: m.explicit}
 	for _, img := range m.images {
 		detail := ""
 		if li, ok := img.(*boot.LinuxImage); ok {

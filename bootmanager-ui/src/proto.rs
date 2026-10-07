@@ -45,10 +45,26 @@ pub struct Entry {
     pub source: String,
 }
 
+/// An encrypted volume that is not open (a LUKS partition).
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct LockedVolume {
+    /// The partition's kernel name (sde27).
+    pub dev: String,
+    /// Its GPT name (userdata), or the kernel name.
+    pub name: String,
+    /// Where it is: "UFS userdata", "microSD card".
+    #[serde(default)]
+    pub source: String,
+}
+
 #[derive(Deserialize)]
 pub struct Entries {
     pub scanning: bool,
     pub entries: Vec<Entry>,
+    /// Encrypted volumes not open: entries may be inside, and unlocking one
+    /// finds them. Each is a tile of its own on the carousel.
+    #[serde(default)]
+    pub locked: Vec<LockedVolume>,
     /// The entry the autoboot boots; explicit: the user chose it, rather
     /// than it being the first.
     #[serde(default)]

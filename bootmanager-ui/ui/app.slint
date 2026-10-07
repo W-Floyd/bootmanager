@@ -59,6 +59,8 @@ export component AppWindow inherits Window {
     // The carousel.
     in property <[Card]> cards;
     in-out property <int> card-selected;
+    // How many of the cards, the first ones, are boot entries.
+    in property <int> boot-entries;
     // Up from black (started), then the splash until the carousel's
     // entrance (revealed).
     in property <bool> started;
@@ -236,6 +238,7 @@ export component AppWindow inherits Window {
             band-y: header.height;
             band-h: root.height - header.height - 90px;
             cards: root.cards;
+            boot-entries: root.boot-entries;
             selected <=> root.card-selected;
             revealed: root.revealed;
             launching: root.launching;

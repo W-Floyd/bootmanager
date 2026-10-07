@@ -409,6 +409,9 @@ export component Carousel inherits FocusScope {
     callback move(int, int);
     callback make-default(int);
     property <int> entries: root.cards.length - 1;
+    // How many of the cards are boot entries, the first ones: the cards after
+    // them (an encrypted volume's tile, the menu's) cannot be arranged.
+    in property <int> boot-entries;
 
     // The band the cards sit in; the carousel itself is the whole window,
     // for a launched card to fill.
@@ -451,7 +454,7 @@ export component Carousel inherits FocusScope {
         if (root.editing >= 0) {
             if ((event.text == Key.UpArrow || event.text == Key.LeftArrow) && root.editing > 0) {
                 root.move(root.editing, -1);
-            } else if ((event.text == Key.DownArrow || event.text == Key.RightArrow) && root.editing < root.entries - 1) {
+            } else if ((event.text == Key.DownArrow || event.text == Key.RightArrow) && root.editing < root.boot-entries - 1) {
                 root.move(root.editing, 1);
             } else if (event.text == Key.Return || event.text == " ") {
                 root.make-default(root.editing);
@@ -578,7 +581,7 @@ export component Carousel inherits FocusScope {
             }
             long-pressed => {
                 root.activity();
-                if (i < root.entries && root.launching < 0) {
+                if (i < root.boot-entries && root.launching < 0) {
                     root.go(i);
                     root.editing = i;
                 }
@@ -593,7 +596,7 @@ export component Carousel inherits FocusScope {
         y: root.band-y + (root.band-h + root.card-h) / 2 + 14px;
         z: 200;
         can-left: root.editing > 0;
-        can-right: root.editing < root.entries - 1;
+        can-right: root.editing < root.boot-entries - 1;
         is-default: root.editing == root.default-index && root.default-explicit;
         left => { root.activity(); root.move(root.editing, -1); }
         right => { root.activity(); root.move(root.editing, 1); }

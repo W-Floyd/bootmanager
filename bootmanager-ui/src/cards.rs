@@ -1,7 +1,7 @@
 //! The carousel's cards: a boot entry's look, guessed from its label and
 //! command line, and the menu's card after them.
 
-use crate::proto::Entry;
+use crate::proto::{Entry, LockedVolume};
 use crate::Card;
 use slint::Color;
 
@@ -34,6 +34,8 @@ const LOOKS: &[(&[&str], Look)] = &[
 const LINUX: Look = Look { tag: "LINUX", icon: "linux", a: 0xf7b733, b: 0x7a2e10 };
 const OTHER: Look = Look { tag: "SYSTEM", icon: "layers", a: 0x8a7cf0, b: 0x2a2466 };
 const MENU: Look = Look { tag: "", icon: "gear", a: 0x6a6f9e, b: 0x1c1d30 };
+/// An encrypted volume not open: a padlock, in the amber of a thing to act on.
+const LOCKED: Look = Look { tag: "LOCKED", icon: "lock", a: 0xe0a030, b: 0x5a3a10 };
 
 fn look(e: &Entry) -> &'static Look {
     let find = |text: &str| {
@@ -78,8 +80,9 @@ fn card(title: &str, subtitle: String, tag: &str, l: &Look, variant: i32) -> Car
     Card { title: title.into(), subtitle: subtitle.into(), tag: tag.into(), icon: l.icon.into(), a: rgb(l.a), b: rgb(l.b), variant }
 }
 
-/// A card per entry, the default marked, then the menu's.
-pub fn build(entries: &[Entry], default: usize) -> Vec<Card> {
+/// A card per entry, the default marked, then one per encrypted volume
+/// that is not open (tapping it asks for the passphrase), then the menu's.
+pub fn build(entries: &[Entry], locked: &[LockedVolume], default: usize) -> Vec<Card> {
     let mut cards: Vec<Card> = entries
         .iter()
         .enumerate()
@@ -94,6 +97,10 @@ pub fn build(entries: &[Entry], default: usize) -> Vec<Card> {
             card(&e.label, with_source(&e.source, subtitle(&e.detail)), tag, l, (i % 3) as i32)
         })
         .collect();
+    for (i, v) in locked.iter().enumerate() {
+        let sub = if v.source.is_empty() { "Encrypted".to_string() } else { format!("{} · encrypted", v.source) };
+        cards.push(card(&format!("Unlock {}", v.name), sub, LOCKED.tag, &LOCKED, ((entries.len() + i) % 3) as i32));
+    }
     cards.push(card("Tools", "Services, partitions, log, power".into(), MENU.tag, &MENU, 2));
     cards
 }
@@ -107,12 +114,22 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_volume_is_a_tile_before_the_menu() {
+        let v = LockedVolume { dev: "sde27".into(), name: "userdata".into(), source: "UFS userdata".into() };
+        let cards = build(&[entry("postmarketOS", "")], &[v], 0);
+        assert_eq!(cards.len(), 3, "an entry, the volume, the menu");
+        assert_eq!((cards[1].title.as_str(), cards[1].subtitle.as_str()), ("Unlock userdata", "UFS userdata · encrypted"));
+        assert_eq!((cards[1].tag.as_str(), cards[1].icon.as_str()), ("LOCKED", "lock"));
+        assert_eq!(cards[2].title, "Tools");
+    }
+
+    #[test]
     fn two_installs_of_one_system() {
         let mut sd = entry("postmarketOS", "pmos_root_uuid=8e7b");
         sd.source = "microSD card".into();
         let mut ufs = entry("postmarketOS", "pmos_root_uuid=5ce4");
         ufs.source = "UFS userdata (encrypted)".into();
-        let cards = build(&[sd, ufs, entry("Android", "")], 0);
+        let cards = build(&[sd, ufs, entry("Android", "")], &[], 0);
         assert_eq!(cards[0].subtitle, "microSD card");
         assert_eq!(cards[1].subtitle, "UFS userdata (encrypted)");
         assert_eq!(cards[2].subtitle, "");
@@ -132,7 +149,7 @@ mod tests {
         assert_eq!(look(&entry("Something", "")).icon, "layers");
         assert_eq!(subtitle("console=ttyS0 root=PARTUUID=0123456789ab rw"), "PARTUUID 01234567…");
         assert_eq!(subtitle("root=/dev/sda2"), "/dev/sda2");
-        let cards = build(&[entry("a", ""), entry("b", ""), entry("Android", ""), entry("Android 14", "")], 1);
+        let cards = build(&[entry("a", ""), entry("b", ""), entry("Android", ""), entry("Android 14", "")], &[], 1);
         assert_eq!(cards.len(), 5);
         assert_eq!(cards[1].tag, "DEFAULT");
         assert_eq!(cards[2].tag, "", "the title says it already");
