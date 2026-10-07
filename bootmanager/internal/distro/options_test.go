@@ -30,11 +30,14 @@ func TestSplashOptionOnAndOff(t *testing.T) {
 			t.Errorf("splash on left %q: %q", w, on)
 		}
 	}
+	if !slices.Contains(on, "splash") {
+		t.Errorf("splash on did not add the word the initramfs reads: %q", on)
+	}
 	if !slices.Contains(on, "pmos_root_uuid=aaa") || !slices.Contains(on, "plymouth.ignore-serial-consoles") {
 		t.Errorf("splash on took too much: %q", on)
 	}
-	off := words(ApplyOptions("console=tty0 pmos_root_uuid=aaa", map[string]string{"splash": "off"}))
-	if !slices.Contains(off, "pmos.nosplash") || !slices.Contains(off, "plymouth.enable=0") {
+	off := words(ApplyOptions("console=tty0 splash pmos_root_uuid=aaa", map[string]string{"splash": "off"}))
+	if slices.Contains(off, "splash") || !slices.Contains(off, "plymouth.enable=0") {
 		t.Errorf("splash off: %q", off)
 	}
 }

@@ -154,7 +154,8 @@ func TestOptionsPerEntry(t *testing.T) {
 	if err := m2.SetEntryOption(0, "splash", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := m2.Cmdline(0); !strings.Contains(got, "pmos.nosplash") && strings.Contains(got, "plymouth.enable") {
-		t.Errorf("after clearing: %q", got)
+	// Back to what every entry has: the global off set above.
+	if got, _ := m2.Cmdline(0); !strings.Contains(got, "plymouth.enable=0") || strings.Contains(" "+got+" ", " splash ") {
+		t.Errorf("after clearing the entry's own, the global off should apply: %q", got)
 	}
 }
