@@ -43,11 +43,11 @@ pub fn window(volume: &str, tried: u32) -> UnlockWindow {
             std::process::exit(1);
         }
         ui.set_passphrase("".into());
-        // The console goes back to text mode first (fbcon repaints the
-        // panel as it does), then one frame of "Unlocking…": it is the last
-        // this process draws, and what the panel shows until the system
-        // starts.
-        crate::platform::release_console();
+        // One frame of "Unlocking…": it is the last this process draws, and
+        // what the panel shows until the system's own screen. The console
+        // stays in graphics mode, so nothing the kernel prints draws over
+        // it; the system gives the console back when it starts a display
+        // manager (`bootmanager-ui --release-console`, platform.rs).
         ui.set_working(true);
         slint::Timer::single_shot(std::time::Duration::from_millis(200), || {
             let _ = slint::quit_event_loop();

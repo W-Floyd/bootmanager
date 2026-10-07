@@ -29,6 +29,11 @@ fn main() {
     let mut unlock = false;
     let mut size = slint::PhysicalSize::new(720, 1600);
     let mut args = std::env::args().skip(1);
+    // No window: hands the console back to the system (platform.rs).
+    if std::env::args().nth(1).as_deref() == Some("--release-console") {
+        platform::release_console_now();
+        return;
+    }
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| usage());
         match a.as_str() {
@@ -101,6 +106,7 @@ fn main() {
 fn usage() -> ! {
     eprintln!("usage: bootmanager-ui [--socket PATH] [--fb DEV] [--screenshot PNG [--keys LIST] [--size WxH]]");
     eprintln!("       bootmanager-ui --unlock [--fb DEV]   passphrase on stdout, for cryptsetup");
+    eprintln!("       bootmanager-ui --release-console     the console back to text mode, cleared (run before a display manager)");
     std::process::exit(2)
 }
 

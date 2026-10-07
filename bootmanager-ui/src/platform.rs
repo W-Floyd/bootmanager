@@ -565,15 +565,20 @@ extern "C" fn on_term(_: libc::c_int) {
     unsafe { libc::_exit(0) };
 }
 
-/// Gives the console back to the kernel: text mode again. A UI that exits
-/// on its own (the initramfs unlocker) must do this, not leave it for a
-/// SIGTERM: the kernel refuses a switch away from a console left in graphics
-/// mode, so the system that starts next (greetd's VT 7) waits for ever.
-/// The panel is redrawn by fbcon as it does; draw the last frame after.
-pub fn release_console() {
-    let fd = TTY_FD.load(Ordering::Relaxed);
-    if fd >= 0 {
-        unsafe { libc::ioctl(fd, KDSETMODE as _, KD_TEXT) };
+/// Gives the console back to the system, from a process of its own
+/// (`bootmanager-ui --release-console`), run before a display manager starts.
+/// The initramfs unlocker leaves the console in graphics mode on purpose, so
+/// that its last frame stays on the panel through the rest of the boot and the
+/// kernel's log does not scroll over it; the kernel refuses a switch away
+/// from a console in graphics mode, though, so the system's greetd (VT 7)
+/// would wait for ever. The console is cleared first, so no old text shows
+/// for the moment before the display manager draws.
+pub fn release_console_now() {
+    use std::io::Write;
+    if let Ok(mut tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty0") {
+        // Clear, home, hide the cursor.
+        let _ = tty.write_all(b"\x1b[2J\x1b[H\x1b[?25l");
+        unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(&tty), KDSETMODE as _, KD_TEXT) };
     }
 }
 
