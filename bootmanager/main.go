@@ -119,6 +119,9 @@ func main() {
 	if *findBootFiles {
 		os.Exit(findBootFilesCmd())
 	}
+	if *sshFallback != "" {
+		os.Exit(sshFallbackCmd(*sshFallback))
+	}
 	if *sendCmd != "" {
 		os.Exit(send(*socketPath, *sendCmd))
 	}
