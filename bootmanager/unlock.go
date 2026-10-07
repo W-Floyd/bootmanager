@@ -30,6 +30,12 @@ func (a *app) registerUnlock() {
 		if err != nil {
 			return nil, err
 		}
+		// An encrypted install keeps its kernel and boot entries inside
+		// the volume (a single-partition image has nowhere else to put
+		// them): look for them now it is open. No countdown starts on
+		// the entries that turn up, as one does on a boot.
+		a.boot.CancelBy("unlocking an encrypted partition")
+		go a.boot.Rescan()
 		return map[string]string{"dev": dm}, nil
 	}))
 	rpc.Handle(a.rpc, "disk.lock", afterReady(a, func(x struct{ Dev string }) (any, error) {
@@ -40,6 +46,12 @@ func (a *app) registerUnlock() {
 			return nil, errors.New(x.Dev + " is not an unlocked volume")
 		}
 		a.disks.Unmount(x.Dev)
+		// Its entries go with it: a boot scan holds its own mount of the
+		// volume, which has to be let go before the device can close.
+		if err := a.boot.Release(); err != nil {
+			return nil, err
+		}
+		defer a.boot.Rescan()
 		return nil, luks.Runner{Bin: *cryptsetupBin}.Lock(x.Dev)
 	}))
 }
