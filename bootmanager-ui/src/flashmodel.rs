@@ -42,6 +42,8 @@ pub struct FlashModel {
     recv_t0: Option<i64>,
     write_t0: Option<i64>,
     recv_bytes: i64,
+    /// The largest piece finished so far, in bytes received.
+    piece_max: i64,
     /// What this piece has been measured as, once it is.
     measured_recv: bool,
     /// Never goes back: 0 to 1.
@@ -136,9 +138,23 @@ impl FlashModel {
             }
         };
         let left = (self.total - self.prev_end).max(0) as f64;
+        if f.phase == "waiting" || f.phase == "done" {
+            self.piece_max = self.piece_max.max(self.recv_bytes);
+        }
         // What the next piece will cover, until one has shown it: as many
         // image bytes as it holds, and no more than is left.
-        let span = self.span.unwrap_or(self.recv_bytes.max(1) as f64).min(left.max(0.0));
+        let mut span = self.span.unwrap_or(self.recv_bytes.max(1) as f64).min(left.max(0.0));
+        // A piece well short of the full ones is the last: the host cuts the
+        // image into full pieces and the rest. What it writes ends where the
+        // data does, short of the image's size when the image ends in a hole,
+        // so the bar would stop there and jump at the end. This piece is the
+        // rest of the image as far as the bar goes.
+        let mut step = MAX_STEP;
+        if self.piece_max > 0 && (self.recv_bytes as f64) < self.piece_max as f64 * 0.8 {
+            span = left;
+            // It has the rest to cover in one short piece.
+            step = MAX_STEP * 4.0;
+        }
         let at = if f.phase == "waiting" || f.phase == "done" {
             self.prev_end as f64
         } else {
@@ -150,7 +166,7 @@ impl FlashModel {
         // events, not in one leap.
         let now = (at / total).min(0.995) as f32;
         if self.seen {
-            self.overall += (now - self.overall).clamp(0.0, MAX_STEP);
+            self.overall += (now - self.overall).clamp(0.0, step);
         } else {
             // The first report: where it is, as a screen that came in late
             // finds it, not a climb up to it.
@@ -234,6 +250,30 @@ mod tests {
         assert!(last > 0.9, "ends at {last} before it is finished");
         m.update(&Flash { end, ..ev("finished", 9, t + 6000) });
         assert_eq!(m.overall(), 1.0);
+    }
+
+    /// Full pieces, then a short last one, with a hole after the data: the
+    /// bar reaches the end with the last piece, not at "finished".
+    #[test]
+    fn a_short_last_piece_takes_the_bar_to_the_end() {
+        let mut m = FlashModel::default();
+        let (mut t, mut end) = (0i64, 0i64);
+        let total = 3000 * MB;
+        let ev = |phase: &str, piece: i64, t: i64| Flash { total, ..ev(phase, piece, t) };
+        for piece in 1..=4 {
+            let (held, span) = if piece < 4 { (250 * MB, 700 * MB) } else { (60 * MB, 80 * MB) };
+            for k in 1..=60 {
+                t += 120;
+                m.update(&Flash { recv: held * k / 60, recv_total: held, end, ..ev("receiving", piece, t) });
+            }
+            t += 100;
+            m.update(&Flash { recv: held, recv_total: held, wrote_total: held, end, ..ev("writing", piece, t) });
+            t += 1000;
+            end += span;
+            m.update(&Flash { end, wrote: held, wrote_total: held, ..ev("waiting", piece, t) });
+        }
+        // The data ends at 1100 MB of 3000: the hole after it is no progress.
+        assert!(m.overall() > 0.95, "ended at {}", m.overall());
     }
 
     #[test]

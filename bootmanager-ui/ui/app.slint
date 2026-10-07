@@ -37,6 +37,8 @@ export component AppWindow inherits Window {
     // down from the top edge.
     property <length> side-pad: max(18px, root.corner-radius / 2);
     in property <string> busy;
+    // A passphrase is being tried: the veil shows a spinner.
+    in property <bool> working;
     // A fastboot flash under way: its screen holds the whole window.
     in property <bool> flash-active;
     in property <bool> flash-finished;
@@ -504,13 +506,29 @@ export component AppWindow inherits Window {
 
     // Busy with something other than a boot (the launch shows its own):
     // a veil that fades in, and swallows touches while it is up.
-    Rectangle {
+    veil := Rectangle {
         background: #000000c8;
-        opacity: root.busy != "" && root.launching < 0 ? 1 : 0;
+        opacity: (root.busy != "" || root.working) && root.launching < 0 ? 1 : 0;
         animate opacity { duration: 200ms; }
         visible: self.opacity > 0;
+        // Key derivation takes seconds: a ring of dots, one bright and the
+        // rest trailing off behind it. Opaque dots, with the fade by colour.
+        property <duration> spin: animation-tick();
+        property <int> head: mod(floor(self.spin / 90ms), 8);
+        if self.visible && root.working: Rectangle {
+            for d in 8: Rectangle {
+                property <int> behind: mod(veil.head - d + 8, 8);
+                x: parent.width / 2 + sin(d * 45deg) * 22px - 4px;
+                y: parent.height / 2 - 70px - cos(d * 45deg) * 22px - 4px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: #5fdc8f.mix(#2a2f2c, self.behind / 7.0);
+            }
+        }
         Text {
-            text: root.busy;
+            y: parent.height / 2 - 20px;
+            text: root.busy != "" ? root.busy : (root.working ? "Unlocking…" : "");
             font-size: 20px;
             font-weight: 700;
             color: Palette.text;

@@ -828,10 +828,15 @@ impl App {
                 return;
             }
             s.unlock = UnlockRun::Working;
+            ui.set_working(true);
             ui.set_passphrase("".into());
             (dev, pass.to_string())
         };
-        self.call("disk.unlock", json!({"dev": dev, "passphrase": pass}), |a, r: Result<proto::Unlocked, _>| match r {
+        self.call("disk.unlock", json!({"dev": dev, "passphrase": pass}), |a, r: Result<proto::Unlocked, _>| {
+            if let Some(ui) = a.ui.upgrade() {
+                ui.set_working(false);
+            }
+            match r {
             Ok(_) => {
                 let from_tile = {
                     let mut s = a.state.borrow_mut();
@@ -845,6 +850,7 @@ impl App {
                 }
             }
             Err(e) => a.state.borrow_mut().unlock = UnlockRun::Failed(e),
+            }
         });
     }
 
