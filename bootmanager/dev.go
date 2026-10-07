@@ -52,7 +52,15 @@ const (
 
 var devOnce = flag.String("dev-once", "", "file naming services to switch on at start, one-shot (the stage's dev.sh stage-hold)")
 
-func init() { devExt = dev{} }
+func init() {
+	devExt = dev{}
+	// Words in /tmp/cmdline-add (RAM, gone at reboot) go onto the command line of
+	// whatever is booted next: `echo pmos.debug-shell > /tmp/cmdline-add`.
+	cmdlineExtra = func() string {
+		b, _ := os.ReadFile("/tmp/cmdline-add")
+		return string(b)
+	}
+}
 
 type dev struct{}
 

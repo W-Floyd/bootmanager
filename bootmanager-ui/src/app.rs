@@ -76,8 +76,10 @@ pub struct State {
     pub autoboot: Option<proto::AutobootSettings>,
     /// The battery's level (the "battery" event), for the indicator.
     pub battery: Option<proto::Battery>,
-    /// A fastboot flash under way (the "flash" event), for its screen.
+    /// A fastboot flash under way (the "flash" event), for its screen, and
+    /// the estimate of how far along it is.
     pub flash: proto::Flash,
+    pub flash_model: crate::flashmodel::FlashModel,
     /// Every power supply's properties, read when Diagnostics opens.
     pub supplies: Vec<proto::Supply>,
     /// The stage has the checkers (an optional part of a stage build).
@@ -129,6 +131,12 @@ pub struct App {
 }
 
 impl State {
+    /// A flash event: the screen's, and the estimate's.
+    fn take_flash(&mut self, f: proto::Flash) {
+        self.flash_model.update(&f);
+        self.flash = f;
+    }
+
     fn take_entries(&mut self, e: proto::Entries) {
         (self.default, self.explicit) = (e.default.min(e.entries.len().saturating_sub(1)), e.explicit);
         self.entries = Some(e.entries);
@@ -157,6 +165,7 @@ impl App {
                 autoboot: None,
                 battery: None,
                 flash: proto::Flash::default(),
+                flash_model: Default::default(),
                 supplies: vec![],
                 fsck_available: false,
                 luks_available: false,
@@ -241,7 +250,7 @@ impl App {
         let weak = Rc::downgrade(&app);
         ui.on_flash_close(move || {
             if let Some(a) = weak.upgrade() {
-                a.state.borrow_mut().flash = proto::Flash::default();
+                a.state.borrow_mut().take_flash(proto::Flash::default());
                 a.render();
             }
         });
@@ -392,7 +401,7 @@ impl App {
             Event::Services(v) => s.services = v,
             Event::Error(e) => s.error = e,
             Event::Battery(b) => s.battery = Some(b),
-            Event::Flash(f) => s.flash = f,
+            Event::Flash(f) => s.take_flash(f),
             Event::Fsck(f) => {
                 if matches!(&s.screen, Screen::Fsck { dev, .. } if *dev == f.dev) && matches!(s.fsck, FsckRun::Running(_)) {
                     s.fsck = FsckRun::Running(f.line);
@@ -693,7 +702,7 @@ impl App {
                 Ok(v) => s.services = v,
                 Err(e) => s.error = e,
             }
-            s.flash = proto::Flash::default();
+            s.take_flash(proto::Flash::default());
         });
     }
 
@@ -935,7 +944,7 @@ impl App {
             }
             _ => ui.set_battery_present(false),
         }
-        set_flash(&ui, &s.flash);
+        set_flash(&ui, &s.flash, &s.flash_model);
         let flash_up = !s.flash.phase.is_empty();
         if flash_up != self.flash_shown.replace(flash_up) {
             // The focus moves from the next turn of the loop, not from here:
@@ -1058,6 +1067,8 @@ struct FlashView {
     finished: bool,
     title: String,
     overall: f32,
+    percent: String,
+    eta: String,
     overall_text: String,
     recv: f32,
     recv_text: String,
@@ -1083,17 +1094,36 @@ fn fraction(part: i64, whole: i64) -> f32 {
     }
 }
 
-fn flash_view(f: &proto::Flash) -> FlashView {
+/// "about 1 min 5 s left", "about 40 s left"; "" when it is not known or the
+/// flash is over.
+fn eta_text(ms: Option<i64>) -> String {
+    match ms {
+        Some(ms) if ms >= 3_000 => {
+            let s = (ms + 500) / 1000;
+            if s >= 60 {
+                format!("about {} min {} s left", s / 60, s % 60 / 5 * 5)
+            } else {
+                format!("about {} s left", (s + 2) / 5 * 5)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// The screen for an event, and the model's estimate of how far along it is.
+fn flash_view(f: &proto::Flash, overall: f32, eta_ms: Option<i64>) -> FlashView {
     let finished = f.phase == "finished";
     let name = if f.name.is_empty() { "the device" } else { &f.name };
     let piece = f.piece.max(1);
-    let overall = if finished { 1. } else { fraction(f.end, f.total) };
+    let overall = if finished { 1. } else { overall.clamp(0., 1.) };
+    let written = (overall as f64 * f.total.max(0) as f64) as i64;
     let overall_text = if f.total > 0 {
-        let end = if finished { f.total } else { f.end };
-        format!("{} of {} written · {:.0}%", size_text(end), size_text(f.total), overall * 100.)
+        format!("{} of {}", size_text(written), size_text(f.total))
     } else {
         String::new()
     };
+    let percent = format!("{:.0}%", overall * 100.);
+    let eta = if finished { "Done".to_string() } else { eta_text(eta_ms) };
     let (recv, recv_text) = match f.phase.as_str() {
         "receiving" => (fraction(f.recv, f.recv_total), format!("Receiving piece {piece}: {} of {}", size_text(f.recv), size_text(f.recv_total))),
         "writing" | "waiting" | "done" | "finished" => (1., format!("Piece {piece} received")),
@@ -1108,8 +1138,11 @@ fn flash_view(f: &proto::Flash) -> FlashView {
     FlashView {
         active: !f.phase.is_empty(),
         finished,
-        title: if finished { format!("Flashed {name}") } else { format!("Flashing {name}") },
+        // What it is, under the screen's own "FLASHING" or "FLASH COMPLETE".
+        title: name.to_string(),
         overall,
+        percent,
+        eta,
         overall_text,
         recv,
         recv_text,
@@ -1118,12 +1151,14 @@ fn flash_view(f: &proto::Flash) -> FlashView {
     }
 }
 
-fn set_flash(ui: &AppWindow, f: &proto::Flash) {
-    let v = flash_view(f);
+fn set_flash(ui: &AppWindow, f: &proto::Flash, model: &crate::flashmodel::FlashModel) {
+    let v = flash_view(f, model.overall(), model.eta_ms());
     ui.set_flash_active(v.active);
     ui.set_flash_finished(v.finished);
     ui.set_flash_title(v.title.into());
     ui.set_flash_overall(v.overall);
+    ui.set_flash_percent(v.percent.into());
+    ui.set_flash_eta(v.eta.into());
     ui.set_flash_overall_text(v.overall_text.into());
     ui.set_flash_recv(v.recv);
     ui.set_flash_recv_text(v.recv_text.into());
@@ -1141,26 +1176,36 @@ mod flash_tests {
 
     #[test]
     fn a_piece_coming_in() {
-        let v = flash_view(&proto::Flash { recv: 100 << 20, recv_total: 200 << 20, ..flash("receiving") });
+        let v = flash_view(&proto::Flash { recv: 100 << 20, recv_total: 200 << 20, ..flash("receiving") }, 0.25, Some(65_000));
         assert!(v.active && !v.finished);
-        assert_eq!(v.title, "Flashing sde27");
+        assert_eq!(v.title, "sde27");
         assert_eq!((v.recv, v.write), (0.5, 0.));
         assert_eq!(v.recv_text, "Receiving piece 3: 100 MB of 200 MB");
-        assert_eq!(v.overall_text, "715 MB of 2.79 GB written · 25%");
+        assert_eq!((v.percent.as_str(), v.overall_text.as_str()), ("25%", "715 MB of 2.79 GB"));
+        assert_eq!(v.eta, "about 1 min 5 s left");
     }
 
     #[test]
     fn a_piece_going_out() {
-        let v = flash_view(&proto::Flash { wrote: 50 << 20, wrote_total: 200 << 20, ..flash("writing") });
+        let v = flash_view(&proto::Flash { wrote: 50 << 20, wrote_total: 200 << 20, ..flash("writing") }, 0.3, None);
         assert_eq!((v.recv, v.write), (1., 0.25));
         assert_eq!(v.write_text, "Writing piece 3: 50 MB of 200 MB");
+        assert_eq!(v.eta, "", "no estimate before a piece has been timed");
     }
 
     #[test]
     fn finished_and_cleared() {
-        let v = flash_view(&flash("finished"));
+        let v = flash_view(&flash("finished"), 0.4, Some(9_000));
         assert!(v.finished);
-        assert_eq!((v.overall, v.title.as_str()), (1., "Flashed sde27"));
-        assert!(!flash_view(&proto::Flash::default()).active);
+        assert_eq!((v.overall, v.title.as_str(), v.percent.as_str(), v.eta.as_str()), (1., "sde27", "100%", "Done"));
+        assert!(!flash_view(&proto::Flash::default(), 0., None).active);
+    }
+
+    #[test]
+    fn the_time_left_in_words() {
+        assert_eq!(eta_text(Some(42_000)), "about 40 s left");
+        assert_eq!(eta_text(Some(61_000)), "about 1 min 0 s left");
+        assert_eq!(eta_text(Some(2_000)), "", "the last seconds are not worth a number");
+        assert_eq!(eta_text(None), "");
     }
 }

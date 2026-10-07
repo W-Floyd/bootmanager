@@ -42,6 +42,8 @@ export component AppWindow inherits Window {
     in property <bool> flash-finished;
     in property <string> flash-title;
     in property <float> flash-overall;
+    in property <string> flash-percent;
+    in property <string> flash-eta;
     in property <string> flash-overall-text;
     in property <float> flash-recv;
     in property <string> flash-recv-text;
@@ -155,7 +157,10 @@ export component AppWindow inherits Window {
         // Hidden under the open sheet: nothing there to see, and the
         // software renderer, repainting a row, draws the translucent
         // cards past the damaged area and over the sheet.
-        visible: sheet.y > root.cutout-h / 2;
+        // Also hidden for the whole of a flash: the software renderer,
+        // repainting the flash screen's progress bar row by row, drew the
+        // Tools card's gear through it.
+        visible: sheet.y > root.cutout-h / 2 && !root.flash-active;
 
         header := VerticalLayout {
             y: root.chrome ? 0 : -30px;
@@ -305,6 +310,7 @@ export component AppWindow inherits Window {
         }
     }
     sheet := Rectangle {
+        visible: !root.flash-active;
         y: root.sheet-y + root.pull;
         height: root.height - root.cutout-h / 2;
         border-top-left-radius: 22px;
@@ -521,6 +527,8 @@ export component AppWindow inherits Window {
         finished: root.flash-finished;
         title: root.flash-title;
         overall: root.flash-overall;
+        percent: root.flash-percent;
+        eta: root.flash-eta;
         overall-text: root.flash-overall-text;
         recv: root.flash-recv;
         recv-text: root.flash-recv-text;

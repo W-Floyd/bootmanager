@@ -96,6 +96,10 @@ func (a *app) isReady() bool {
 // errNotReady refuses what needs the stage's setup until it is done.
 var errNotReady = errors.New("the stage is still starting")
 
+// cmdlineExtra is what a dev build adds to a booted entry's command line (dev.go
+// reads it from /tmp/cmdline-add); a stage build adds nothing.
+var cmdlineExtra func() string
+
 // devExt is the dev build's extension (dev.go): live restarts and test
 // kernels. nil in a normal build.
 var devExt interface {
@@ -140,6 +144,7 @@ func main() {
 		Emit:              a.rpc.Broadcast,
 		Teardown:          a.teardown,
 		InitrdExtra:       a.extraInitrd,
+		CmdlineExtra:      cmdlineExtra,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },

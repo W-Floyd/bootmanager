@@ -1,21 +1,28 @@
-// The screen while the host flashes the device over fastboot: the whole
-// image, and the piece in flight (an image comes in several, each received
-// and then written). It holds the screen: nothing underneath can be used
-// until the flash is over (Done) or stopped (Stop), and the keys do nothing.
+// The screen while the host flashes the device over fastboot: how far along
+// the whole image is (the time-based estimate of flashmodel.rs), and the piece
+// in flight (an image comes in several, each received and then written). It
+// holds the window: nothing underneath can be used until the flash is over
+// (Done) or stopped (Stop), and the keys do nothing. app.slint hides the
+// carousel and the menu while it is up, so nothing shows through.
 
 import { Palette } from "theme.slint";
 
 component Bar inherits Rectangle {
     in property <float> value;
     in property <length> thickness: 10px;
-    in property <color> fill: Palette.accent;
+    in property <brush> fill: Palette.accent;
+    // Moves between the reports (about eight a second) rather than stepping
+    // at each: the next one arrives as this one lands.
+    property <float> shown: root.value;
+    animate shown { duration: 150ms; easing: linear; }
+
     height: root.thickness;
     border-radius: root.thickness / 2;
-    background: #ffffff22;
+    background: #ffffff1c;
     clip: true;
     Rectangle {
         x: 0;
-        width: parent.width * max(0, min(1, root.value));
+        width: parent.width * max(0, min(1, root.shown));
         border-radius: root.thickness / 2;
         background: root.fill;
     }
@@ -25,6 +32,8 @@ export component FlashScreen inherits Rectangle {
     in property <bool> finished;
     in property <string> title;
     in property <float> overall;
+    in property <string> percent;
+    in property <string> eta;
     in property <string> overall-text;
     in property <float> recv;
     in property <string> recv-text;
@@ -39,7 +48,8 @@ export component FlashScreen inherits Rectangle {
         keys.focus();
     }
 
-    background: #050706;
+    // The carousel's own backdrop, in the accent's green.
+    background: @linear-gradient(180deg, #16301f 0%, #0d1a13 55%, #070b09 100%);
 
     keys := FocusScope {
         key-pressed(event) => {
@@ -54,21 +64,38 @@ export component FlashScreen inherits Rectangle {
         y: (parent.height - self.height) / 2;
         padding-left: 28px;
         padding-right: 28px;
-        spacing: 12px;
+        spacing: 6px;
         height: self.preferred-height;
 
         Text {
+            text: root.finished ? "FLASH COMPLETE" : "FLASHING";
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            color: root.finished ? #6fe39a : #ffffff80;
+            horizontal-alignment: center;
+        }
+        Text {
             text: root.title;
-            font-size: 24px;
+            font-size: 20px;
             font-weight: 700;
             color: Palette.text;
             horizontal-alignment: center;
             wrap: word-wrap;
         }
+        Text {
+            text: root.percent;
+            font-size: 76px;
+            font-weight: 700;
+            color: #ffffff;
+            horizontal-alignment: center;
+        }
         Bar {
             value: root.overall;
-            thickness: 14px;
-            fill: root.finished ? #3ec46d : Palette.accent;
+            thickness: 16px;
+            // Solid: the software renderer drops a gradient fill's rounded
+            // corners.
+            fill: #5fdc8f;
         }
         Text {
             text: root.overall-text;
@@ -76,38 +103,60 @@ export component FlashScreen inherits Rectangle {
             color: Palette.text;
             horizontal-alignment: center;
         }
-        Rectangle { height: 14px; }
         Text {
-            text: root.recv-text;
+            text: root.eta;
             font-size: 13px;
-            color: #ffffffb0;
+            color: #ffffff90;
+            horizontal-alignment: center;
         }
-        Bar {
-            value: root.recv;
-            thickness: 6px;
-            fill: #7aa7ff;
-        }
-        Text {
-            text: root.write-text;
-            font-size: 13px;
-            color: #ffffffb0;
-        }
-        Bar {
-            value: root.write;
-            thickness: 6px;
-            fill: #f0b84a;
-        }
-        Rectangle { height: 28px; }
-        // One button, by what is going on.
+        Rectangle { height: 18px; }
+        // This piece: coming in, and going out.
         Rectangle {
-            height: 56px;
-            border-radius: 28px;
-            background: root.finished ? #3ec46d : #ef5b5b;
+            background: #ffffff10;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: #ffffff14;
+            height: pieces.preferred-height + 32px;
+            pieces := VerticalLayout {
+                padding: 16px;
+                spacing: 6px;
+                Text {
+                    text: root.recv-text;
+                    font-size: 13px;
+                    color: #ffffffc0;
+                }
+                Bar {
+                    value: root.recv;
+                    thickness: 6px;
+                    fill: #7aa7ff;
+                }
+                Rectangle { height: 6px; }
+                Text {
+                    text: root.write-text;
+                    font-size: 13px;
+                    color: #ffffffc0;
+                }
+                Bar {
+                    value: root.write;
+                    thickness: 6px;
+                    fill: #f0b84a;
+                }
+            }
+        }
+        Rectangle { height: 22px; }
+        // One button, by what is going on. Stopping is the way out and is
+        // plain; Done is the way on.
+        Rectangle {
+            height: 54px;
+            border-radius: 27px;
+            background: root.finished ? #3ec46d : transparent;
+            border-width: 2px;
+            border-color: root.finished ? #3ec46d : #ef5b5b;
             Text {
                 text: root.finished ? "Done" : "Stop fastboot";
-                font-size: 19px;
+                font-size: 18px;
                 font-weight: 700;
-                color: #ffffff;
+                color: root.finished ? #06180d : #ef7b7b;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -122,9 +171,9 @@ export component FlashScreen inherits Rectangle {
             }
         }
         Text {
-            text: root.finished ? "" : "Stops now: the partition may be left half written.";
+            text: root.finished ? "" : "Stops now. The partition may be left half written.";
             font-size: 12px;
-            color: #ffffff80;
+            color: #ffffff70;
             horizontal-alignment: center;
             wrap: word-wrap;
         }

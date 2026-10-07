@@ -9,6 +9,7 @@
 package fastboot
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 )
@@ -88,12 +90,14 @@ type Server struct {
 	// What the flashes so far of one image (the host sends a big one as
 	// several sparse pieces) have covered: the partition, the image's
 	// size, how far in the last piece ended, and how many pieces.
-	lastName  string
+	lastName  string // the partition's device
+	lastLabel string // and its GPT name
 	lastTotal int64
 	lastEnd   int64
 	pieces    int
 
 	abort atomic.Bool
+	born  time.Time // the first progress report: T counts from here
 }
 
 // ErrAborted ends a download or a flash that Abort stopped.
@@ -127,13 +131,22 @@ type Progress struct {
 	// chunk ended at, and the image's size.
 	End   int64 `json:"end"`
 	Total int64 `json:"total"`
+	// T is when this was said, in milliseconds from the first report: a
+	// clock for the screen's estimate of how long the rest takes.
+	T int64 `json:"t"`
 }
 
 func (s *Server) report(p Progress) {
 	if s.Progress == nil {
 		return
 	}
-	p.Name, p.Total = s.lastName, s.lastTotal
+	// The partition by its GPT name when it has one (userdata), else the
+	// kernel's (sde27, mmcblk1).
+	p.Name, p.Total = cmp.Or(s.lastLabel, s.lastName), s.lastTotal
+	if s.born.IsZero() {
+		s.born = time.Now()
+	}
+	p.T = time.Since(s.born).Milliseconds()
 	if p.End == 0 {
 		p.End = s.lastEnd
 	}
@@ -448,6 +461,7 @@ func (s *Server) flash(name string) error {
 	// piece of the same one carries on from where the last ended.
 	if p.Dev != s.lastName || size != s.lastTotal {
 		s.lastName, s.lastTotal, s.lastEnd, s.pieces = p.Dev, size, 0, 0
+		s.lastLabel = p.Label
 	}
 	if s.Open == nil {
 		return errors.New("flashing is not supported")

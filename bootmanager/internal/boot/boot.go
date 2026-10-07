@@ -62,6 +62,10 @@ type Config struct {
 	// It returns the archive, and words to add to the entry's command line
 	// for it (none when the archive needs none).
 	InitrdExtra func(cmdline string) (archive []byte, cmdlineWords []string)
+	// CmdlineExtra, when set, is asked at a handover for words to add to a
+	// Linux entry's command line, for a try that should not be written into
+	// its boot config (a dev build's: the pmOS debug shell).
+	CmdlineExtra func() string
 	// Settings is where the entries' order and default are kept
 	// (settingsFile): PATH or DEV:PATH. Empty: for this run only.
 	Settings string
@@ -165,6 +169,9 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 		return nil, err
 	}
 	locked := findLocked(devs.FilterZeroSize())
+	for _, l := range locked {
+		log.Printf("scan: %s (%s) is encrypted and locked", l.Dev, l.Source)
+	}
 	m.mu.Lock()
 	m.locked = locked
 	m.mu.Unlock()
@@ -460,6 +467,12 @@ func (m *Manager) Handover(img boot.OSImage) error {
 		m.cfg.Emit("busy", map[string]string{"text": ""})
 	}()
 
+	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.CmdlineExtra != nil {
+		if extra := strings.TrimSpace(m.cfg.CmdlineExtra()); extra != "" {
+			li.Cmdline += " " + extra
+			log.Printf("booting %s: command line words added: %s", img.Label(), extra)
+		}
+	}
 	log.Printf("booting %s", img)
 	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.InitrdExtra != nil {
 		if extra, words := m.cfg.InitrdExtra(li.Cmdline); len(extra) > 0 {

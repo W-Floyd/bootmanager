@@ -108,6 +108,10 @@ pub struct Flash {
     pub end: i64,
     #[serde(default)]
     pub total: i64,
+    /// When this was said, in milliseconds from the first report: the
+    /// clock the flash screen's estimate runs on.
+    #[serde(default)]
+    pub t: i64,
 }
 
 /// The battery's level, pushed as the "battery" event.
