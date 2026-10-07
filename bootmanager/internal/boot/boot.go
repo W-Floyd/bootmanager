@@ -96,8 +96,8 @@ type Manager struct {
 	// autoboot waits for it to be unlocked, then boots the entry.
 	pendingUnlock *Locked
 	booting       bool
-	left           int       // seconds of countdown left; -1 when none is running
-	countStart     time.Time // when the countdown began; zero before
+	left          int       // seconds of countdown left; -1 when none is running
+	countStart    time.Time // when the countdown began; zero before
 
 	stop     chan struct{}
 	stopOnce sync.Once

@@ -155,10 +155,12 @@ func main() {
 	a.web = newWebServer(a)
 	a.services = []*svc.Service{
 		{
-			Name:   "ssh",
-			Title:  "SSH",
-			Detail: "port 22, public key only",
-			Start:  svc.Process("sshd", "-port", "22", "-keys", *sshKeys, "-privatekey", *sshHostKey),
+			Name:    "ssh",
+			Title:   "SSH",
+			Detail:  "port 22, public key only",
+			Start:   svc.Process("sshd", "-port", "22", "-keys", *sshKeys, "-privatekey", *sshHostKey),
+			Log:     "/tmp/sshd.log",
+			Explain: explainSSH,
 		},
 		{
 			Name:   "remote",
@@ -183,6 +185,7 @@ func main() {
 		devExt.register(a)
 	}
 	a.svcs = svc.NewSet(a.services...)
+	a.svcs.Changed = func() { a.rpc.Broadcast("services", a.svcs.List()) }
 
 	os.Remove(*socketPath)
 	ln, err := net.Listen("unix", *socketPath)

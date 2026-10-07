@@ -155,6 +155,9 @@ pub struct Service {
     pub title: String,
     pub detail: String,
     pub running: bool,
+    /// Why it is off though it was switched on: its process died.
+    #[serde(default)]
+    pub error: String,
 }
 
 #[derive(Deserialize, Clone)]

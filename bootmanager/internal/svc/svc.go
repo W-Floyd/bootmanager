@@ -7,8 +7,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // StartFunc starts a service and returns how to stop it, and its pid when
@@ -20,10 +22,17 @@ type Service struct {
 	Title  string
 	Detail string
 	Start  StartFunc
+	// Log is the file a child process writes to, whose last line says why
+	// it died; "" for none.
+	Log string
+	// Explain, when set, turns that last line into words for the person at
+	// the screen.
+	Explain func(line string) string
 
 	running bool
 	stop    func()
 	pid     int
+	failed  string
 }
 
 type Status struct {
@@ -31,11 +40,17 @@ type Status struct {
 	Title   string `json:"title"`
 	Detail  string `json:"detail"`
 	Running bool   `json:"running"`
+	// Error is why a service that was switched on is not running: its
+	// process died. Empty otherwise.
+	Error string `json:"error,omitempty"`
 }
 
 type Set struct {
 	mu   sync.Mutex
 	list []*Service
+	// Changed, when set, is called (without the lock) after a service
+	// stopped by itself, so the UI can say so.
+	Changed func()
 }
 
 func NewSet(services ...*Service) *Set { return &Set{list: services} }
@@ -59,17 +74,77 @@ func (s *Set) Set(name string, on bool) error {
 	}
 	if !on {
 		v.stop()
-		v.running, v.stop, v.pid = false, nil, 0
+		v.running, v.stop, v.pid, v.failed = false, nil, 0, ""
 		log.Printf("service %s stopped", name)
 		return nil
 	}
+	v.failed = ""
 	stop, pid, err := v.Start()
 	if err != nil {
 		return fmt.Errorf("%s: %w", v.Title, err)
 	}
 	v.running, v.stop, v.pid = true, stop, pid
 	log.Printf("service %s started", name)
+	if pid > 0 {
+		go s.watch(v, pid)
+	}
 	return nil
+}
+
+// watch notices a child process dying on its own: the service is marked
+// off, with the last line of its log as the reason, rather than staying
+// "on" with nothing behind it.
+func (s *Set) watch(v *Service, pid int) {
+	for {
+		time.Sleep(500 * time.Millisecond)
+		if syscall.Kill(pid, 0) == nil {
+			s.mu.Lock()
+			ours := v.running && v.pid == pid
+			s.mu.Unlock()
+			if !ours {
+				return
+			}
+			continue
+		}
+		s.mu.Lock()
+		if !v.running || v.pid != pid {
+			s.mu.Unlock()
+			return
+		}
+		v.running, v.stop, v.pid = false, nil, 0
+		v.failed = lastLine(v.Log)
+		if v.failed != "" && v.Explain != nil {
+			v.failed = v.Explain(v.failed)
+		}
+		if v.failed == "" {
+			v.failed = "the process exited"
+		}
+		log.Printf("service %s died: %s", v.Name, v.failed)
+		changed := s.Changed
+		s.mu.Unlock()
+		if changed != nil {
+			changed()
+		}
+		return
+	}
+}
+
+// lastLine is the last non-empty line of a file, shortened, "" if there is
+// none.
+func lastLine(path string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	l := strings.TrimSpace(lines[len(lines)-1])
+	if len(l) > 160 {
+		l = l[:160]
+	}
+	return l
 }
 
 func (s *Set) Running(name string) bool {
@@ -84,7 +159,7 @@ func (s *Set) List() []Status {
 	defer s.mu.Unlock()
 	out := make([]Status, 0, len(s.list))
 	for _, v := range s.list {
-		out = append(out, Status{v.Name, v.Title, v.Detail, v.running})
+		out = append(out, Status{v.Name, v.Title, v.Detail, v.running, v.failed})
 	}
 	return out
 }
@@ -125,6 +200,9 @@ func (s *Set) Adopt(name string, pid int) error {
 		return err
 	}
 	v.running, v.stop, v.pid = true, Waitable(p), pid
+	if pid > 0 {
+		go s.watch(v, pid)
+	}
 	return nil
 }
 

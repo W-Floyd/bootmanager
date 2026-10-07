@@ -410,7 +410,15 @@ impl App {
                 s = self.state.borrow_mut();
             }
             Event::Entries(_) => {}
-            Event::Services(v) => s.services = v,
+            Event::Services(v) => {
+                // A service that has just died: say so, once, as a toast.
+                for n in v.iter().filter(|n| !n.error.is_empty()) {
+                    if !s.services.iter().any(|o| o.name == n.name && o.error == n.error) {
+                        s.error = format!("{} stopped: {}", n.title, n.error);
+                    }
+                }
+                s.services = v;
+            }
             Event::Error(e) => s.error = e,
             Event::Battery(b) => s.battery = Some(b),
             Event::Flash(f) => s.take_flash(f),

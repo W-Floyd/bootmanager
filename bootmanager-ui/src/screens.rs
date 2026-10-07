@@ -113,6 +113,15 @@ pub fn row(title: impl Into<SharedString>, detail: impl Into<SharedString>, kind
     Row { title: title.into(), detail: detail.into(), kind: kind.into(), on, thumb: Image::default() }
 }
 
+/// "on", "off", or "failed" for a service switched on whose process died.
+fn service_state(v: &crate::proto::Service) -> &'static str {
+    match (v.running, v.error.is_empty()) {
+        (true, _) => "on",
+        (false, true) => "off",
+        (false, false) => "failed",
+    }
+}
+
 fn info(title: impl Into<SharedString>, detail: impl Into<SharedString>) -> (Row, Action) {
     (row(title, detail, "info", false), Action::None)
 }
@@ -184,7 +193,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 Some(e) => format!("Default: {}", e.get(s.default).map_or("", |e| e.label.as_str())),
             };
             let svc: Vec<String> =
-                s.services.iter().map(|v| format!("{} {}", v.title, if v.running { "on" } else { "off" })).collect();
+                s.services.iter().map(|v| format!("{} {}", v.title, service_state(v))).collect();
             let auto = match &s.autoboot {
                 None => String::new(),
                 Some(a) if a.enabled => format!("On  ·  {} s", a.seconds),
@@ -247,7 +256,8 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
         }
         Screen::Services => {
             for v in &s.services {
-                rows.push((row(v.title.clone(), v.detail.clone(), "toggle", v.running), Action::Service(v.name.clone(), !v.running)));
+                let detail = if v.error.is_empty() { v.detail.clone() } else { format!("Stopped: {}", v.error) };
+                rows.push((row(v.title.clone(), detail, "toggle", v.running), Action::Service(v.name.clone(), !v.running)));
             }
             ("Services".into(), "Select to switch".into(), rows)
         }
