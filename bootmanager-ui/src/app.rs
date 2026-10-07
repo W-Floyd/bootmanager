@@ -639,6 +639,9 @@ impl App {
     fn open_menu(self: &Rc<Self>) {
         {
             let mut s = self.state.borrow_mut();
+            if crate::fps::enabled() {
+                eprintln!("bootmanager-ui: t={:.3} open_menu (launching {}, editing)", crate::inputlog::t(), s.launching);
+            }
             if s.launching >= 0 {
                 return;
             }
@@ -652,11 +655,20 @@ impl App {
     }
 
     fn close_menu(self: &Rc<Self>) {
+        if crate::fps::enabled() {
+            eprintln!("bootmanager-ui: t={:.3} close_menu", crate::inputlog::t());
+        }
         self.state.borrow_mut().menu_open = false;
         self.render();
-        if let Some(ui) = self.ui.upgrade() {
-            ui.invoke_focus_home();
-        }
+        // Not from inside the key press that closes the menu: the focus it
+        // moves is the one that press was delivered to, and the move did
+        // not hold (the carousel took no key afterwards).
+        let weak = self.ui.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(0), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_focus_home();
+            }
+        });
     }
 
     /// Moves entry i's card by places (-1 left), the carousel and the edit

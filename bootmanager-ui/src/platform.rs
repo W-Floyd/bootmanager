@@ -819,6 +819,17 @@ struct Timing {
     render_max: Duration,
     present: Duration,
     present_max: Duration,
+    /// From the start of the loop turn to the start of rendering (timers,
+    /// animations, queued jobs, Slint's own layout and property updates),
+    /// and the wait for the vertical blank.
+    pre: Duration,
+    pre_max: Duration,
+    wait: Duration,
+    /// Frames shown more than a refresh and a half after the one before
+    /// (a blank skipped), and the longest gap.
+    late: u32,
+    gap_max: Duration,
+    last_shown: Option<Instant>,
     damaged: u64,
 }
 
@@ -831,11 +842,40 @@ impl Timing {
             render_max: Duration::ZERO,
             present: Duration::ZERO,
             present_max: Duration::ZERO,
+            pre: Duration::ZERO,
+            pre_max: Duration::ZERO,
+            wait: Duration::ZERO,
+            late: 0,
+            gap_max: Duration::ZERO,
+            last_shown: None,
             damaged: 0,
         }
     }
 
-    fn add(&mut self, render: Duration, present: Duration, damaged: u64, screen: u64) {
+    fn add(&mut self, begun: Instant, render: Duration, present: Duration, pre: Duration, wait: Duration, damaged: u64, screen: u64) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_shown {
+            let gap = now - prev;
+            self.gap_max = self.gap_max.max(gap);
+            if gap > Duration::from_micros(25_000) {
+                self.late += 1;
+                if self.late <= 3 {
+                    eprintln!(
+                        "bootmanager-ui: slow frame: {} us since the last = {} us before the loop turn + {} us pre + {} us render + {} us vblank wait + {} us present",
+                        gap.as_micros(),
+                        begun.saturating_duration_since(prev).as_micros(),
+                        pre.as_micros(),
+                        render.as_micros(),
+                        wait.as_micros(),
+                        present.as_micros(),
+                    );
+                }
+            }
+        }
+        self.last_shown = Some(now);
+        self.pre += pre;
+        self.pre_max = self.pre_max.max(pre);
+        self.wait += wait;
         self.frames += 1;
         self.render += render;
         self.render_max = self.render_max.max(render);
@@ -858,7 +898,7 @@ impl Timing {
         let cpu = unsafe { libc::sched_getcpu() };
         let khz = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")).unwrap_or_default();
         eprintln!(
-            "bootmanager-ui: timing {n} frames in {} ms: render avg {} max {} us (gradients: opaque {} us {} kpx, translucent {} us {} kpx), present avg {} max {} us, damaged avg {}%, cpu{cpu} {} MHz",
+            "bootmanager-ui: timing {n} frames in {} ms: render avg {} max {} us (gradients: opaque {} us {} kpx, translucent {} us {} kpx), present avg {} max {} us, pre avg {} max {} us, vblank wait avg {} us, {} gaps over 25 ms (max {} ms), damaged avg {}%, cpu{cpu} {} MHz",
             span.as_millis(),
             (self.render / n).as_micros(),
             self.render_max.as_micros(),
@@ -868,6 +908,11 @@ impl Timing {
             g[1].1 / n as u64 / 1000,
             (self.present / n).as_micros(),
             self.present_max.as_micros(),
+            (self.pre / n).as_micros(),
+            self.pre_max.as_micros(),
+            (self.wait / n).as_micros(),
+            self.late,
+            self.gap_max.as_millis(),
             self.damaged * 100 / (n as u64 * screen.max(1)),
             khz.trim().parse::<u64>().map_or(0, |k| k / 1000),
         );
@@ -884,6 +929,12 @@ pub struct FbPlatform {
     start: Instant,
     /// Set in a dev stage (/etc/bootmanager/dev).
     timing: Option<RefCell<Timing>>,
+    /// Whether a frame waits for the panel's vertical blank before it is
+    /// copied out, and how many blanks in a row did not behave.
+    vsync: std::cell::Cell<bool>,
+    vsync_misses: std::cell::Cell<u32>,
+    /// The start of the loop turn being drawn, for the timing's "pre".
+    begun: std::cell::Cell<Instant>,
 }
 
 impl FbPlatform {
@@ -900,6 +951,7 @@ impl FbPlatform {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale_for(size.width, mm) });
         window.set_size(size);
+        let vsync = matches!(&target, Target::Fb(fb) if fb.can_wait_vsync());
         let dev = std::path::Path::new("/etc/bootmanager/dev").exists();
         crate::fps::ON.store(dev, Ordering::Relaxed);
         if dev {
@@ -913,6 +965,9 @@ impl FbPlatform {
             wake,
             start: Instant::now(),
             timing: dev.then(|| RefCell::new(Timing::new())),
+            vsync: std::cell::Cell::new(vsync),
+            vsync_misses: std::cell::Cell::new(0),
+            begun: std::cell::Cell::new(Instant::now()),
         })
     }
 
@@ -929,6 +984,10 @@ impl FbPlatform {
 
     fn key(&self, k: Key) {
         let text: slint::SharedString = k.into();
+        if crate::fps::enabled() {
+            // Dev stage: the input log stops after a device's first events.
+            eprintln!("bootmanager-ui: t={:.3} key {:?} dispatched", inputlog::t(), text.chars().next());
+        }
         self.window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
         self.window.dispatch_event(WindowEvent::KeyReleased { text });
     }
@@ -958,11 +1017,40 @@ impl FbPlatform {
             let region = renderer.render_into_buffer(&mut Canvas(&mut frame));
             let t1 = Instant::now();
             let (o, s) = (region.bounding_box_origin(), region.bounding_box_size());
+            let mut present = Duration::ZERO;
+            let mut waited = Duration::ZERO;
+            let pre = t0.duration_since(self.begun.get());
             if let Target::Fb(fb) = &self.target {
+                // The frame is drawn off screen; it is copied to the panel
+                // just after a vertical blank. The copy runs far faster than
+                // the scan-out, so it stays ahead of the beam and nothing
+                // tears. A frame that took longer than a refresh waits for
+                // the next blank rather than tearing.
+                if self.vsync.get() {
+                    match fb.wait_vsync() {
+                        // A blank that comes at once, or never, is no
+                        // pacing: go back to presenting at once.
+                        Some(d) if d <= Duration::from_millis(40) => {
+                            if d >= Duration::from_micros(300) || t1.elapsed() >= Duration::from_micros(300) {
+                                self.vsync_misses.set(0);
+                            }
+                        }
+                        _ => {
+                            self.vsync_misses.set(self.vsync_misses.get() + 1);
+                            if self.vsync_misses.get() >= 5 {
+                                self.vsync.set(false);
+                                eprintln!("bootmanager-ui: no usable vertical blank, presenting at once");
+                            }
+                        }
+                    }
+                }
+                let t2 = Instant::now();
+                waited = t2 - t1;
                 fb.present(&frame, o.x.max(0) as usize, o.y.max(0) as usize, s.width as usize, s.height as usize);
+                present = t2.elapsed();
             }
             if let Some(t) = &self.timing {
-                t.borrow_mut().add(t1 - t0, t1.elapsed(), s.width as u64 * s.height as u64, (w * h) as u64);
+                t.borrow_mut().add(self.begun.get(), t1 - t0, present, pre, waited, s.width as u64 * s.height as u64, (w * h) as u64);
             }
         })
     }
@@ -1002,11 +1090,6 @@ impl Platform for FbPlatform {
         // refresh, however often input asks (a touch panel reports faster
         // than the display shows, and a drag moves the cards on each report).
         let mut last_frame = Instant::now() - frame;
-        // With the panel's vertical blank to wait on, a frame may start a
-        // little early (the wait paces it); without, the timer does.
-        let mut vsync_ok = matches!(&self.target, Target::Fb(fb) if fb.can_wait_vsync());
-        let mut vsync_misses = 0;
-        let mut gate = if vsync_ok { frame * 3 / 4 } else { frame };
 
         loop {
             let frame_start = Instant::now();
@@ -1018,28 +1101,14 @@ impl Platform for FbPlatform {
             if self.shared.quit.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            if last_frame.elapsed() >= gate && self.draw() {
+            self.begun.set(frame_start);
+            // Dev stage: /tmp/ui-novsync turns the vertical-blank wait off, live.
+            if crate::fps::enabled() && self.vsync.get() && std::path::Path::new("/tmp/ui-novsync").exists() {
+                self.vsync.set(false);
+                eprintln!("bootmanager-ui: t={:.3} vertical blank wait off (/tmp/ui-novsync)", inputlog::t());
+            }
+            if last_frame.elapsed() >= frame && self.draw() {
                 last_frame = frame_start;
-                // The next frame starts at a vertical blank, not wherever
-                // the timer fell: a frame drawn just after the scan-out
-                // passed shows for two refreshes, and one drawn mid-scan
-                // tears. The wait ends at the blank; input arriving during
-                // it is handled in the next turn of the loop.
-                if let (Target::Fb(fb), true) = (&self.target, vsync_ok) {
-                    match fb.wait_vsync() {
-                        // A blank that comes at once, or never, is no pacing:
-                        // go back to the timer.
-                        Some(d) if d >= Duration::from_micros(300) && d <= Duration::from_millis(40) => vsync_misses = 0,
-                        _ => {
-                            vsync_misses += 1;
-                            if vsync_misses >= 5 {
-                                vsync_ok = false;
-                                gate = frame;
-                                eprintln!("bootmanager-ui: no usable vertical blank, pacing by timer");
-                            }
-                        }
-                    }
-                }
             }
 
             // How long poll may sleep: the next Slint timer, the rest of the
@@ -1054,7 +1123,10 @@ impl Platform for FbPlatform {
             if since < frame {
                 timeout = frame - since;
             } else if self.window.has_active_animations() {
-                timeout = frame;
+                // With the blank to wait on, the draw itself paces the next
+                // frame; sleeping a refresh here, after a frame that has
+                // already taken most of one, skipped a blank every time.
+                timeout = if self.vsync.get() { Duration::ZERO } else { frame };
             }
             if let Some(t) = slint::platform::duration_until_next_timer_update() {
                 timeout = timeout.min(t);

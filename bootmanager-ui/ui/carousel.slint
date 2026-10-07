@@ -30,8 +30,21 @@ component Scene inherits Rectangle {
     property <color> ground: root.b.darker(0.55);
     property <length> land: root.height - root.radius;
     property <float> lean: root.variant == 1 ? -1 : root.variant == 2 ? 0 : 1;
+    // A card that fades (an edge card) keeps the whole card filled with the
+    // sky, as it always was: the colours under translucent layers show in it.
+    // An opaque one only needs the sky where nothing else is drawn: the
+    // top, in the rounded corners. The rest is the gradient's, and filling
+    // the whole card first was a screenful of pixels painted twice.
+    in property <bool> full-sky;
     border-radius: root.radius;
-    background: root.sky-top;
+    background: root.full-sky ? root.sky-top : transparent;
+    if !root.full-sky: Rectangle {
+        y: 0;
+        height: root.radius * 2 + 1px;
+        border-top-left-radius: root.radius;
+        border-top-right-radius: root.radius;
+        background: root.sky-top;
+    }
 
     // Clipped, so the hills' circles can reach past the sides.
     Rectangle {
@@ -85,12 +98,20 @@ component Scene inherits Rectangle {
     }
     // Overlapping the middle a pixel: two anti-aliased edges meeting at a
     // fraction of one leave a line of the sky showing through.
+    // A rectangle shorter than twice its radius has the radius cut down to
+    // fit, which made this band's corners about half the card's: the band
+    // is a taller one, clipped to its height.
     Rectangle {
         y: root.land - 1px;
         height: root.radius + 1px;
-        border-bottom-left-radius: root.radius;
-        border-bottom-right-radius: root.radius;
-        background: root.ground.mix(#000000, 0.47);
+        clip: true;
+        Rectangle {
+            y: parent.height - self.height;
+            height: root.radius * 2;
+            border-bottom-left-radius: root.radius;
+            border-bottom-right-radius: root.radius;
+            background: root.ground.mix(#000000, 0.47);
+        }
     }
 }
 
@@ -116,14 +137,21 @@ export component CardView {
     // A soft shadow from stacked, shrinking layers. Only their bottoms
     // show below the card, so each is just that: tall enough for its
     // rounded corners, not a card-sized blend hidden under the card.
-    for s[k] in [0, 1, 2]: Rectangle {
-        x: 6px - k * 3px;
-        width: root.width - self.x * 2;
-        height: (root.radius + 6px) * 2;
-        y: root.height + 4px + k * 6px - self.height;
-        border-radius: root.radius + 6px;
-        background: #000000;
-        opacity: 0.14 * (1 - root.launch) * (1 - root.far * 0.5);
+    // Only the strip at and below the card's foot is drawn: the rest sits
+    // under the card, and a blend there is wasted.
+    shadows := Rectangle {
+        y: root.height - root.radius - 2px;
+        height: root.radius + 30px;
+        clip: root.launch == 0;
+        for s[k] in [0, 1, 2]: Rectangle {
+            x: 6px - k * 3px;
+            width: root.width - self.x * 2;
+            height: (root.radius + 6px) * 2;
+            y: root.height + 4px + k * 6px - self.height - shadows.y;
+            border-radius: root.radius + 6px;
+            background: #000000;
+            opacity: 0.14 * (1 - root.launch) * (1 - root.far * 0.5);
+        }
     }
 
     scene := Scene {
@@ -132,6 +160,7 @@ export component CardView {
         a: root.card.a;
         b: root.card.b;
         variant: root.card.variant;
+        full-sky: root.far > 1.4;
         radius: root.radius;
         halo-x: icon.x + icon.width / 2;
         halo-y: icon.y + icon.height / 2;
