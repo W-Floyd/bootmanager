@@ -386,8 +386,43 @@ component EditBar inherits Rectangle {
     }
 }
 
+// One simple flag of the entry being arranged (splash, quiet): what it will
+// boot with, and a tap flips it for that entry.
+export struct FlagChip {
+    title: string,
+    on: bool,
+}
+
+// Under the edit bar: the entry's flags as chips, and Edit… for its command
+// line, for one boot.
+component FlagBar inherits Rectangle {
+    in property <[FlagChip]> flags;
+    callback toggled(int);
+    callback edit();
+    width: row.preferred-width;
+    height: 44px;
+    border-radius: 22px;
+    background: #000000b0;
+    row := HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for chip[i] in root.flags: BarButton {
+            text: chip.on ? "● " + chip.title : "○ " + chip.title;
+            on: chip.on;
+            font-size: 15px;
+            min-width: 96px;
+            clicked => { root.toggled(i); }
+        }
+        BarButton { text: "Edit…"; font-size: 15px; min-width: 72px; clicked => { root.edit(); } }
+    }
+}
+
 export component Carousel inherits FocusScope {
     in property <[Card]> cards;
+    // The flags of the card being arranged, and what to do with them.
+    in property <[FlagChip]> flags;
+    callback flag-toggled(int);
+    callback edit-cmdline(int);
     in-out property <int> selected;
     // Before the first reveal the cards wait below the screen.
     in property <bool> revealed;
@@ -602,5 +637,15 @@ export component Carousel inherits FocusScope {
         right => { root.activity(); root.move(root.editing, 1); }
         star => { root.activity(); root.make-default(root.editing); }
         done => { root.editing = -1; }
+    }
+
+    // Linux entries only: the app gives flags (or none) for the card.
+    if root.editing >= 0 && root.editing == root.selected && root.flags.length > 0: FlagBar {
+        x: (root.width - self.width) / 2;
+        y: root.band-y + (root.band-h + root.card-h) / 2 + 14px + 52px + 8px;
+        z: 200;
+        flags: root.flags;
+        toggled(i) => { root.activity(); root.flag-toggled(i); }
+        edit => { root.activity(); root.edit-cmdline(root.editing); }
     }
 }

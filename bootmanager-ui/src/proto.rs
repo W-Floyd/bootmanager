@@ -160,6 +160,17 @@ pub struct BootOption {
     pub state: String,
 }
 
+/// An option as one entry has it (boot.entry.options): what it will boot
+/// with, and whether the entry has a choice of its own.
+#[derive(Deserialize, Clone)]
+pub struct EntryOption {
+    pub id: String,
+    pub title: String,
+    pub on: bool,
+    #[serde(default)]
+    pub r#override: bool,
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Service {
     pub name: String,

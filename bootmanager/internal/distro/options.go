@@ -55,6 +55,34 @@ func (e Edit) Apply(cmdline string) string {
 	return strings.Join(out, " ")
 }
 
+// IsOn says whether cmdline is, as it stands, as the option's On position
+// would have it: its On words all there, and (for an option whose On only
+// takes words off) none of its Off words. What a chip on an entry shows.
+func (o Option) IsOn(cmdline string) bool {
+	has := func(w string) bool {
+		for _, f := range strings.Fields(cmdline) {
+			if f == w {
+				return true
+			}
+		}
+		return false
+	}
+	for _, w := range o.On.Add {
+		if !has(w) {
+			return false
+		}
+	}
+	if len(o.On.Add) > 0 {
+		return true
+	}
+	for _, w := range o.Off.Add {
+		if has(w) {
+			return false
+		}
+	}
+	return true
+}
+
 // Options are every option the stage offers: those that suit any system,
 // then each distribution's.
 func Options() []Option {

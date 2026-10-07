@@ -81,6 +81,9 @@ pub struct State {
     pub autoboot: Option<proto::AutobootSettings>,
     /// boot.options, read when the menu or its Boot options screen opens.
     pub options: Option<Vec<proto::BootOption>>,
+    /// The options of the card being arranged (the chips of its long-press
+    /// bar), in the order the chips show them.
+    pub entry_options: Vec<proto::EntryOption>,
     /// The battery's level (the "battery" event), for the indicator.
     pub battery: Option<proto::Battery>,
     /// A fastboot flash under way (the "flash" event), for its screen, and
@@ -177,6 +180,7 @@ impl App {
                 fsck: FsckRun::Idle,
                 autoboot: None,
                 options: None,
+                entry_options: Vec::new(),
                 battery: None,
                 flash: proto::Flash::default(),
                 flash_model: Default::default(),
@@ -253,6 +257,24 @@ impl App {
         ui.on_card_default(move |i| {
             if let Some(a) = weak.upgrade() {
                 a.default_card(i as usize)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_editing_changed(move |i| {
+            if let Some(a) = weak.upgrade() {
+                a.fetch_entry_options(i)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_flag_toggled(move |j| {
+            if let Some(a) = weak.upgrade() {
+                a.toggle_entry_option(j as usize)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_card_edit_cmdline(move |i| {
+            if let Some(a) = weak.upgrade() {
+                a.edit_cmdline(i as usize)
             }
         });
         let weak = Rc::downgrade(&app);
@@ -831,6 +853,73 @@ impl App {
         } else {
             self.open_menu();
         }
+    }
+
+    /// The chips of the card being arranged: its options as it will boot, or
+    /// none when the long press ended or the card is not a Linux entry.
+    fn fetch_entry_options(self: &Rc<Self>, i: i32) {
+        if i < 0 {
+            self.state.borrow_mut().entry_options.clear();
+            self.show_entry_options();
+            return;
+        }
+        self.call("boot.entry.options", json!({"index": i}), |a, r: Result<Vec<proto::EntryOption>, _>| {
+            // Whatever the card has now: a reply for one long since left
+            // is of no use.
+            if let Ok(v) = r {
+                a.state.borrow_mut().entry_options = v;
+                a.show_entry_options();
+            }
+        });
+    }
+
+    fn show_entry_options(self: &Rc<Self>) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let chips: Vec<crate::FlagChip> = self
+            .state
+            .borrow()
+            .entry_options
+            .iter()
+            .map(|o| crate::FlagChip { title: o.title.clone().into(), on: o.on })
+            .collect();
+        ui.set_card_flags(ModelRc::new(VecModel::from(chips)));
+    }
+
+    /// A tap on a chip: the option the other way, for this entry.
+    fn toggle_entry_option(self: &Rc<Self>, j: usize) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let i = ui.get_card_editing();
+        let Some(o) = self.state.borrow().entry_options.get(j).cloned() else { return };
+        if i < 0 {
+            return;
+        }
+        let state = if o.on { "off" } else { "on" };
+        self.call("boot.entry.option.set", json!({"index": i, "id": o.id, "state": state}), |a, r: Result<Vec<proto::EntryOption>, _>| match r {
+            Ok(v) => {
+                a.state.borrow_mut().entry_options = v;
+                a.show_entry_options();
+            }
+            Err(e) => a.state.borrow_mut().error = e,
+        });
+    }
+
+    /// Edit… on the bar of a card: its command line, for one boot, on the
+    /// menu's own screen with nothing under it (Back goes to the carousel).
+    fn edit_cmdline(self: &Rc<Self>, i: usize) {
+        let label = {
+            let mut s = self.state.borrow_mut();
+            if s.launching >= 0 {
+                return;
+            }
+            let label = s.entries.as_ref().and_then(|e| e.get(i)).map(|e| e.label.clone()).unwrap_or_default();
+            s.menu_open = true;
+            s.stack.clear();
+            label
+        };
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_card_editing(-1);
+        }
+        self.show(Screen::EditCmdline { index: i, label }, 0);
     }
 
     /// The autoboot's default is inside a locked volume: its passphrase

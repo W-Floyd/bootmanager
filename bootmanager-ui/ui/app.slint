@@ -10,13 +10,13 @@ import "DejaVuSans-Bold.ttf";
 import { Palette, Card, Row } from "theme.slint";
 import { MenuList } from "menu.slint";
 import { Keyboard, VirtualKeyboardHandler } from "keyboard.slint";
-import { Carousel } from "carousel.slint";
+import { Carousel, FlagChip } from "carousel.slint";
 import { Splash } from "splash.slint";
 import { UnlockWindow } from "unlock.slint";
 import { BatteryIndicator } from "battery.slint";
 import { FlashScreen } from "flash.slint";
 
-export { Card, Row, VirtualKeyboardHandler, UnlockWindow }
+export { Card, Row, FlagChip, VirtualKeyboardHandler, UnlockWindow }
 
 // The top line: with no cutout, one line; with some, a line as tall as
 // they reach, its text left of them, as phosh lays out its top bar.
@@ -79,6 +79,14 @@ export component AppWindow inherits Window {
     in property <int> default-index;
     in property <bool> default-explicit;
     in-out property <int> card-editing: -1;
+    // The flags of the card being arranged (Linux entries), and what a tap on
+    // one, or on Edit…, asks of the app. `card-editing` changing tells the app
+    // to fetch them.
+    in property <[FlagChip]> card-flags;
+    callback card-flag-toggled(int);
+    callback card-edit-cmdline(int);
+    callback card-editing-changed(int);
+    changed card-editing => { root.card-editing-changed(root.card-editing); }
     callback card-move(int, int);
     callback card-default(int);
     callback open-menu();
@@ -263,6 +271,9 @@ export component AppWindow inherits Window {
             default-index: root.default-index;
             default-explicit: root.default-explicit;
             editing <=> root.card-editing;
+            flags: root.card-flags;
+            flag-toggled(i) => { root.card-flag-toggled(i); }
+            edit-cmdline(i) => { root.card-edit-cmdline(i); }
             move(i, by) => { root.card-move(i, by); }
             make-default(i) => { root.card-default(i); }
         }

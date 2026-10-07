@@ -37,11 +37,21 @@ type Settings struct {
 	// distro.Options): "on" or "off". One not here leaves an entry's own
 	// words alone.
 	Options map[string]string `json:"options,omitempty"`
+	// EntryOptions are the same switches set for one entry (by key, as
+	// Order's), which win over Options for it.
+	EntryOptions map[string]map[string]string `json:"entry_options,omitempty"`
 }
 
 func (s Settings) clone() Settings {
 	s.Order = slices.Clone(s.Order)
 	s.Options = maps.Clone(s.Options)
+	if s.EntryOptions != nil {
+		eo := make(map[string]map[string]string, len(s.EntryOptions))
+		for k, v := range s.EntryOptions {
+			eo[k] = maps.Clone(v)
+		}
+		s.EntryOptions = eo
+	}
 	if s.Autoboot != nil {
 		on := *s.Autoboot
 		s.Autoboot = &on

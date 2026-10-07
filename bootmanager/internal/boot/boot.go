@@ -512,7 +512,7 @@ func (m *Manager) Handover(img boot.OSImage) error {
 			// over it.
 			log.Printf("booting %s: command line edited for this boot: %s", img.Label(), *one)
 			li.Cmdline = *one
-		} else if edited := m.optionsCmdline(li.Cmdline); edited != li.Cmdline {
+		} else if edited := m.optionsCmdline(img, li.Cmdline); edited != li.Cmdline {
 			log.Printf("booting %s: command line by options: %s", img.Label(), edited)
 			li.Cmdline = edited
 		}

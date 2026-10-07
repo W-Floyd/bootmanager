@@ -96,6 +96,20 @@ func (a *app) register() {
 		err := a.boot.SetOption(x.ID, x.State)
 		return a.boot.Options(), err
 	})
+	// The same switches for one entry (the long-press bar's chips): as it
+	// will boot, and one changed for it alone.
+	rpc.Handle(s, "boot.entry.options", func(x struct{ Index int }) (any, error) { return a.boot.EntryOptions(x.Index) })
+	rpc.Handle(s, "boot.entry.option.set", func(x struct {
+		Index int
+		ID    string
+		State string
+	}) (any, error) {
+		a.disks.UnmountAll()
+		if err := a.boot.SetEntryOption(x.Index, x.ID, x.State); err != nil {
+			return nil, err
+		}
+		return a.boot.EntryOptions(x.Index)
+	})
 	rpc.Handle(s, "service.list", func(none) (any, error) { return a.svcs.List(), nil })
 	rpc.Handle(s, "service.set", afterReady(a, func(x struct {
 		Name    string
