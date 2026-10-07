@@ -1,16 +1,12 @@
 package luks
 
-import (
-	"bytes"
-	"sync"
-
-	"github.com/u-root/u-root/pkg/cpio"
-)
+import "sync"
 
 // KeyFile is where the booted system's initramfs finds the passphrase the
-// Boot Manager was given for its root: the extra archive KeyInitrd builds
-// holds it under this name. The pmOS unlocker (fde-unlock) tries it first
-// and deletes it.
+// Boot Manager was given for its root: the extra archive appended to the
+// initramfs holds it under this name, readable by root only and exactly the
+// passphrase's bytes. The pmOS unlocker (fde-unlock) tries it first and
+// deletes it.
 const KeyFile = "bman-unlock.key"
 
 // Keyring remembers the passphrases the volumes were unlocked with, by LUKS
@@ -64,19 +60,4 @@ func (k *Keyring) Take(uuid string) []byte {
 		}
 	}
 	return pass
-}
-
-// KeyInitrd is a cpio archive (newc) with one file, KeyFile, readable by
-// root only and holding exactly the passphrase's bytes: appended to an
-// initramfs, which the kernel unpacks archive after archive.
-func KeyInitrd(pass []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	w := cpio.Newc.Writer(&buf)
-	if err := w.WriteRecord(cpio.StaticFile(KeyFile, string(pass), 0o400)); err != nil {
-		return nil, err
-	}
-	if err := cpio.WriteTrailer(w); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }

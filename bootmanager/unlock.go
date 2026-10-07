@@ -32,7 +32,7 @@ func (a *app) registerUnlock() {
 			return nil, err
 		}
 		// The system on this volume asks for the passphrase again in its
-		// initramfs: keep it for that boot (keyForCmdline), in memory only.
+		// initramfs: keep it for that boot (unlockKeyFor), in memory only.
 		runner := luks.Runner{Bin: *cryptsetupBin}
 		if uuid, err := runner.UUID(x.Dev); err == nil {
 			a.keys.Put(x.Dev, uuid, []byte(x.Passphrase))
@@ -66,27 +66,15 @@ func (a *app) registerUnlock() {
 	}))
 }
 
-// keyForCmdline is boot.Config.InitrdExtra: the archive that carries the
-// passphrase of the encrypted root a command line names (pmos_root_uuid=),
-// when this stage unlocked that volume; nil otherwise. The key is used once:
-// the booted system's initramfs tries it, deletes it, and asks for the
-// passphrase itself if it does not open the root.
-func (a *app) keyForCmdline(cmdline string) []byte {
+// unlockKeyFor is the passphrase this stage unlocked the encrypted root a
+// command line names (pmos_root_uuid=) with, nil if it did not. It goes to one
+// boot: Take forgets it.
+func (a *app) unlockKeyFor(cmdline string) []byte {
 	uuid := cmdlineValue(cmdline, "pmos_root_uuid")
 	if uuid == "" {
 		return nil
 	}
-	pass := a.keys.Take(strings.ToLower(uuid))
-	if pass == nil {
-		return nil
-	}
-	defer clear(pass)
-	b, err := luks.KeyInitrd(pass)
-	if err != nil {
-		log.Printf("unlock key for %s: %v (the boot will ask for it)", uuid, err)
-		return nil
-	}
-	return b
+	return a.keys.Take(strings.ToLower(uuid))
 }
 
 // cmdlineValue is the value of key=value on a kernel command line, "" if

@@ -139,7 +139,7 @@ func main() {
 		Settings:          *settingsFile,
 		Emit:              a.rpc.Broadcast,
 		Teardown:          a.teardown,
-		InitrdExtra:       a.keyForCmdline,
+		InitrdExtra:       a.extraInitrd,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },
