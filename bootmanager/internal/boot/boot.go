@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 	"github.com/u-root/u-root/pkg/mount/block"
 	"github.com/u-root/u-root/pkg/ulog"
 	"golang.org/x/sys/unix"
+
+	"bootmanager.local/bootmanager/internal/distro"
 )
 
 type Config struct {
@@ -55,7 +58,10 @@ type Config struct {
 	// kernel unpacks an initramfs archive after archive, so this is how a
 	// secret (an unlocked volume's passphrase) reaches the booted system
 	// without a command line or a file on disk.
-	InitrdExtra func(cmdline string) []byte
+	//
+	// It returns the archive, and words to add to the entry's command line
+	// for it (none when the archive needs none).
+	InitrdExtra func(cmdline string) (archive []byte, cmdlineWords []string)
 	// Settings is where the entries' order and default are kept
 	// (settingsFile): PATH or DEV:PATH. Empty: for this run only.
 	Settings string
@@ -456,7 +462,16 @@ func (m *Manager) Handover(img boot.OSImage) error {
 
 	log.Printf("booting %s", img)
 	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.InitrdExtra != nil {
-		if extra := m.cfg.InitrdExtra(li.Cmdline); len(extra) > 0 {
+		if extra, words := m.cfg.InitrdExtra(li.Cmdline); len(extra) > 0 {
+			// What the extra archive needs the system to be told (where its
+			// unlock key is, for a distribution whose initramfs wants that on
+			// the command line); a word already there is the user's.
+			for _, w := range words {
+				key, _, _ := strings.Cut(w, "=")
+				if !distro.HasWord(li.Cmdline, key) {
+					li.Cmdline += " " + w
+				}
+			}
 			if li.Initrd != nil {
 				li.Initrd = boot.CatInitrds(li.Initrd, bytes.NewReader(extra))
 			} else {

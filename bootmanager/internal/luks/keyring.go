@@ -2,17 +2,11 @@ package luks
 
 import "sync"
 
-// KeyFile is where the booted system's initramfs finds the passphrase the
-// Boot Manager was given for its root: the extra archive appended to the
-// initramfs holds it under this name, readable by root only and exactly the
-// passphrase's bytes. The pmOS unlocker (fde-unlock) tries it first and
-// deletes it.
-const KeyFile = "bman-unlock.key"
-
 // Keyring remembers the passphrases the volumes were unlocked with, by LUKS
 // UUID, so a boot of the system on one of them need not ask again. Nothing
 // is written anywhere: they live here, and in the archive handed to the
-// booted kernel.
+// booted kernel (how the system takes it is the distribution's: see
+// internal/distro).
 type Keyring struct {
 	mu   sync.Mutex
 	keys map[string][]byte // uuid -> passphrase

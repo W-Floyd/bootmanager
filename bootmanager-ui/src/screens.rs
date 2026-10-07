@@ -50,6 +50,9 @@ pub enum Screen {
     BootInfo(Load<SlotsInfo>),
     /// The menu of what can be inspected: Battery and Boot.
     Diagnostics,
+    /// What this is built with, and under which licences: Slint's
+    /// Royalty-Free licence asks for the attribution to be shown here.
+    About,
 }
 
 /// Where an unlock attempt stands, on the Unlock screen.
@@ -196,6 +199,7 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             rows.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks(Load::Waiting))));
             rows.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log(Load::Waiting))));
             rows.push((row("Diagnostics", "Battery, boot slots and the bootloader", "nav", false), Action::Open(Screen::Diagnostics)));
+            rows.push((row("About", "Credits and licences", "nav", false), Action::Open(Screen::About)));
             rows.push((row("Reboot", "", "action", false), Action::Reboot(String::new())));
             for m in &s.modes {
                 rows.push((row(format!("Reboot to {m}"), "", "action", false), Action::Reboot(m.clone())));
@@ -421,6 +425,16 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             rows.push((row("Battery", power, "nav", false), Action::Open(Screen::Battery)));
             rows.push((row("Boot", "A/B slots and the bootloader's state", "nav", false), Action::Open(Screen::BootInfo(Load::Waiting))));
             ("Diagnostics".into(), "What the device reports".into(), rows)
+        }
+        Screen::About => {
+            rows.push(info("Boot Manager", format!("Version {}", env!("CARGO_PKG_VERSION"))));
+            // Slint's Royalty-Free licence, for desktop, mobile and web: the
+            // attribution it asks for.
+            rows.push(info("User interface: Slint", "Built with Slint (slint.dev), used under the Slint Royalty-Free License"));
+            rows.push(info("Boot stage", "Linux (GPL-2.0), u-root (BSD-3-Clause), Go (BSD-3-Clause)"));
+            rows.push(info("Logos", "postmarketOS (CC-BY-SA-4.0), Android robot by Google (CC-BY-3.0), Debian Open Use Logo (LGPL-3.0-or-later, CC-BY-SA-3.0)"));
+            rows.push(info("Typeface", "DejaVu Sans (Bitstream Vera and Arev licences)"));
+            ("About".into(), "Credits and licences".into(), rows)
         }
         Screen::BootInfo(d) => {
             rows.extend(pending(d, "Reading…"));

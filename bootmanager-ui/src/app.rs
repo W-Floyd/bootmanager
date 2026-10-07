@@ -541,7 +541,7 @@ impl App {
                     a.state.borrow_mut().autoboot = Some(v);
                 }
             }),
-            Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics => {}
+            Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics | Screen::About => {}
         }
     }
 

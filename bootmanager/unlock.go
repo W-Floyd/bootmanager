@@ -65,25 +65,3 @@ func (a *app) registerUnlock() {
 		return nil, luks.Runner{Bin: *cryptsetupBin}.Lock(x.Dev)
 	}))
 }
-
-// unlockKeyFor is the passphrase this stage unlocked the encrypted root a
-// command line names (pmos_root_uuid=) with, nil if it did not. It goes to one
-// boot: Take forgets it.
-func (a *app) unlockKeyFor(cmdline string) []byte {
-	uuid := cmdlineValue(cmdline, "pmos_root_uuid")
-	if uuid == "" {
-		return nil
-	}
-	return a.keys.Take(strings.ToLower(uuid))
-}
-
-// cmdlineValue is the value of key=value on a kernel command line, "" if
-// there is none.
-func cmdlineValue(cmdline, key string) string {
-	for _, f := range strings.Fields(cmdline) {
-		if v, ok := strings.CutPrefix(f, key+"="); ok {
-			return v
-		}
-	}
-	return ""
-}
