@@ -575,7 +575,9 @@ extern "C" fn on_term(_: libc::c_int) {
 /// for the moment before the display manager draws.
 pub fn release_console_now() {
     use std::io::Write;
-    if let Ok(mut tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty0") {
+    // VT 1, where the initramfs left it: not /dev/tty0, which is whichever
+    // VT is current, and on a running system that is the compositor's.
+    if let Ok(mut tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty1") {
         // Clear, home, hide the cursor.
         let _ = tty.write_all(b"\x1b[2J\x1b[H\x1b[?25l");
         unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(&tty), KDSETMODE as _, KD_TEXT) };
