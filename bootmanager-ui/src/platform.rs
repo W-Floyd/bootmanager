@@ -1107,7 +1107,13 @@ impl Platform for FbPlatform {
                 self.vsync.set(false);
                 eprintln!("bootmanager-ui: t={:.3} vertical blank wait off (/tmp/ui-novsync)", inputlog::t());
             }
-            if last_frame.elapsed() >= frame && self.draw() {
+            // With the blank to wait on, the draw paces itself: a frame
+            // starts as soon as the last one is out. Gated on the last
+            // frame's start, as the timer is, a late start put the next one
+            // late too and the lateness fed itself.
+            let vsync = self.vsync.get();
+            let drew = (vsync || last_frame.elapsed() >= frame) && self.draw();
+            if drew {
                 last_frame = frame_start;
             }
 
@@ -1120,13 +1126,19 @@ impl Platform for FbPlatform {
             // after that, only an animation needs the next one.
             let mut timeout = Duration::from_secs(3);
             let since = last_frame.elapsed();
-            if since < frame {
+            if vsync {
+                // The draw waited for the blank: look for the next frame
+                // at once. If there was nothing to draw yet but an
+                // animation runs, look again shortly.
+                if drew {
+                    timeout = Duration::ZERO;
+                } else if self.window.has_active_animations() {
+                    timeout = Duration::from_millis(2);
+                }
+            } else if since < frame {
                 timeout = frame - since;
             } else if self.window.has_active_animations() {
-                // With the blank to wait on, the draw itself paces the next
-                // frame; sleeping a refresh here, after a frame that has
-                // already taken most of one, skipped a blank every time.
-                timeout = if self.vsync.get() { Duration::ZERO } else { frame };
+                timeout = frame;
             }
             if let Some(t) = slint::platform::duration_until_next_timer_update() {
                 timeout = timeout.min(t);
