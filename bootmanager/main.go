@@ -33,6 +33,7 @@ import (
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 
 	"bootmanager.local/bootmanager/internal/boot"
+	"bootmanager.local/bootmanager/internal/luks"
 	"bootmanager.local/bootmanager/internal/rpc"
 	"bootmanager.local/bootmanager/internal/storage"
 	"bootmanager.local/bootmanager/internal/svc"
@@ -74,6 +75,7 @@ type app struct {
 	ui       *uiproc.Supervisor
 	web      *webServer
 	battery  batteryLevel
+	keys     luks.Keyring // passphrases of the volumes unlocked here, for one boot each
 
 	ready     chan struct{} // closed once the stage is set up
 	readyOnce sync.Once
@@ -137,6 +139,7 @@ func main() {
 		Settings:          *settingsFile,
 		Emit:              a.rpc.Broadcast,
 		Teardown:          a.teardown,
+		InitrdExtra:       a.keyForCmdline,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },

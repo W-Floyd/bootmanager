@@ -1,0 +1,14 @@
+{
+  "name": "Google Pixel 9a",
+  "x-res": 1080,
+  "y-res": 2424,
+  "width": 64,
+  "height": 145,
+  "corner-radii": [115, 115, 115, 115],
+  "cutouts": [
+    {
+      "name": "camera",
+      "path": "M 581.5,86 a 41.5,41.5 0 0 0 -83,0 a 41.5,41.5 0 0 0 83,0 Z"
+    }
+  ]
+}

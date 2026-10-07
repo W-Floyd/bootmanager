@@ -1,0 +1,14 @@
+{
+  "name": "Motorola Moto G Play (2024)",
+  "x-res": 720,
+  "y-res": 1600,
+  "border-radius": 42,
+  "width": 68,
+  "height": 151,
+  "cutouts": [
+    {
+      "name": "camera",
+      "path": "M 325,0 L 395,0 L 395,80 L 325,80 Z"
+    }
+  ]
+}

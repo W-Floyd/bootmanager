@@ -8,6 +8,7 @@
 package boot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +50,12 @@ type Config struct {
 	// Teardown runs just before a handover, and before power actions:
 	// whatever must not outlive the stage (the UI, services, mounts).
 	Teardown func()
+	// InitrdExtra, when set, is asked at a handover for what to append to a
+	// Linux entry's initramfs, given its command line: nil for nothing. The
+	// kernel unpacks an initramfs archive after archive, so this is how a
+	// secret (an unlocked volume's passphrase) reaches the booted system
+	// without a command line or a file on disk.
+	InitrdExtra func(cmdline string) []byte
 	// Settings is where the entries' order and default are kept
 	// (settingsFile): PATH or DEV:PATH. Empty: for this run only.
 	Settings string
@@ -436,6 +443,16 @@ func (m *Manager) Handover(img boot.OSImage) error {
 	}()
 
 	log.Printf("booting %s", img)
+	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.InitrdExtra != nil {
+		if extra := m.cfg.InitrdExtra(li.Cmdline); len(extra) > 0 {
+			if li.Initrd != nil {
+				li.Initrd = boot.CatInitrds(li.Initrd, bytes.NewReader(extra))
+			} else {
+				li.Initrd = bytes.NewReader(extra)
+			}
+			log.Printf("booting %s: the unlock key goes with its initramfs", img.Label())
+		}
+	}
 	m.cfg.Emit("busy", map[string]string{"text": "Loading " + img.Label() + "…"})
 	if err := img.Load(boot.WithLogger(ulog.Log)); err != nil {
 		return fmt.Errorf("load %s: %w", img.Label(), err)

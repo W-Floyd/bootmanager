@@ -1,0 +1,82 @@
+package luks
+
+import (
+	"bytes"
+	"sync"
+
+	"github.com/u-root/u-root/pkg/cpio"
+)
+
+// KeyFile is where the booted system's initramfs finds the passphrase the
+// Boot Manager was given for its root: the extra archive KeyInitrd builds
+// holds it under this name. The pmOS unlocker (fde-unlock) tries it first
+// and deletes it.
+const KeyFile = "bman-unlock.key"
+
+// Keyring remembers the passphrases the volumes were unlocked with, by LUKS
+// UUID, so a boot of the system on one of them need not ask again. Nothing
+// is written anywhere: they live here, and in the archive handed to the
+// booted kernel.
+type Keyring struct {
+	mu   sync.Mutex
+	keys map[string][]byte // uuid -> passphrase
+	dev  map[string]string // device -> uuid
+}
+
+// Put keeps the passphrase that opened dev, a volume with the LUKS uuid.
+func (k *Keyring) Put(dev, uuid string, pass []byte) {
+	if uuid == "" {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.keys == nil {
+		k.keys, k.dev = map[string][]byte{}, map[string]string{}
+	}
+	k.keys[uuid] = append([]byte(nil), pass...)
+	k.dev[dev] = uuid
+}
+
+// Forget drops what dev's passphrase was, as the volume is closed.
+func (k *Keyring) Forget(dev string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if uuid, ok := k.dev[dev]; ok {
+		clear(k.keys[uuid])
+		delete(k.keys, uuid)
+		delete(k.dev, dev)
+	}
+}
+
+// Take returns the passphrase for the volume with this LUKS uuid, and
+// forgets it: it goes to one boot.
+func (k *Keyring) Take(uuid string) []byte {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	pass, ok := k.keys[uuid]
+	if !ok {
+		return nil
+	}
+	delete(k.keys, uuid)
+	for dev, u := range k.dev {
+		if u == uuid {
+			delete(k.dev, dev)
+		}
+	}
+	return pass
+}
+
+// KeyInitrd is a cpio archive (newc) with one file, KeyFile, readable by
+// root only and holding exactly the passphrase's bytes: appended to an
+// initramfs, which the kernel unpacks archive after archive.
+func KeyInitrd(pass []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := cpio.Newc.Writer(&buf)
+	if err := w.WriteRecord(cpio.StaticFile(KeyFile, string(pass), 0o400)); err != nil {
+		return nil, err
+	}
+	if err := cpio.WriteTrailer(w); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}

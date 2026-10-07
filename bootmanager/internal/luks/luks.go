@@ -89,6 +89,22 @@ func (r Runner) Unlock(dev string, passphrase []byte) (string, error) {
 	return d, nil
 }
 
+// UUID is the LUKS UUID of /dev/<dev>: what a pmOS command line names its
+// root by (pmos_root_uuid=). Lower case, as the initramfs compares it.
+func (r Runner) UUID(dev string) (string, error) {
+	if dev == "" || strings.ContainsAny(dev, "/.") {
+		return "", fmt.Errorf("bad device %q", dev)
+	}
+	out, code, err := r.run(nil, "luksUUID", "/dev/"+dev)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("cryptsetup: %s", lastLine(out))
+	}
+	return strings.ToLower(strings.TrimSpace(string(out))), nil
+}
+
 // Lock closes the volume behind dm-N.
 func (r Runner) Lock(dmdev string) error {
 	name := storage.DMName(dmdev)
