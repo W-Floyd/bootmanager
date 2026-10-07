@@ -39,6 +39,10 @@ pub struct Unlocked {
 pub struct Entry {
     pub label: String,
     pub detail: String,
+    /// Where the entry was found ("microSD card", "UFS userdata (encrypted)"),
+    /// to tell entries of one name apart; empty if unknown.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Deserialize)]

@@ -64,6 +64,16 @@ fn subtitle(cmdline: &str) -> String {
     }
 }
 
+/// The subtitle with where the entry lives ahead of it: two installs of the
+/// same system differ in nothing else a person can see.
+fn with_source(source: &str, subtitle: String) -> String {
+    match (source.is_empty(), subtitle.is_empty()) {
+        (true, _) => subtitle,
+        (false, true) => source.to_string(),
+        (false, false) => format!("{source} · {subtitle}"),
+    }
+}
+
 fn card(title: &str, subtitle: String, tag: &str, l: &Look, variant: i32) -> Card {
     Card { title: title.into(), subtitle: subtitle.into(), tag: tag.into(), icon: l.icon.into(), a: rgb(l.a), b: rgb(l.b), variant }
 }
@@ -81,7 +91,7 @@ pub fn build(entries: &[Entry], default: usize) -> Vec<Card> {
                 t if t.eq_ignore_ascii_case(&e.label) => "",
                 t => t,
             };
-            card(&e.label, subtitle(&e.detail), tag, l, (i % 3) as i32)
+            card(&e.label, with_source(&e.source, subtitle(&e.detail)), tag, l, (i % 3) as i32)
         })
         .collect();
     cards.push(card("Tools", "Services, partitions, log, power".into(), MENU.tag, &MENU, 2));
@@ -93,7 +103,20 @@ mod tests {
     use super::*;
 
     fn entry(label: &str, detail: &str) -> Entry {
-        Entry { label: label.into(), detail: detail.into() }
+        Entry { label: label.into(), detail: detail.into(), source: String::new() }
+    }
+
+    #[test]
+    fn two_installs_of_one_system() {
+        let mut sd = entry("postmarketOS", "pmos_root_uuid=8e7b");
+        sd.source = "microSD card".into();
+        let mut ufs = entry("postmarketOS", "pmos_root_uuid=5ce4");
+        ufs.source = "UFS userdata (encrypted)".into();
+        let cards = build(&[sd, ufs, entry("Android", "")], 0);
+        assert_eq!(cards[0].subtitle, "microSD card");
+        assert_eq!(cards[1].subtitle, "UFS userdata (encrypted)");
+        assert_eq!(cards[2].subtitle, "");
+        assert_eq!(with_source("microSD card", "/dev/sda2".into()), "microSD card · /dev/sda2");
     }
 
     #[test]

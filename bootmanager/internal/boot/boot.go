@@ -121,6 +121,9 @@ func (m *Manager) setImages(imgs []boot.OSImage) {
 type Entry struct {
 	Label  string `json:"label"`
 	Detail string `json:"detail"`
+	// Source is where the entry was found ("microSD card", "UFS userdata
+	// (encrypted)"), to tell apart entries of the same name; "" if unknown.
+	Source string `json:"source"`
 }
 
 type Entries struct {
@@ -151,6 +154,7 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	if err != nil {
 		return nil, err
 	}
+	imgs = append(imgs, bootDirEntries(m.pool.MountPoints)...)
 	f := cmdline.NewUpdateFilter("", []string{"console"}, []string{"console"})
 	boot.ApplyLinuxModifiers(imgs, func(li *boot.LinuxImage) {
 		li.Cmdline = f.Update(cmdline.NewCmdLine(), li.Cmdline)
@@ -400,7 +404,7 @@ func (m *Manager) List() Entries {
 		if li, ok := img.(*boot.LinuxImage); ok {
 			detail = li.Cmdline
 		}
-		e.Entries = append(e.Entries, Entry{Label: img.Label(), Detail: detail})
+		e.Entries = append(e.Entries, Entry{Label: img.Label(), Detail: detail, Source: sourceOf(img)})
 	}
 	return e
 }

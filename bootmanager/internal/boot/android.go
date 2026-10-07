@@ -35,7 +35,7 @@ const AndroidImage = "android/boot.img"
 // androidEntries returns an entry per Android boot image found, or none
 // when the stage kept no bootloader tree.
 func androidEntries(mounts []*mount.MountPoint, devs block.BlockDevices, partitions []string, bootloaderDir string) []boot.OSImage {
-	if bootloaderDir == "" {
+	if bootloaderDir == "" || userdataReplaced(devs) {
 		return nil
 	}
 	fdtBytes, err := os.ReadFile(filepath.Join(bootloaderDir, "fdt"))
