@@ -39,6 +39,7 @@ import (
 
 	uboot "github.com/u-root/u-root/pkg/boot"
 
+	"bootmanager.local/bootmanager/internal/fastboot"
 	"bootmanager.local/bootmanager/internal/rpc"
 	"bootmanager.local/bootmanager/internal/svc"
 )
@@ -78,6 +79,13 @@ func (dev) register(a *app) {
 		}
 		return builtin()
 	}
+	// A fake flash event, to see the flash screen without flashing: the
+	// body is a fastboot.Progress (phase, name, piece, recv, recv_total,
+	// wrote, wrote_total, end, total); an empty phase clears the screen.
+	rpc.Handle(a.rpc, "dev.flash", func(p fastboot.Progress) (any, error) {
+		a.rpc.Broadcast("flash", flashEvent{p})
+		return nil, nil
+	})
 	rpc.Handle(a.rpc, "dev.restart", func(x struct{ What string }) (any, error) {
 		switch x.What {
 		case "ui":

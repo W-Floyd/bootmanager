@@ -14,6 +14,7 @@ import { Carousel } from "carousel.slint";
 import { Splash } from "splash.slint";
 import { UnlockWindow } from "unlock.slint";
 import { BatteryIndicator } from "battery.slint";
+import { FlashScreen } from "flash.slint";
 
 export { Card, Row, VirtualKeyboardHandler, UnlockWindow }
 
@@ -36,6 +37,18 @@ export component AppWindow inherits Window {
     // down from the top edge.
     property <length> side-pad: max(18px, root.corner-radius / 2);
     in property <string> busy;
+    // A fastboot flash under way: its screen holds the whole window.
+    in property <bool> flash-active;
+    in property <bool> flash-finished;
+    in property <string> flash-title;
+    in property <float> flash-overall;
+    in property <string> flash-overall-text;
+    in property <float> flash-recv;
+    in property <string> flash-recv-text;
+    in property <float> flash-write;
+    in property <string> flash-write-text;
+    callback flash-stop();
+    callback flash-close();
     // The battery indicator, top right, while there is a battery.
     in property <bool> battery-present;
     in property <int> battery-percent: -1;
@@ -96,6 +109,9 @@ export component AppWindow inherits Window {
     }
     public function focus-menu() {
         list.focus();
+    }
+    public function focus-flash() {
+        flash.grab();
     }
     public function focus-viewer() {
         viewer.focus();
@@ -494,6 +510,21 @@ export component AppWindow inherits Window {
             width: parent.width - 48px;
         }
         TouchArea { }
+    }
+
+    // A fastboot flash: held on this screen to the end, or the stop.
+    flash := FlashScreen {
+        visible: root.flash-active;
+        finished: root.flash-finished;
+        title: root.flash-title;
+        overall: root.flash-overall;
+        overall-text: root.flash-overall-text;
+        recv: root.flash-recv;
+        recv-text: root.flash-recv-text;
+        write: root.flash-write;
+        write-text: root.flash-write-text;
+        stop => { root.flash-stop(); }
+        close => { root.flash-close(); }
     }
 
     // The first frame fades up from black.

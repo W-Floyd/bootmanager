@@ -71,6 +71,8 @@ pub struct State {
     pub autoboot: Option<proto::AutobootSettings>,
     /// The battery's level (the "battery" event), for the indicator.
     pub battery: Option<proto::Battery>,
+    /// A fastboot flash under way (the "flash" event), for its screen.
+    pub flash: proto::Flash,
     /// Every power supply's properties, read when Diagnostics opens.
     pub supplies: Vec<proto::Supply>,
     /// The stage has the checkers (an optional part of a stage build).
@@ -116,6 +118,9 @@ pub struct App {
     power_timer: slint::Timer,
     /// Dev stage only: reads the frame rate for the on-screen counter.
     fps_timer: slint::Timer,
+    /// Whether the flash screen was up at the last draw, to move the focus
+    /// onto it, and back, when that changes.
+    flash_shown: std::cell::Cell<bool>,
 }
 
 impl State {
@@ -143,6 +148,7 @@ impl App {
                 fsck: FsckRun::Idle,
                 autoboot: None,
                 battery: None,
+                flash: proto::Flash::default(),
                 supplies: vec![],
                 fsck_available: false,
                 luks_available: false,
@@ -168,6 +174,7 @@ impl App {
             last_route: RefCell::new("/".into()),
             power_timer: slint::Timer::default(),
             fps_timer: slint::Timer::default(),
+            flash_shown: std::cell::Cell::new(false),
         });
         let weak = Rc::downgrade(&app);
         let on = move |f: fn(&Rc<App>)| {
@@ -215,6 +222,19 @@ impl App {
         ui.on_card_default(move |i| {
             if let Some(a) = weak.upgrade() {
                 a.default_card(i as usize)
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_flash_stop(move || {
+            if let Some(a) = weak.upgrade() {
+                a.stop_flash()
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        ui.on_flash_close(move || {
+            if let Some(a) = weak.upgrade() {
+                a.state.borrow_mut().flash = proto::Flash::default();
+                a.render();
             }
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
@@ -364,6 +384,7 @@ impl App {
             Event::Services(v) => s.services = v,
             Event::Error(e) => s.error = e,
             Event::Battery(b) => s.battery = Some(b),
+            Event::Flash(f) => s.flash = f,
             Event::Fsck(f) => {
                 if matches!(&s.screen, Screen::Fsck { dev, .. } if *dev == f.dev) && matches!(s.fsck, FsckRun::Running(_)) {
                     s.fsck = FsckRun::Running(f.line);
@@ -654,6 +675,20 @@ impl App {
         }
     }
 
+    /// The flash screen's emergency stop: fastboot off, which the backend
+    /// answers by aborting the flash and clearing the screen. Cleared here
+    /// as well, in case the answer never comes.
+    fn stop_flash(self: &Rc<Self>) {
+        self.call("service.set", json!({"name": "fastboot", "running": false}), |a, r| {
+            let mut s = a.state.borrow_mut();
+            match r {
+                Ok(v) => s.services = v,
+                Err(e) => s.error = e,
+            }
+            s.flash = proto::Flash::default();
+        });
+    }
+
     fn close_menu(self: &Rc<Self>) {
         if crate::fps::enabled() {
             eprintln!("bootmanager-ui: t={:.3} close_menu", crate::inputlog::t());
@@ -854,6 +889,23 @@ impl App {
             }
             _ => ui.set_battery_present(false),
         }
+        set_flash(&ui, &s.flash);
+        let flash_up = !s.flash.phase.is_empty();
+        if flash_up != self.flash_shown.replace(flash_up) {
+            // The focus moves from the next turn of the loop, not from here:
+            // a move made inside the event that caused it does not hold
+            // (see close_menu).
+            let (weak, menu) = (self.ui.clone(), s.menu_open);
+            slint::Timer::single_shot(std::time::Duration::from_millis(0), move || {
+                if let Some(ui) = weak.upgrade() {
+                    match (flash_up, menu) {
+                        (true, _) => ui.invoke_focus_flash(),
+                        (false, true) => ui.invoke_focus_menu(),
+                        (false, false) => ui.invoke_focus_home(),
+                    }
+                }
+            });
+        }
         ui.set_launching(s.launching);
         ui.set_remaining(if connected { s.countdown as i32 } else { -1 });
         ui.set_total(s.countdown_total.max(1) as i32);
@@ -948,4 +1000,121 @@ fn thumb_image(t: &Thumb) -> Option<Image> {
         return None;
     }
     Some(Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&px, t.width, t.height)))
+}
+
+// --- the flash screen ---
+
+/// What the flash screen shows for a flash event: the whole image, and the
+/// piece being received and written.
+#[derive(Debug, PartialEq)]
+struct FlashView {
+    active: bool,
+    finished: bool,
+    title: String,
+    overall: f32,
+    overall_text: String,
+    recv: f32,
+    recv_text: String,
+    write: f32,
+    write_text: String,
+}
+
+fn size_text(bytes: i64) -> String {
+    const MIB: f64 = 1024. * 1024.;
+    let b = bytes.max(0) as f64;
+    if b >= 1024. * MIB {
+        format!("{:.2} GB", b / (1024. * MIB))
+    } else {
+        format!("{:.0} MB", b / MIB)
+    }
+}
+
+fn fraction(part: i64, whole: i64) -> f32 {
+    if whole <= 0 {
+        0.
+    } else {
+        (part as f32 / whole as f32).clamp(0., 1.)
+    }
+}
+
+fn flash_view(f: &proto::Flash) -> FlashView {
+    let finished = f.phase == "finished";
+    let name = if f.name.is_empty() { "the device" } else { &f.name };
+    let piece = f.piece.max(1);
+    let overall = if finished { 1. } else { fraction(f.end, f.total) };
+    let overall_text = if f.total > 0 {
+        let end = if finished { f.total } else { f.end };
+        format!("{} of {} written · {:.0}%", size_text(end), size_text(f.total), overall * 100.)
+    } else {
+        String::new()
+    };
+    let (recv, recv_text) = match f.phase.as_str() {
+        "receiving" => (fraction(f.recv, f.recv_total), format!("Receiving piece {piece}: {} of {}", size_text(f.recv), size_text(f.recv_total))),
+        "writing" | "waiting" | "done" | "finished" => (1., format!("Piece {piece} received")),
+        _ => (0., String::new()),
+    };
+    let (write, write_text) = match f.phase.as_str() {
+        "receiving" => (0., format!("Piece {piece} waits to be written")),
+        "writing" => (fraction(f.wrote, f.wrote_total), format!("Writing piece {piece}: {} of {}", size_text(f.wrote), size_text(f.wrote_total))),
+        "waiting" | "done" | "finished" => (1., format!("Piece {piece} written")),
+        _ => (0., String::new()),
+    };
+    FlashView {
+        active: !f.phase.is_empty(),
+        finished,
+        title: if finished { format!("Flashed {name}") } else { format!("Flashing {name}") },
+        overall,
+        overall_text,
+        recv,
+        recv_text,
+        write,
+        write_text,
+    }
+}
+
+fn set_flash(ui: &AppWindow, f: &proto::Flash) {
+    let v = flash_view(f);
+    ui.set_flash_active(v.active);
+    ui.set_flash_finished(v.finished);
+    ui.set_flash_title(v.title.into());
+    ui.set_flash_overall(v.overall);
+    ui.set_flash_overall_text(v.overall_text.into());
+    ui.set_flash_recv(v.recv);
+    ui.set_flash_recv_text(v.recv_text.into());
+    ui.set_flash_write(v.write);
+    ui.set_flash_write_text(v.write_text.into());
+}
+
+#[cfg(test)]
+mod flash_tests {
+    use super::*;
+
+    fn flash(phase: &str) -> proto::Flash {
+        proto::Flash { phase: phase.into(), name: "sde27".into(), piece: 3, total: 3_000_000_000, end: 750_000_000, ..Default::default() }
+    }
+
+    #[test]
+    fn a_piece_coming_in() {
+        let v = flash_view(&proto::Flash { recv: 100 << 20, recv_total: 200 << 20, ..flash("receiving") });
+        assert!(v.active && !v.finished);
+        assert_eq!(v.title, "Flashing sde27");
+        assert_eq!((v.recv, v.write), (0.5, 0.));
+        assert_eq!(v.recv_text, "Receiving piece 3: 100 MB of 200 MB");
+        assert_eq!(v.overall_text, "715 MB of 2.79 GB written · 25%");
+    }
+
+    #[test]
+    fn a_piece_going_out() {
+        let v = flash_view(&proto::Flash { wrote: 50 << 20, wrote_total: 200 << 20, ..flash("writing") });
+        assert_eq!((v.recv, v.write), (1., 0.25));
+        assert_eq!(v.write_text, "Writing piece 3: 50 MB of 200 MB");
+    }
+
+    #[test]
+    fn finished_and_cleared() {
+        let v = flash_view(&flash("finished"));
+        assert!(v.finished);
+        assert_eq!((v.overall, v.title.as_str()), (1., "Flashed sde27"));
+        assert!(!flash_view(&proto::Flash::default()).active);
+    }
 }

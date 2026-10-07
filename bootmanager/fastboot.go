@@ -28,6 +28,7 @@ func (a *app) startFastboot() (func(), error) {
 	a.boot.CancelBy("switching fastboot on")
 	var mu sync.Mutex
 	var rescan *time.Timer
+	flash := newFlashScreen(a.rpc.Broadcast)
 	s := &fastboot.Server{
 		MaxDownload: maxDownload,
 		Vars:        map[string]string{"product": model()},
@@ -51,7 +52,8 @@ func (a *app) startFastboot() (func(), error) {
 			}
 			rescan = time.AfterFunc(rescanDelay, a.boot.Rescan)
 		},
-		Busy: func(text string) { a.rpc.Broadcast("busy", map[string]string{"text": text}) },
+		Busy:     func(text string) { a.rpc.Broadcast("busy", map[string]string{"text": text}) },
+		Progress: flash.Progress,
 		Reboot: func(mode string) {
 			if _, err := a.power(struct{ Action, Mode string }{"reboot", mode}); err != nil {
 				log.Printf("fastboot reboot: %v", err)
@@ -73,7 +75,21 @@ func (a *app) startFastboot() (func(), error) {
 	if serial := cmp.Or(bc["androidboot.serialno"], dtString("serial-number")); serial != "" {
 		s.Vars["serialno"] = serial
 	}
-	return fastboot.Start(*fastbootGadget, s)
+	stop, err := fastboot.Start(*fastbootGadget, s)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		// Switching it off stops a flash in progress, now: the emergency
+		// stop of the flash screen is this, a service set to off.
+		busy := flash.Active()
+		s.Abort()
+		stop()
+		flash.Reset()
+		if busy {
+			a.rpc.Broadcast("error", map[string]string{"message": "Fastboot stopped during a flash: the partition may be half written"})
+		}
+	}, nil
 }
 
 // dtString is a string property of the device tree's root, "" without it.

@@ -90,18 +90,45 @@ func parseSparse(b []byte) (*sparseImage, error) {
 // size is how much of the partition the image covers.
 func (sp *sparseImage) size() int64 { return sp.blocks * sp.blockSize }
 
-func (sp *sparseImage) writeTo(w Target) error {
+func (sp *sparseImage) writeTo(w Target) error { return sp.writeToProgress(w, nil) }
+
+// writeToProgress writes the image, telling step after each chunk how many
+// bytes it has written so far and where in the image that left it. An
+// error from step stops the write and is returned.
+func (sp *sparseImage) writeToProgress(w Target, step func(wrote, end int64) error) error {
 	var fill []byte
+	var wrote, end int64
+	done := func(off, n int64) error {
+		wrote, end = wrote+n, off+n
+		if step != nil {
+			return step(wrote, end)
+		}
+		return nil
+	}
 	for _, c := range sp.chunks {
+		// The same news again, before the next write: an error from step
+		// (a stop) takes effect before it, not after it.
+		if step != nil && wrote > 0 && (c.kind == chunkRaw || c.kind == chunkFill) {
+			if err := step(wrote, end); err != nil {
+				return err
+			}
+		}
 		off, n := c.block*sp.blockSize, c.blocks*sp.blockSize
 		switch c.kind {
 		case chunkRaw:
 			if _, err := w.WriteAt(c.data, off); err != nil {
 				return err
 			}
+			if err := done(off, n); err != nil {
+				return err
+			}
 		case chunkFill:
+			start, size := off, n
 			if z, ok := w.(zeroer); ok && le.Uint32(c.data) == 0 {
 				if err := z.ZeroRange(off, n); err == nil {
+					if err := done(start, size); err != nil {
+						return err
+					}
 					continue
 				}
 			}
@@ -118,7 +145,35 @@ func (sp *sparseImage) writeTo(w Target) error {
 				}
 				off, n = off+k, n-k
 			}
+			if err := done(start, size); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// dataBytes is how many bytes the image writes: its raw and fill chunks,
+// not the holes it skips.
+func (sp *sparseImage) dataBytes() int64 {
+	var n int64
+	for _, c := range sp.chunks {
+		if c.kind == chunkRaw || c.kind == chunkFill {
+			n += c.blocks * sp.blockSize
+		}
+	}
+	return n
+}
+
+// end is where the last chunk that writes anything ends: how far into the
+// whole image a piece got. A sparse piece usually ends in a hole up to the
+// image's size, which is no progress.
+func (sp *sparseImage) end() int64 {
+	var e int64
+	for _, c := range sp.chunks {
+		if c.kind == chunkRaw || c.kind == chunkFill {
+			e = (c.block + c.blocks) * sp.blockSize
+		}
+	}
+	return e
 }

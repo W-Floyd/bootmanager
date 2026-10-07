@@ -2,6 +2,8 @@ package fastboot
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -96,5 +98,78 @@ func TestSparseRejects(t *testing.T) {
 	le.PutUint32(img[20:], 1)
 	if _, err := parseSparse(img); err == nil || !strings.Contains(err.Error(), "past the end") {
 		t.Errorf("chunk past the end: %v", err)
+	}
+}
+
+// A big image comes as several sparse pieces, each the whole image's size
+// with holes where the others go: the progress counts the pieces and
+// carries on from where the last ended.
+func TestProgress(t *testing.T) {
+	s, mem := testDevice()
+	var events []Progress
+	s.Progress = func(p Progress) { events = append(events, p) }
+	// 16-byte blocks; the partition holds 64 KiB, the image is 8 blocks.
+	a := bytes.Repeat([]byte("A"), 32)
+	b := bytes.Repeat([]byte("B"), 32)
+	piece1 := sparse(16, 8, chunk{chunkRaw, 2, a}, chunk{chunkDontCare, 6, nil})
+	piece2 := sparse(16, 8, chunk{chunkDontCare, 4, nil}, chunk{chunkRaw, 2, b}, chunk{chunkDontCare, 2, nil})
+	var in [][]byte
+	for _, pc := range [][]byte{piece1, piece2} {
+		in = append(in, []byte(fmt.Sprintf("download:%08x", len(pc))), pc, []byte("flash:boot_b"))
+	}
+	if err := s.Serve(&pipeTransport{in: in}); err != io.EOF {
+		t.Fatalf("Serve: %v", err)
+	}
+	var phases []string
+	for _, p := range events {
+		if len(phases) == 0 || phases[len(phases)-1] != p.Phase {
+			phases = append(phases, p.Phase)
+		}
+	}
+	if got := strings.Join(phases, " "); got != "receiving writing waiting receiving writing waiting" {
+		t.Errorf("phases: %s", got)
+	}
+	last := events[len(events)-1]
+	if last.Piece != 2 || last.Total != 128 || last.End != 96 || last.Wrote != 32 || last.WroteTotal != 32 {
+		t.Errorf("last event %+v, want piece 2 of an image of 128 bytes, ended at 96, 32 of 32 written", last)
+	}
+	// Between the pieces, the second one's download shows how far the first got.
+	for _, p := range events {
+		if p.Phase == "receiving" && p.Piece == 2 && p.End != 32 {
+			t.Errorf("piece 2 receiving: End %d, want 32 (where piece 1 ended)", p.End)
+			break
+		}
+	}
+	got := mem["sda2"].bytes()
+	if !bytes.Equal(got[:32], a) || !bytes.Equal(got[64:96], b) {
+		t.Error("the two pieces are not both on the partition")
+	}
+}
+
+// Abort stops a flash after the chunk being written: the rest of the piece
+// is not.
+func TestAbort(t *testing.T) {
+	s, mem := testDevice()
+	s.Progress = func(p Progress) {
+		if p.Phase == "writing" && p.Wrote > 0 {
+			s.Abort()
+		}
+	}
+	a := bytes.Repeat([]byte("A"), 32)
+	b := bytes.Repeat([]byte("B"), 32)
+	img := sparse(16, 4, chunk{chunkRaw, 2, a}, chunk{chunkRaw, 2, b})
+	p := &pipeTransport{in: [][]byte{[]byte(fmt.Sprintf("download:%08x", len(img))), img, []byte("flash:boot_b")}}
+	if err := s.Serve(p); err != io.EOF {
+		t.Fatalf("Serve: %v", err)
+	}
+	if last := p.replies[len(p.replies)-1]; !strings.HasPrefix(last, "FAIL") || !strings.Contains(last, "stopped") {
+		t.Errorf("flash reply %q, want a FAIL saying it stopped", last)
+	}
+	got := mem["sda2"].bytes()
+	if !bytes.Equal(got[:32], a) {
+		t.Error("the chunk before the abort is not written")
+	}
+	if bytes.Equal(got[32:64], b) {
+		t.Error("the chunk after the abort was written")
 	}
 }

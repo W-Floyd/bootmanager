@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 )
@@ -73,6 +74,9 @@ type Server struct {
 	Slots SlotStore
 	// Busy shows what the server is doing; "" when it is done.
 	Busy func(text string)
+	// Progress is told how a download and a flash are going, as often as
+	// there is news (every few tens of kilobytes): the caller throttles.
+	Progress func(Progress)
 	// Reboot and Continue run after the reply, on a goroutine of their
 	// own: they may stop the server.
 	Reboot   func(mode string)
@@ -80,6 +84,63 @@ type Server struct {
 
 	buf  []byte
 	data []byte // the last download
+
+	// What the flashes so far of one image (the host sends a big one as
+	// several sparse pieces) have covered: the partition, the image's
+	// size, how far in the last piece ended, and how many pieces.
+	lastName  string
+	lastTotal int64
+	lastEnd   int64
+	pieces    int
+
+	abort atomic.Bool
+}
+
+// ErrAborted ends a download or a flash that Abort stopped.
+var ErrAborted = errors.New("fastboot stopped")
+
+// Abort stops what the server is doing: a download is dropped and a flash
+// stops after the chunk it is writing (leaving the partition partly
+// written, as a cable pulled would). The server answers nothing more; it
+// is for an emergency stop, before the service is switched off.
+func (s *Server) Abort() { s.abort.Store(true) }
+
+// Progress is a download, or a flash, under way. A big image comes as
+// several pieces (a download and a flash each), so there are two scales:
+// the piece, and the whole image.
+type Progress struct {
+	// Phase is "receiving" a piece, "writing" it, "waiting" for the next
+	// piece or "done" with the image.
+	Phase string `json:"phase"`
+	// Name is the partition, once a flash has named it.
+	Name string `json:"name"`
+	// Piece counts the pieces flashed so far of this image, from 1.
+	Piece int `json:"piece"`
+	// Recv of RecvTotal bytes of this piece have come in; Wrote of
+	// WroteTotal have been written (the bytes a sparse piece holds, not
+	// the holes it skips).
+	Recv       int64 `json:"recv"`
+	RecvTotal  int64 `json:"recv_total"`
+	Wrote      int64 `json:"wrote"`
+	WroteTotal int64 `json:"wrote_total"`
+	// End of Total bytes into the image: the offset its last written
+	// chunk ended at, and the image's size.
+	End   int64 `json:"end"`
+	Total int64 `json:"total"`
+}
+
+func (s *Server) report(p Progress) {
+	if s.Progress == nil {
+		return
+	}
+	p.Name, p.Total = s.lastName, s.lastTotal
+	if p.End == 0 {
+		p.End = s.lastEnd
+	}
+	if p.Piece == 0 {
+		p.Piece = s.pieces + 1
+	}
+	s.Progress(p)
 }
 
 // maxCommand: a command, and a response, are at most this long (the
@@ -203,11 +264,15 @@ func (s *Server) download(t Transport, arg string) error {
 		return err
 	}
 	for got := 0; got < len(buf); {
+		if s.abort.Load() {
+			return ErrAborted
+		}
 		n, err := t.Read(buf[got:min(len(buf), got+dataChunk)])
 		if err != nil {
 			return err
 		}
 		got += n
+		s.report(Progress{Phase: "receiving", Recv: int64(got), RecvTotal: int64(len(buf))})
 	}
 	s.data = buf
 	return okay(t, "")
@@ -379,6 +444,11 @@ func (s *Server) flash(name string) error {
 	if size > p.Size {
 		return fmt.Errorf("image is %d bytes, %s %d", size, p.Dev, p.Size)
 	}
+	// Another partition, or another size of image, is another image: a
+	// piece of the same one carries on from where the last ended.
+	if p.Dev != s.lastName || size != s.lastTotal {
+		s.lastName, s.lastTotal, s.lastEnd, s.pieces = p.Dev, size, 0, 0
+	}
 	if s.Open == nil {
 		return errors.New("flashing is not supported")
 	}
@@ -398,8 +468,19 @@ func (s *Server) flash(name string) error {
 	if err != nil {
 		return err
 	}
+	pieceBytes := int64(len(img))
 	if sp != nil {
-		err = sp.writeTo(w)
+		pieceBytes = sp.dataBytes()
+	}
+	s.report(Progress{Phase: "writing", WroteTotal: pieceBytes})
+	if sp != nil {
+		err = sp.writeToProgress(w, func(wrote, end int64) error {
+			if s.abort.Load() {
+				return ErrAborted
+			}
+			s.report(Progress{Phase: "writing", Wrote: wrote, WroteTotal: pieceBytes, End: end})
+			return nil
+		})
 	} else {
 		_, err = w.WriteAt(img, 0)
 	}
@@ -409,6 +490,17 @@ func (s *Server) flash(name string) error {
 	if err != nil {
 		return err
 	}
+	s.pieces++
+	if sp != nil {
+		s.lastEnd = max(s.lastEnd, sp.end())
+	} else {
+		s.lastEnd = size
+	}
+	phase := "waiting"
+	if s.lastEnd >= s.lastTotal {
+		phase = "done"
+	}
+	s.report(Progress{Phase: phase, Wrote: pieceBytes, WroteTotal: pieceBytes, Piece: s.pieces})
 	kind := "raw"
 	if sp != nil {
 		kind = "sparse"

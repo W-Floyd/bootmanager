@@ -62,6 +62,34 @@ pub struct AutobootSettings {
     pub saved: bool,
 }
 
+/// A fastboot flash under way, pushed as the "flash" event: an image comes
+/// as pieces, each received and then written, and the whole image has a
+/// size. An empty phase clears the screen.
+#[derive(Deserialize, Clone, Default, PartialEq)]
+pub struct Flash {
+    /// "receiving", "writing", "waiting" (for the next piece), "done",
+    /// "finished", or "".
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub piece: i64,
+    #[serde(default)]
+    pub recv: i64,
+    #[serde(default)]
+    pub recv_total: i64,
+    #[serde(default)]
+    pub wrote: i64,
+    #[serde(default)]
+    pub wrote_total: i64,
+    /// How far into the image the last written piece got, of total bytes.
+    #[serde(default)]
+    pub end: i64,
+    #[serde(default)]
+    pub total: i64,
+}
+
 /// The battery's level, pushed as the "battery" event.
 #[derive(Deserialize, Clone, PartialEq)]
 pub struct Battery {
@@ -228,6 +256,7 @@ pub enum Event {
     /// The latest line of a running check.
     Fsck(FsckLine),
     Battery(Battery),
+    Flash(Flash),
 }
 
 type Reply = Box<dyn FnOnce(Result<Value, String>)>;
@@ -314,6 +343,7 @@ fn event(name: &str, data: Value) -> Option<Event> {
         "error" => Event::Error(de::<TextData>(data)?.text),
         "fsck" => Event::Fsck(de(data)?),
         "battery" => Event::Battery(de(data)?),
+        "flash" => Event::Flash(de(data)?),
         _ => return None,
     })
 }

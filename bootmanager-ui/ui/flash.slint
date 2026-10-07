@@ -1,0 +1,138 @@
+// The screen while the host flashes the device over fastboot: the whole
+// image, and the piece in flight (an image comes in several, each received
+// and then written). It holds the screen: nothing underneath can be used
+// until the flash is over (Done) or stopped (Stop), and the keys do nothing.
+
+import { Palette } from "theme.slint";
+
+component Bar inherits Rectangle {
+    in property <float> value;
+    in property <length> thickness: 10px;
+    in property <color> fill: Palette.accent;
+    height: root.thickness;
+    border-radius: root.thickness / 2;
+    background: #ffffff22;
+    clip: true;
+    Rectangle {
+        x: 0;
+        width: parent.width * max(0, min(1, root.value));
+        border-radius: root.thickness / 2;
+        background: root.fill;
+    }
+}
+
+export component FlashScreen inherits Rectangle {
+    in property <bool> finished;
+    in property <string> title;
+    in property <float> overall;
+    in property <string> overall-text;
+    in property <float> recv;
+    in property <string> recv-text;
+    in property <float> write;
+    in property <string> write-text;
+    // Stop: the emergency stop, fastboot off at once. Close: the flash is
+    // over; back to the menu.
+    callback stop();
+    callback close();
+
+    public function grab() {
+        keys.focus();
+    }
+
+    background: #050706;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (root.finished && (event.text == Key.Return || event.text == Key.Escape)) {
+                root.close();
+            }
+            accept
+        }
+    }
+
+    VerticalLayout {
+        y: (parent.height - self.height) / 2;
+        padding-left: 28px;
+        padding-right: 28px;
+        spacing: 12px;
+        height: self.preferred-height;
+
+        Text {
+            text: root.title;
+            font-size: 24px;
+            font-weight: 700;
+            color: Palette.text;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Bar {
+            value: root.overall;
+            thickness: 14px;
+            fill: root.finished ? #3ec46d : Palette.accent;
+        }
+        Text {
+            text: root.overall-text;
+            font-size: 15px;
+            color: Palette.text;
+            horizontal-alignment: center;
+        }
+        Rectangle { height: 14px; }
+        Text {
+            text: root.recv-text;
+            font-size: 13px;
+            color: #ffffffb0;
+        }
+        Bar {
+            value: root.recv;
+            thickness: 6px;
+            fill: #7aa7ff;
+        }
+        Text {
+            text: root.write-text;
+            font-size: 13px;
+            color: #ffffffb0;
+        }
+        Bar {
+            value: root.write;
+            thickness: 6px;
+            fill: #f0b84a;
+        }
+        Rectangle { height: 28px; }
+        // One button, by what is going on.
+        Rectangle {
+            height: 56px;
+            border-radius: 28px;
+            background: root.finished ? #3ec46d : #ef5b5b;
+            Text {
+                text: root.finished ? "Done" : "Stop fastboot";
+                font-size: 19px;
+                font-weight: 700;
+                color: #ffffff;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => {
+                    if (root.finished) {
+                        root.close();
+                    } else {
+                        root.stop();
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.finished ? "" : "Stops now: the partition may be left half written.";
+            font-size: 12px;
+            color: #ffffff80;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    // Swallows touches: nothing under the screen may be pressed mid-flash.
+    // Under the content, so the button above still gets its touch.
+    TouchArea {
+        z: -1;
+    }
+}
