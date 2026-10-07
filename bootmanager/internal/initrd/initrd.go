@@ -6,7 +6,6 @@ package initrd
 
 import (
 	"bytes"
-	"path"
 	"strings"
 
 	"github.com/u-root/u-root/pkg/cpio"
@@ -20,24 +19,17 @@ type File struct {
 	Data []byte
 }
 
-// Build is a newc cpio archive of the files, with a record for each
-// directory above them (a file's parents must exist when it is unpacked; one
-// that already does, even as a link to another, is left as it is).
+// Build is a newc cpio archive of the files, and nothing else: no record for
+// the directories above them. The directories must be in the initramfs
+// already, and an archive that names one is worse than one that does not: the
+// kernel, unpacking a record over a path that exists with another type,
+// removes what is there first. pmOS's initramfs has /lib as a symlink, so a
+// "lib" directory record swapped it for an empty directory, took the dynamic
+// loader with it, and the kernel found no working init.
 func Build(files []File) ([]byte, error) {
 	var buf bytes.Buffer
 	w := cpio.Newc.Writer(&buf)
-	made := map[string]bool{}
 	for _, f := range files {
-		var dirs []string
-		for d := path.Dir(f.Path); d != "." && d != "/" && !made[d]; d = path.Dir(d) {
-			dirs = append(dirs, d)
-		}
-		for i := len(dirs) - 1; i >= 0; i-- {
-			made[dirs[i]] = true
-			if err := w.WriteRecord(cpio.Directory(dirs[i], 0o755)); err != nil {
-				return nil, err
-			}
-		}
 		rec := cpio.StaticRecord(f.Data, cpio.Info{Name: strings.TrimPrefix(f.Path, "/"), Mode: cpio.S_IFREG | f.Mode})
 		if err := w.WriteRecord(rec); err != nil {
 			return nil, err
