@@ -59,6 +59,10 @@ pub struct LockedVolume {
 
 #[derive(Deserialize)]
 pub struct Entries {
+    /// The locked volume the autoboot waits on: its passphrase is asked for
+    /// at once, and the default entry inside is booted when it is in.
+    #[serde(default)]
+    pub unlock: Option<LockedVolume>,
     pub scanning: bool,
     pub entries: Vec<Entry>,
     /// Encrypted volumes not open: entries may be inside, and unlocking one

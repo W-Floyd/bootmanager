@@ -20,6 +20,8 @@ type Locked struct {
 	Name string `json:"name"`
 	// Source is where it is: "UFS userdata", "microSD card".
 	Source string `json:"source"`
+	// UUID is the volume's LUKS UUID, "" when it could not be read.
+	UUID string `json:"uuid,omitempty"`
 }
 
 // minLUKS: a LUKS2 header alone is 16 MiB, so nothing smaller is a volume.

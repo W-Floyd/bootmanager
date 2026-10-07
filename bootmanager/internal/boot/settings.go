@@ -27,6 +27,11 @@ type Settings struct {
 	Autoboot *bool `json:"autoboot,omitempty"`
 	// Countdown is the autoboot's length in seconds, 0 until chosen.
 	Countdown int `json:"countdown,omitempty"`
+	// DefaultVolume is the LUKS UUID of the encrypted volume Default is
+	// inside, empty when it is not in one. While that volume is locked the
+	// default entry is not among the entries, so this is what says there is
+	// something to unlock and then boot.
+	DefaultVolume string `json:"default_volume,omitempty"`
 }
 
 func (s Settings) clone() Settings {
@@ -47,7 +52,16 @@ func (s Settings) clone() Settings {
 // Manager writes it once it has found it (FindBootFiles); until the file
 // exists the location is unknown, which is an error, not "no settings", so
 // the load is tried again. An empty file means there is nowhere to keep them.
-type settingsFile struct{ dev, path, ref string }
+//
+// A fourth, raw:NAME, is a GPT partition of that name with no file system,
+// whose free tail holds the settings (rawrecord.go): where a stage with no
+// boot partition keeps them.
+type settingsFile struct{ dev, path, ref, raw string }
+
+// rawDevice is the block device of a raw location. A variable, for tests.
+var rawDevice = func(name string) (string, error) {
+	return partitionByName("/sys/class/block", "/dev", name)
+}
 
 // resolved is the location an @FILE names, or f itself.
 func (f settingsFile) resolved() (settingsFile, error) {
@@ -65,12 +79,15 @@ func (f settingsFile) resolved() (settingsFile, error) {
 // known.
 func (f settingsFile) persists() bool {
 	r, err := f.resolved()
-	return err == nil && r.path != ""
+	return err == nil && (r.path != "" || r.raw != "")
 }
 
 func parseSettingsFile(s string) settingsFile {
 	if ref, ok := strings.CutPrefix(s, "@"); ok {
 		return settingsFile{ref: ref}
+	}
+	if name, ok := strings.CutPrefix(s, "raw:"); ok {
+		return settingsFile{raw: name}
 	}
 	if dev, path, ok := strings.Cut(s, ":"); ok && !strings.Contains(dev, "/") {
 		return settingsFile{dev: dev, path: strings.TrimPrefix(path, "/")}
@@ -127,6 +144,17 @@ func (f settingsFile) load() (Settings, error) {
 	if err != nil {
 		return s, err
 	}
+	if f.raw != "" {
+		dev, err := rawDevice(f.raw)
+		if err != nil {
+			return s, err
+		}
+		b, err := rawStore{dev}.load()
+		if err != nil || b == nil {
+			return s, err
+		}
+		return s, json.Unmarshal(b, &s)
+	}
 	if f.path == "" {
 		return s, nil
 	}
@@ -149,6 +177,17 @@ func (f settingsFile) save(s Settings) error {
 	f, err := f.resolved()
 	if err != nil {
 		return err
+	}
+	if f.raw != "" {
+		dev, err := rawDevice(f.raw)
+		if err != nil {
+			return err
+		}
+		b, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		return rawStore{dev}.save(b)
 	}
 	if f.path == "" {
 		return nil

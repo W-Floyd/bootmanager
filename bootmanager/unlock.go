@@ -16,6 +16,19 @@ var cryptsetupBin = flag.String("cryptsetup", "/usr/libexec/cryptsetup/cryptsetu
 // registerUnlock adds disk.unlock and disk.lock: LUKS volumes opened for
 // rescue (browse, Check, Repair), as dm-N devices. Not needed to boot an
 // encrypted pmOS: its initramfs asks for the passphrase itself.
+// volumeUUID is a LUKS partition's UUID by kernel name ("sde27"), "" for
+// anything else or when this stage cannot read it.
+func volumeUUID(dev string) string {
+	if !luks.Available(*cryptsetupBin) {
+		return ""
+	}
+	uuid, err := luks.Runner{Bin: *cryptsetupBin}.UUID(dev)
+	if err != nil {
+		return ""
+	}
+	return uuid
+}
+
 func (a *app) registerUnlock() {
 	rpc.Handle(a.rpc, "disk.unlock", afterReady(a, func(x struct {
 		Dev        string
@@ -34,7 +47,8 @@ func (a *app) registerUnlock() {
 		// The system on this volume asks for the passphrase again in its
 		// initramfs: keep it for that boot (unlockKeyFor), in memory only.
 		runner := luks.Runner{Bin: *cryptsetupBin}
-		if uuid, err := runner.UUID(x.Dev); err == nil {
+		uuid, err := runner.UUID(x.Dev)
+		if err == nil {
 			a.keys.Put(x.Dev, uuid, []byte(x.Passphrase))
 		} else {
 			log.Printf("unlock %s: no LUKS UUID (%v): its boot will ask for the passphrase again", x.Dev, err)
@@ -42,9 +56,17 @@ func (a *app) registerUnlock() {
 		// An encrypted install keeps its kernel and boot entries inside
 		// the volume (a single-partition image has nowhere else to put
 		// them): look for them now it is open. No countdown starts on
-		// the entries that turn up, as one does on a boot.
+		// the entries that turn up, as one does on a boot, unless this
+		// unlock is the one the autoboot asked for: then its default
+		// entry is booted once they are in.
+		bootAfter := a.boot.TakeUnlockBoot(uuid)
 		a.boot.CancelBy("unlocking an encrypted partition")
-		go a.boot.Rescan()
+		go func() {
+			a.boot.Rescan()
+			if bootAfter {
+				a.boot.BootDefault()
+			}
+		}()
 		return map[string]string{"dev": dm}, nil
 	}))
 	rpc.Handle(a.rpc, "disk.lock", afterReady(a, func(x struct{ Dev string }) (any, error) {

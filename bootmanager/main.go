@@ -145,6 +145,7 @@ func main() {
 		Teardown:          a.teardown,
 		InitrdExtra:       a.extraInitrd,
 		CmdlineExtra:      cmdlineExtra,
+		VolumeUUID:        volumeUUID,
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },

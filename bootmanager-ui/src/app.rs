@@ -63,6 +63,11 @@ pub struct State {
     /// The unlock screen was opened from a tile, not from Disks: when it
     /// succeeds the menu closes, on the carousel and the entries it found.
     unlock_from_tile: bool,
+    /// The locked volume the autoboot is waiting to have unlocked, and
+    /// whether its passphrase screen has been put up for it already (once:
+    /// leaving the screen is the way out to the menu).
+    unlock_wanted: Option<proto::LockedVolume>,
+    unlock_prompted: bool,
     /// The default entry, and whether the user chose it.
     pub default: usize,
     pub explicit: bool,
@@ -141,6 +146,10 @@ impl State {
         (self.default, self.explicit) = (e.default.min(e.entries.len().saturating_sub(1)), e.explicit);
         self.entries = Some(e.entries);
         self.locked = e.locked;
+        self.unlock_wanted = e.unlock;
+        if self.unlock_wanted.is_none() {
+            self.unlock_prompted = false;
+        }
     }
 }
 
@@ -157,6 +166,8 @@ impl App {
                 entries: None,
                 locked: Vec::new(),
                 unlock_from_tile: false,
+                unlock_wanted: None,
+                unlock_prompted: false,
                 default: 0,
                 explicit: false,
                 centred: false,
@@ -394,6 +405,7 @@ impl App {
             Event::Entries(e) if !e.scanning => {
                 s.take_entries(e);
                 drop(s);
+                self.prompt_unlock();
                 self.entries_arrived();
                 s = self.state.borrow_mut();
             }
@@ -710,10 +722,16 @@ impl App {
         if crate::fps::enabled() {
             eprintln!("bootmanager-ui: t={:.3} close_menu", crate::inputlog::t());
         }
-        {
+        let waiting = {
             let mut s = self.state.borrow_mut();
             s.menu_open = false;
             s.unlock_from_tile = false;
+            s.unlock_wanted.is_some()
+        };
+        if waiting {
+            // Back out of the passphrase screen the autoboot put up: no
+            // unlock, so no boot after it.
+            self.call("autoboot.cancel", json!({ "reason": "the passphrase screen was closed" }), App::report);
         }
         self.render();
         // Not from inside the key press that closes the menu: the focus it
@@ -770,6 +788,23 @@ impl App {
         } else {
             self.open_menu();
         }
+    }
+
+    /// The autoboot's default is inside a locked volume: its passphrase
+    /// screen, without being asked. Once; the way out of it is Back, which
+    /// calls the autoboot off (close_menu).
+    fn prompt_unlock(self: &Rc<Self>) {
+        let v = {
+            let mut s = self.state.borrow_mut();
+            match s.unlock_wanted.clone() {
+                Some(v) if !s.unlock_prompted && s.launching < 0 => {
+                    s.unlock_prompted = true;
+                    v
+                }
+                _ => return,
+            }
+        };
+        self.open_unlock_tile(v);
     }
 
     /// The passphrase screen for a locked volume's tile. It is the menu's
@@ -841,6 +876,9 @@ impl App {
                 let from_tile = {
                     let mut s = a.state.borrow_mut();
                     s.unlock = UnlockRun::Idle;
+                    // The backend took the autoboot's wait with this unlock
+                    // and boots the default itself.
+                    s.unlock_wanted = None;
                     std::mem::take(&mut s.unlock_from_tile)
                 };
                 if from_tile {

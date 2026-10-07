@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +70,10 @@ type Config struct {
 	// Settings is where the entries' order and default are kept
 	// (settingsFile): PATH or DEV:PATH. Empty: for this run only.
 	Settings string
+	// VolumeUUID is the LUKS UUID of a partition (kernel name), "" when it
+	// is not known: how a default inside an encrypted volume is remembered
+	// and then found again while the volume is locked.
+	VolumeUUID func(dev string) string
 }
 
 type Manager struct {
@@ -87,7 +92,10 @@ type Manager struct {
 	first          int  // with no default chosen, the scan's first entry: its place now
 	scanned        bool
 	locked         []Locked // encrypted volumes found and not open
-	booting        bool
+	// pendingUnlock is the locked volume the default entry is inside: the
+	// autoboot waits for it to be unlocked, then boots the entry.
+	pendingUnlock *Locked
+	booting       bool
 	left           int       // seconds of countdown left; -1 when none is running
 	countStart     time.Time // when the countdown began; zero before
 
@@ -143,6 +151,9 @@ type Entries struct {
 	// Locked are encrypted volumes not open: entries may be inside, and
 	// unlocking one (disk.unlock) finds them.
 	Locked []Locked `json:"locked"`
+	// Unlock is the locked volume to unlock for the autoboot, when the
+	// default entry is inside one: the UI asks for its passphrase.
+	Unlock *Locked `json:"unlock,omitempty"`
 	// Default is the entry the autoboot boots; Explicit, that the user
 	// chose it, rather than it being the one the scan found first.
 	Default  int  `json:"default"`
@@ -169,7 +180,10 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 		return nil, err
 	}
 	locked := findLocked(devs.FilterZeroSize())
-	for _, l := range locked {
+	for i, l := range locked {
+		if m.cfg.VolumeUUID != nil {
+			locked[i].UUID = m.cfg.VolumeUUID(l.Dev)
+		}
 		log.Printf("scan: %s (%s) is encrypted and locked", l.Dev, l.Source)
 	}
 	m.mu.Lock()
@@ -206,7 +220,9 @@ func (m *Manager) Run() {
 	// moment: a scan that finds nothing then never counts down. Try again,
 	// still "scanning" for the UI, before settling on no entries.
 	imgs, err := m.scan()
-	for i := 0; i < 10 && len(imgs) == 0; i++ {
+	// Not when an encrypted volume is there to unlock: that is why there is
+	// nothing, and waiting would only keep the splash up for ten seconds.
+	for i := 0; i < 10 && len(imgs) == 0 && !m.hasLocked(); i++ {
 		log.Printf("scan found 0 entries (%v), trying again", err)
 		select {
 		case <-m.stop:
@@ -235,7 +251,17 @@ func (m *Manager) Run() {
 	m.cfg.Emit("entries", m.List())
 	m.mu.Lock()
 	enabled, seconds := m.autobootLocked()
+	// A default inside a locked volume is not among the entries, so the
+	// countdown below would boot some other (or none): ask for the
+	// passphrase, and boot the default once it is in.
+	m.pendingUnlock = m.unlockToBootLocked(enabled)
+	want := m.pendingUnlock
 	m.mu.Unlock()
+	if want != nil && !m.held() {
+		log.Printf("autoboot: %s is on %s, locked: asking for its passphrase", m.settings.Default, want.Source)
+		m.cfg.Emit("entries", m.List())
+		return
+	}
 	if len(imgs) == 0 || !enabled {
 		why := "no boot entries"
 		if len(imgs) > 0 {
@@ -316,7 +342,13 @@ func (m *Manager) Cancel() { m.CancelBy("internal call") }
 //	autoboot: cancelled by REASON (3.4 s into the countdown)
 //
 // or "(countdown not started)" when it had not begun.
-func (m *Manager) CancelBy(reason string) { m.cancel(reason, true) }
+func (m *Manager) CancelBy(reason string) {
+	m.mu.Lock()
+	m.pendingUnlock = nil
+	m.mu.Unlock()
+	m.cancel(reason, true)
+	m.cfg.Emit("entries", m.List())
+}
 
 func (m *Manager) cancel(reason string, report bool) {
 	first := false
@@ -419,7 +451,7 @@ func (m *Manager) Autoboot() Autoboot {
 func (m *Manager) List() Entries {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Locked: append([]Locked{}, m.locked...), Default: m.def, Explicit: m.explicit}
+	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Locked: append([]Locked{}, m.locked...), Unlock: m.pendingUnlock, Default: m.def, Explicit: m.explicit}
 	for _, img := range m.images {
 		detail := ""
 		if li, ok := img.(*boot.LinuxImage); ok {
@@ -573,12 +605,79 @@ func (m *Manager) SetDefault(i int) error {
 			return fmt.Errorf("no boot entry %d", i)
 		}
 		if i < 0 {
-			m.settings.Default, m.def, m.explicit = "", m.first, false
+			m.settings.Default, m.settings.DefaultVolume, m.def, m.explicit = "", "", m.first, false
 			return nil
 		}
 		m.settings.Default, m.def, m.explicit = m.keys[i], i, true
+		m.settings.DefaultVolume = m.volumeOf(m.images[i])
 		return nil
 	})
+}
+
+// volumeOf is the LUKS UUID of the encrypted volume img was found in, "" if
+// it is not in one (or the UUID is not known).
+func (m *Manager) volumeOf(img boot.OSImage) string {
+	if m.cfg.VolumeUUID == nil {
+		return ""
+	}
+	dev := entryDev(img)
+	if !strings.HasPrefix(dev, "dm-") {
+		return ""
+	}
+	slaves, _ := os.ReadDir(filepath.Join(sysBlock, dev, "slaves"))
+	if len(slaves) == 0 {
+		return ""
+	}
+	return m.cfg.VolumeUUID(slaves[0].Name())
+}
+
+func (m *Manager) hasLocked() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.locked) > 0
+}
+
+// unlockToBootLocked is the locked volume the chosen default lives in, when
+// autoboot is on and the default is not among the entries. m.mu is held.
+func (m *Manager) unlockToBootLocked(enabled bool) *Locked {
+	if !enabled || !m.settingsLoaded || m.settings.Default == "" || m.settings.DefaultVolume == "" || m.explicit {
+		return nil
+	}
+	for _, l := range m.locked {
+		if l.UUID == m.settings.DefaultVolume {
+			return &l
+		}
+	}
+	return nil
+}
+
+// TakeUnlockBoot reports whether the volume with this LUKS UUID is the one
+// the autoboot is waiting on, and stops waiting: the caller unlocks it and
+// then calls BootDefault.
+func (m *Manager) TakeUnlockBoot(uuid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ok := uuid != "" && m.pendingUnlock != nil && m.pendingUnlock.UUID == uuid
+	m.pendingUnlock = nil
+	return ok
+}
+
+// BootDefault boots the default entry, once an unlock has brought it into
+// the entries: the end of an autoboot that began with a passphrase.
+func (m *Manager) BootDefault() {
+	m.mu.Lock()
+	def, found, key := m.def, m.explicit, m.settings.Default
+	m.mu.Unlock()
+	if !found {
+		log.Printf("autoboot: %s not found after the unlock", key)
+		m.cfg.Emit("error", map[string]string{"message": "the default entry " + key + " is not on this volume any more"})
+		return
+	}
+	log.Printf("autoboot: unlocked, booting %s", key)
+	if err := m.Start(def); err != nil {
+		log.Printf("autoboot: %v", err)
+		m.cfg.Emit("error", map[string]string{"message": err.Error()})
+	}
 }
 
 // change applies f to the entries and settings and saves them, undoing
