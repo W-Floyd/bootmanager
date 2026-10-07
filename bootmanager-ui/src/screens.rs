@@ -29,6 +29,9 @@ pub enum Screen {
     Autoboot,
     /// The command-line switches kept for every boot (State's `options`).
     BootOptions,
+    /// An entry's kernel command line in a text field, to edit and boot
+    /// with for this one boot (GRUB's `e`). The text is the window's field.
+    EditCmdline { index: usize, label: String },
     /// The battery and charger (State's `supplies`).
     Battery,
     Services,
@@ -95,6 +98,9 @@ pub enum Action {
     AutobootSet(bool, u32),
     /// boot.option.set: an option, and its new state ("", "on", "off").
     OptionSet(String, String),
+    /// boot.start with the command line in the editor's field, for this
+    /// boot only.
+    BootEdited(usize),
     /// disk.unlock with the typed passphrase; the Unlock screen's dev.
     Unlock,
     /// disk.lock on an unlocked volume (dm-N).
@@ -237,9 +243,20 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                         let title = if i == s.default { format!("{}  (default)", e.label) } else { e.label.clone() };
                         rows.push((row(title, e.detail.clone(), "action", false), Action::Boot(i)));
                     }
+                    // Linux entries (they carry a command line) can be edited
+                    // for one boot.
+                    for (i, e) in e.iter().enumerate().filter(|(_, e)| !e.detail.is_empty()) {
+                        let open = Screen::EditCmdline { index: i, label: e.label.clone() };
+                        rows.push((row("Edit command line", e.label.clone(), "nav", false), Action::Open(open)));
+                    }
                 }
             }
             ("Boot".into(), "Load the entry and kexec into it".into(), rows)
+        }
+        Screen::EditCmdline { index, label } => {
+            rows.push((row("Boot with this command line", "For this boot only; nothing is saved", "action", false), Action::BootEdited(*index)));
+            rows.push(info("Back leaves it as it was", ""));
+            ("Command line".into(), label.clone(), rows)
         }
         Screen::Autoboot => {
             match &s.autoboot {

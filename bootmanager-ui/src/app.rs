@@ -590,6 +590,20 @@ impl App {
                     a.state.borrow_mut().options = Some(v);
                 }
             }),
+            // The field gets the command line the entry would boot with.
+            Screen::EditCmdline { index, .. } => {
+                let gen = self.state.borrow().generation;
+                self.call("boot.cmdline", json!({"index": index}), move |a, r: Result<String, _>| match r {
+                    Ok(text) => {
+                        if a.state.borrow().generation == gen {
+                            if let Some(ui) = a.ui.upgrade() {
+                                ui.set_passphrase(text.into());
+                            }
+                        }
+                    }
+                    Err(e) => a.state.borrow_mut().error = e,
+                });
+            }
             Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics | Screen::About => {}
         }
     }
@@ -666,8 +680,9 @@ impl App {
     fn show(self: &Rc<Self>, screen: Screen, selected: i32) {
         {
             let mut s = self.state.borrow_mut();
-            // A passphrase lives only while its screen is up.
-            if !matches!(screen, Screen::Unlock { .. }) {
+            // A passphrase, or an edited command line, lives only while its
+            // screen is up.
+            if !matches!(screen, Screen::Unlock { .. } | Screen::EditCmdline { .. }) {
                 s.unlock = UnlockRun::Idle;
                 if let Some(ui) = self.ui.upgrade() {
                     ui.set_passphrase("".into());
@@ -856,6 +871,12 @@ impl App {
     /// Boots entry i, its card taking the screen until the handover; a
     /// failure puts it back.
     fn launch(self: &Rc<Self>, i: usize) {
+        self.launch_with(i, None);
+    }
+
+    /// launch, with a command line for this boot only (the editor's), or
+    /// the entry's own (None).
+    fn launch_with(self: &Rc<Self>, i: usize, cmdline: Option<String>) {
         {
             let mut s = self.state.borrow_mut();
             if s.launching >= 0 {
@@ -868,7 +889,7 @@ impl App {
             ui.invoke_focus_home();
         }
         self.render();
-        self.call("boot.start", json!({"index": i}), |a, r: Result<Value, _>| {
+        self.call("boot.start", json!({"index": i, "cmdline": cmdline.unwrap_or_default()}), |a, r: Result<Value, _>| {
             if let Err(e) = r {
                 let mut s = a.state.borrow_mut();
                 (s.launching, s.error) = (-1, e);
@@ -955,6 +976,16 @@ impl App {
                     Err(e) => a.state.borrow_mut().error = e,
                 })
             }
+            Action::BootEdited(i) => {
+                let text = self.ui.upgrade().map(|ui| ui.get_passphrase().to_string()).unwrap_or_default();
+                // One line: the on-screen keyboard's Return makes a new one.
+                let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if line.is_empty() {
+                    self.state.borrow_mut().error = "The command line is empty".into();
+                } else {
+                    self.launch_with(i, Some(line));
+                }
+            }
             Action::OptionSet(id, state) => {
                 self.call("boot.option.set", json!({"id": id, "state": state}), |a, r: Result<Vec<proto::BootOption>, _>| match r {
                     Ok(v) => a.state.borrow_mut().options = Some(v),
@@ -1013,7 +1044,11 @@ impl App {
             ui.set_card_selected(s.default as i32);
         }
         ui.set_menu_open(s.menu_open);
-        ui.set_text_entry(matches!(s.screen, Screen::Unlock { .. }));
+        let editing = matches!(s.screen, Screen::EditCmdline { .. });
+        ui.set_text_entry(editing || matches!(s.screen, Screen::Unlock { .. }));
+        ui.set_text_secret(!editing);
+        ui.set_text_lines(if editing { 6 } else { 1 });
+        ui.set_text_hint(if editing { "Kernel command line" } else { "Passphrase" }.into());
         match &s.battery {
             Some(b) if b.present => {
                 ui.set_battery_present(true);

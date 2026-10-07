@@ -4,7 +4,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/u-root/u-root/pkg/boot"
 )
+
+// The editor starts from the entry's command line with the options applied,
+// and refuses an entry with none to edit.
+func TestCmdlineForTheEditor(t *testing.T) {
+	m := New(Config{Settings: filepath.Join(t.TempDir(), "s.json"), Emit: func(string, any) {}})
+	m.setImages([]boot.OSImage{
+		&boot.LinuxImage{Name: "pmOS", Cmdline: "pmos.nosplash pmos_root_uuid=aaa loglevel=7"},
+		&boot.LinuxImage{Name: "other"},
+	})
+	if err := m.SetOption("splash", "on"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.Cmdline(0)
+	if err != nil || strings.Contains(got, "pmos.nosplash") || !strings.Contains(got, "loglevel=7") {
+		t.Fatalf("Cmdline(0) = %q, %v", got, err)
+	}
+	if err := m.StartWith(0, "   "); err == nil {
+		t.Error("an empty command line was started")
+	}
+	if _, err := m.Cmdline(5); err == nil {
+		t.Error("a missing entry has a command line")
+	}
+}
 
 func TestOptionsAreKeptAndApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "linuxboot", "bootmanager.json")

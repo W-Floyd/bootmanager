@@ -95,9 +95,11 @@ type Manager struct {
 	// pendingUnlock is the locked volume the default entry is inside: the
 	// autoboot waits for it to be unlocked, then boots the entry.
 	pendingUnlock *Locked
-	booting       bool
-	left          int       // seconds of countdown left; -1 when none is running
-	countStart    time.Time // when the countdown began; zero before
+	// oneBoot is a command line edited for the boot being started (StartWith).
+	oneBoot    *string
+	booting    bool
+	left       int       // seconds of countdown left; -1 when none is running
+	countStart time.Time // when the countdown began; zero before
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -502,7 +504,15 @@ func (m *Manager) Handover(img boot.OSImage) error {
 	// The options the user set, on the entry's own command line first: what
 	// a dev build then adds for one try goes after, and wins.
 	if li, ok := img.(*boot.LinuxImage); ok {
-		if edited := m.optionsCmdline(li.Cmdline); edited != li.Cmdline {
+		m.mu.Lock()
+		one := m.oneBoot
+		m.mu.Unlock()
+		if one != nil {
+			// An edit for this boot: the whole line, the options not applied
+			// over it.
+			log.Printf("booting %s: command line edited for this boot: %s", img.Label(), *one)
+			li.Cmdline = *one
+		} else if edited := m.optionsCmdline(li.Cmdline); edited != li.Cmdline {
 			log.Printf("booting %s: command line by options: %s", img.Label(), edited)
 			li.Cmdline = edited
 		}

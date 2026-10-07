@@ -97,6 +97,11 @@ export component AppWindow inherits Window {
     // (text-entry), and the keyboard under the list while it has focus
     // (keyboard.slint). Return in the field is `passphrase-accepted`.
     in property <bool> text-entry;
+    // What the field is for: its hint, whether what is typed is hidden, and
+    // how many lines it has (1: a passphrase; more: a command line).
+    in property <string> text-hint: "Passphrase";
+    in property <bool> text-secret: true;
+    in property <int> text-lines: 1;
     in-out property <string> passphrase;
     callback passphrase-accepted();
     callback back();
@@ -370,7 +375,7 @@ export component AppWindow inherits Window {
 
             if root.text-entry: entry := FocusScope {
                 vertical-stretch: 0;
-                height: 56px;
+                height: root.text-lines > 1 ? 158px : 56px;
                 forward-focus: field;
                 init => { field.focus(); }
                 // The volume keys, the only keys some phones have, would
@@ -387,27 +392,31 @@ export component AppWindow inherits Window {
                 Rectangle {
                     x: root.side-pad;
                     width: parent.width - 2 * root.side-pad;
-                    height: 48px;
+                    height: root.text-lines > 1 ? 150px : 48px;
                     border-radius: 10px;
                     background: #ffffff14;
                     border-width: 1px;
                     border-color: field.has-focus ? Palette.accent : #ffffff20;
                     if root.passphrase == "": Text {
                         x: 14px;
-                        text: "Passphrase";
+                        text: root.text-hint;
                         font-size: 18px;
                         color: #ffffff60;
-                        vertical-alignment: center;
+                        vertical-alignment: root.text-lines > 1 ? top : center;
+                        y: root.text-lines > 1 ? 10px : 0px;
                     }
                     field := TextInput {
                         x: 14px;
+                        y: root.text-lines > 1 ? 10px : 0px;
                         width: parent.width - 28px;
+                        height: root.text-lines > 1 ? parent.height - 20px : parent.height;
                         text <=> root.passphrase;
-                        input-type: InputType.password;
-                        single-line: true;
-                        font-size: 20px;
+                        input-type: root.text-secret ? InputType.password : InputType.text;
+                        single-line: root.text-lines <= 1;
+                        wrap: root.text-lines > 1 ? TextWrap.word-wrap : TextWrap.no-wrap;
+                        font-size: root.text-lines > 1 ? 16px : 20px;
                         color: #ffffff;
-                        vertical-alignment: center;
+                        vertical-alignment: root.text-lines > 1 ? top : center;
                         accepted => { root.passphrase-accepted(); }
                     }
                 }

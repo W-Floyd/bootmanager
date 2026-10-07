@@ -1,7 +1,11 @@
 package boot
 
 import (
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/u-root/u-root/pkg/boot"
 
 	"bootmanager.local/bootmanager/internal/distro"
 )
@@ -51,6 +55,39 @@ func (m *Manager) SetOption(id, state string) error {
 		m.settings.Options[id] = state
 		return nil
 	})
+}
+
+// Cmdline is the command line entry i would boot with: its own, with the
+// options applied. It is what an edit for one boot starts from.
+func (m *Manager) Cmdline(i int) (string, error) {
+	img, err := m.Image(i)
+	if err != nil {
+		return "", err
+	}
+	li, ok := img.(*boot.LinuxImage)
+	if !ok {
+		return "", fmt.Errorf("%s has no kernel command line to edit", img.Label())
+	}
+	return m.optionsCmdline(li.Cmdline), nil
+}
+
+// StartWith boots entry i with cmdline as its whole command line, for this
+// boot only: nothing is saved, and the entry keeps its own. Words the
+// unlock key needs are still added when the line has none of its own.
+func (m *Manager) StartWith(i int, cmdline string) error {
+	cmdline = strings.Join(strings.Fields(cmdline), " ")
+	if cmdline == "" {
+		return errors.New("an empty command line")
+	}
+	m.mu.Lock()
+	m.oneBoot = &cmdline
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.oneBoot = nil
+		m.mu.Unlock()
+	}()
+	return m.Start(i)
 }
 
 // optionsCmdline is cmdline with the user's options applied.

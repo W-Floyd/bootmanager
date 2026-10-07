@@ -40,7 +40,19 @@ func (a *app) register() {
 		return nil, nil
 	})
 	rpc.Handle(s, "boot.list", func(none) (any, error) { return a.boot.List(), nil })
-	rpc.Handle(s, "boot.start", func(x struct{ Index int }) (any, error) { return nil, a.boot.Start(x.Index) })
+	// Cmdline, when set, is the whole command line for this boot only (the
+	// editor's, like GRUB's e): nothing is saved.
+	rpc.Handle(s, "boot.start", func(x struct {
+		Index   int
+		Cmdline string
+	}) (any, error) {
+		if x.Cmdline != "" {
+			return nil, a.boot.StartWith(x.Index, x.Cmdline)
+		}
+		return nil, a.boot.Start(x.Index)
+	})
+	// An entry's command line as it would boot: for the editor to start from.
+	rpc.Handle(s, "boot.cmdline", func(x struct{ Index int }) (any, error) { return a.boot.Cmdline(x.Index) })
 	// Saving may remount the partition the settings are on: the browsing
 	// mounts go first, as they hold it open.
 	rpc.Handle(s, "boot.move", func(x struct{ Index, By int }) (any, error) {

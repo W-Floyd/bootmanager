@@ -18,6 +18,7 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Boot => "/boot".into(),
         Screen::Autoboot => "/autoboot".into(),
         Screen::BootOptions => "/boot-options".into(),
+        Screen::EditCmdline { index, .. } => format!("/boot/{index}/edit"),
         Screen::Services => "/services".into(),
         Screen::Disks(_) => "/partitions".into(),
         Screen::Log(_) => "/log".into(),
@@ -53,6 +54,10 @@ pub fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
         ["boot"] => (vec![Screen::Main], Screen::Boot),
         ["autoboot"] => (vec![Screen::Main], Screen::Autoboot),
         ["boot-options"] => (vec![Screen::Main], Screen::BootOptions),
+        ["boot", n, "edit"] => match n.parse() {
+            Ok(index) => (vec![Screen::Main, Screen::Boot], Screen::EditCmdline { index, label: String::new() }),
+            Err(_) => (vec![], Screen::Main),
+        },
         ["services"] => (vec![Screen::Main], Screen::Services),
         ["log"] => (vec![Screen::Main], Screen::Log(Load::Waiting)),
         ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics),
