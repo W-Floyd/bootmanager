@@ -79,6 +79,8 @@ pub struct State {
     pub fsck: FsckRun,
     /// autoboot.settings, read when the menu or its Autoboot screen opens.
     pub autoboot: Option<proto::AutobootSettings>,
+    /// boot.options, read when the menu or its Boot options screen opens.
+    pub options: Option<Vec<proto::BootOption>>,
     /// The battery's level (the "battery" event), for the indicator.
     pub battery: Option<proto::Battery>,
     /// A fastboot flash under way (the "flash" event), for its screen, and
@@ -174,6 +176,7 @@ impl App {
                 services: vec![],
                 fsck: FsckRun::Idle,
                 autoboot: None,
+                options: None,
                 battery: None,
                 flash: proto::Flash::default(),
                 flash_model: Default::default(),
@@ -565,9 +568,26 @@ impl App {
                     *d = l;
                 }
             }),
-            Screen::Main | Screen::Autoboot => self.call("autoboot.settings", json!({}), |a, r: Result<proto::AutobootSettings, _>| {
+            Screen::Main => {
+                self.call("autoboot.settings", json!({}), |a, r: Result<proto::AutobootSettings, _>| {
+                    if let Ok(v) = r {
+                        a.state.borrow_mut().autoboot = Some(v);
+                    }
+                });
+                self.call("boot.options", json!({}), |a, r: Result<Vec<proto::BootOption>, _>| {
+                    if let Ok(v) = r {
+                        a.state.borrow_mut().options = Some(v);
+                    }
+                });
+            }
+            Screen::Autoboot => self.call("autoboot.settings", json!({}), |a, r: Result<proto::AutobootSettings, _>| {
                 if let Ok(v) = r {
                     a.state.borrow_mut().autoboot = Some(v);
+                }
+            }),
+            Screen::BootOptions => self.call("boot.options", json!({}), |a, r: Result<Vec<proto::BootOption>, _>| {
+                if let Ok(v) = r {
+                    a.state.borrow_mut().options = Some(v);
                 }
             }),
             Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics | Screen::About => {}
@@ -932,6 +952,12 @@ impl App {
             Action::AutobootSet(enabled, seconds) => {
                 self.call("autoboot.set", json!({"enabled": enabled, "seconds": seconds}), |a, r: Result<proto::AutobootSettings, _>| match r {
                     Ok(v) => a.state.borrow_mut().autoboot = Some(v),
+                    Err(e) => a.state.borrow_mut().error = e,
+                })
+            }
+            Action::OptionSet(id, state) => {
+                self.call("boot.option.set", json!({"id": id, "state": state}), |a, r: Result<Vec<proto::BootOption>, _>| match r {
+                    Ok(v) => a.state.borrow_mut().options = Some(v),
                     Err(e) => a.state.borrow_mut().error = e,
                 })
             }

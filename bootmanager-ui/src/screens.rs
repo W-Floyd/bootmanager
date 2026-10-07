@@ -27,6 +27,8 @@ pub enum Screen {
     Boot,
     /// Whether to autoboot and for how long (State's `autoboot`).
     Autoboot,
+    /// The command-line switches kept for every boot (State's `options`).
+    BootOptions,
     /// The battery and charger (State's `supplies`).
     Battery,
     Services,
@@ -91,6 +93,8 @@ pub enum Action {
     FsckConfirm,
     /// autoboot.set: on or off, and a countdown in seconds (0: keep it).
     AutobootSet(bool, u32),
+    /// boot.option.set: an option, and its new state ("", "on", "off").
+    OptionSet(String, String),
     /// disk.unlock with the typed passphrase; the Unlock screen's dev.
     Unlock,
     /// disk.lock on an unlocked volume (dm-N).
@@ -201,6 +205,14 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             };
             rows.push((row("Boot", boot, "nav", false), Action::Open(Screen::Boot)));
             rows.push((row("Autoboot", auto, "nav", false), Action::Open(Screen::Autoboot)));
+            let opts = match &s.options {
+                None => String::new(),
+                Some(o) => {
+                    let set: Vec<String> = o.iter().filter(|o| !o.state.is_empty()).map(|o| format!("{} {}", o.title, o.state)).collect();
+                    if set.is_empty() { "As each entry has them".to_string() } else { set.join("  ·  ") }
+                }
+            };
+            rows.push((row("Boot options", opts, "nav", false), Action::Open(Screen::BootOptions)));
             rows.push((row("Services", svc.join("  ·  "), "nav", false), Action::Open(Screen::Services)));
             if let Some(r) = s.services.iter().find(|v| v.name == "remote" && v.running) {
                 rows.push((row("Remote UI is on", r.detail.clone(), "info", false), Action::Open(Screen::Services)));
@@ -253,6 +265,27 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 }
             }
             ("Autoboot".into(), "Starting the default entry on its own".into(), rows)
+        }
+        Screen::BootOptions => {
+            match &s.options {
+                None => rows.push(info("Reading…", "")),
+                Some(opts) => {
+                    for o in opts {
+                        // Default, then on, then off, round again.
+                        let (label, next) = match o.state.as_str() {
+                            "on" => ("On", "off"),
+                            "off" => ("Off", ""),
+                            _ => ("Entry's own", "on"),
+                        };
+                        rows.push((
+                            row(o.title.clone(), format!("{label}  ·  {}", o.detail), "nav", false),
+                            Action::OptionSet(o.id.clone(), next.to_string()),
+                        ));
+                    }
+                    rows.push(info("Applies to every Linux entry, from the next boot", "Kept until changed"));
+                }
+            }
+            ("Boot options".into(), "Select to change: entry's own, on, off".into(), rows)
         }
         Screen::Services => {
             for v in &s.services {

@@ -17,6 +17,7 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Main => "/menu".into(),
         Screen::Boot => "/boot".into(),
         Screen::Autoboot => "/autoboot".into(),
+        Screen::BootOptions => "/boot-options".into(),
         Screen::Services => "/services".into(),
         Screen::Disks(_) => "/partitions".into(),
         Screen::Log(_) => "/log".into(),
@@ -51,6 +52,7 @@ pub fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
     match parts.as_slice() {
         ["boot"] => (vec![Screen::Main], Screen::Boot),
         ["autoboot"] => (vec![Screen::Main], Screen::Autoboot),
+        ["boot-options"] => (vec![Screen::Main], Screen::BootOptions),
         ["services"] => (vec![Screen::Main], Screen::Services),
         ["log"] => (vec![Screen::Main], Screen::Log(Load::Waiting)),
         ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics),

@@ -149,6 +149,17 @@ pub struct Autoboot {
     pub label: String,
 }
 
+/// A command-line option (boot.options): "" leaves the entries' own words,
+/// "on" or "off" is the user's choice, kept for every boot.
+#[derive(Deserialize, Clone)]
+pub struct BootOption {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    #[serde(default)]
+    pub state: String,
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Service {
     pub name: String,
