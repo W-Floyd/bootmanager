@@ -13,7 +13,11 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 static SAMPLES: [AtomicUsize; CAP] = [const { AtomicUsize::new(0) }; CAP];
 
 extern "C" fn on_prof(_: libc::c_int, _: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
-    // SAFETY: the kernel passes a ucontext_t for an SA_SIGINFO handler.
+    // SAFETY: the kernel passes a ucontext_t for an SA_SIGINFO handler. The
+    // program counter field is named per architecture.
+    #[cfg(target_arch = "arm")]
+    let pc = unsafe { (*(ctx as *mut libc::ucontext_t)).uc_mcontext.arm_pc } as usize;
+    #[cfg(not(target_arch = "arm"))]
     let pc = unsafe { (*(ctx as *mut libc::ucontext_t)).uc_mcontext.pc } as usize;
     let i = NEXT.fetch_add(1, Ordering::Relaxed);
     if i < CAP {
