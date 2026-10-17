@@ -2,7 +2,7 @@
 //! the backend state, each row with what activating it does.
 
 use crate::app::State;
-use crate::proto::{Disk, FsckResult, Listing, Slot, SlotsInfo, Supply, Text};
+use crate::proto::{Disk, FsckResult, Listing, Slot, SlotsInfo, Supply, Text, WifiStatus};
 use crate::Row;
 use slint::{Image, SharedString};
 use std::collections::BTreeMap;
@@ -34,6 +34,11 @@ pub enum Screen {
     EditCmdline { index: usize, label: String },
     /// The battery and charger (State's `supplies`).
     Battery,
+    /// What the micom reports of the vehicle and the link to it (State's `vehicle`).
+    Vehicle,
+    /// Which bytes of which micom frames change when something on the car
+    /// does, to learn what they mean (State's `vehicle`, and a mark).
+    Learn,
     Services,
     Disks(Load<Vec<Disk>>),
     Files { dev: String, name: String, path: String, listing: Load<Listing> },
@@ -44,6 +49,10 @@ pub enum Screen {
     /// The passphrase of a LUKS partition, typed in the field above the
     /// list on the on-screen keyboard; the volume then shows as a partition.
     Unlock { dev: String, name: String },
+    /// The Wi-Fi radio: access point or client (State's `wifi`, `wifi_nets`).
+    Wifi(Load<WifiStatus>),
+    /// The password of a scanned network, in the same field as Unlock's.
+    WifiJoin { ssid: String, secured: bool },
     /// One file: what can be done with it.
     File { dev: String, path: String, size: u64 },
     /// A file's start, as text.
@@ -103,6 +112,21 @@ pub enum Action {
     BootEdited(usize),
     /// disk.unlock with the typed passphrase; the Unlock screen's dev.
     Unlock,
+    /// stage.rekexec: load the USB stick's kernel and initramfs and jump to
+    /// them, without going back through the vendor system.
+    Rekexec,
+    /// vehicle.mark: the baseline the Learn screen's changes count from.
+    VehicleMark,
+    /// wifi.scan: lists networks in range, and stops the access point.
+    WifiScan,
+    /// wifi.ap: back to the access point.
+    WifiAp,
+    /// wifi.join with the typed password (none for an open network).
+    WifiJoin,
+    /// wifi.join of a saved network, with the key kept on the stick.
+    WifiJoinSaved(String),
+    /// wifi.forget: every saved network.
+    WifiForget,
     /// disk.lock on an unlocked volume (dm-N).
     Lock(String),
     Back,
@@ -224,9 +248,15 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 rows.push((row("Remote UI is on", r.detail.clone(), "info", false), Action::Open(Screen::Services)));
             }
             rows.push((row("Partitions", "Browse file systems, read-only", "nav", false), Action::Open(Screen::Disks(Load::Waiting))));
+            if s.wifi_available {
+                rows.push((row("Wi-Fi", "Access point or join a network", "nav", false), Action::Open(Screen::Wifi(Load::Waiting))));
+            }
             rows.push((row("Log", "Stage and backend output", "nav", false), Action::Open(Screen::Log(Load::Waiting))));
             rows.push((row("Diagnostics", "Battery, boot slots and the bootloader", "nav", false), Action::Open(Screen::Diagnostics)));
             rows.push((row("About", "Credits and licences", "nav", false), Action::Open(Screen::About)));
+            if s.rekexec_available {
+                rows.push((row("Re-kexec from USB", "Load the stick's kernel and stage, then jump to it", "action", false), Action::Rekexec));
+            }
             rows.push((row("Reboot", "", "action", false), Action::Reboot(String::new())));
             for m in &s.modes {
                 rows.push((row(format!("Reboot to {m}"), "", "action", false), Action::Reboot(m.clone())));
@@ -377,6 +407,57 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             let sub = if name.is_empty() { dev.clone() } else { format!("{dev}  ·  {name}") };
             ("Unlock".into(), sub, rows)
         }
+        Screen::Wifi(st) => {
+            rows.extend(pending(st, "Reading…"));
+            if let Load::Ready(w) = st {
+                let (title, detail) = match w.mode.as_str() {
+                    "ap" => (format!("Access point {}", w.ssid), format!("{}  ·  ssh to this address", w.ip)),
+                    "client" if w.state == "COMPLETED" => (format!("Connected to {}", w.ssid), w.ip.clone()),
+                    "client" => (format!("Joining {}", w.ssid), w.state.clone()),
+                    "none" => ("No radio".to_string(), w.state.clone()),
+                    _ => ("Radio off".to_string(), String::new()),
+                };
+                rows.push(info(title, detail));
+                match &s.wifi_run {
+                    UnlockRun::Working => rows.push(info("Working…", "Scanning takes a few seconds")),
+                    UnlockRun::Failed(e) => rows.push(info("Failed", e.clone())),
+                    UnlockRun::Idle => {}
+                }
+                if w.mode == "none" {
+                    return ("Wi-Fi".into(), "Waiting for the radio".into(), rows);
+                }
+                if w.mode != "ap" {
+                    rows.push((row("Start access point", "Others join this device", "action", false), Action::WifiAp));
+                }
+                rows.push((
+                    row("Scan for networks", if w.mode == "ap" { "Stops the access point (and ssh over it)" } else { "" }, "action", false),
+                    Action::WifiScan,
+                ));
+                for name in &w.saved {
+                    rows.push((row(name.clone(), "Saved  ·  tap to connect", "nav", false), Action::WifiJoinSaved(name.clone())));
+                }
+                if !w.saved.is_empty() {
+                    rows.push((row("Forget saved networks", "Their keys are removed from the stick", "danger", false), Action::WifiForget));
+                }
+                for n in &s.wifi_nets {
+                    let detail = format!("{} dBm  ·  {}", n.signal, if n.secured { "secured" } else { "open" });
+                    let open = Screen::WifiJoin { ssid: n.ssid.clone(), secured: n.secured };
+                    rows.push((row(n.ssid.clone(), detail, "nav", false), Action::Open(open)));
+                }
+            }
+            ("Wi-Fi".into(), "Select a network to join".into(), rows)
+        }
+        Screen::WifiJoin { ssid, secured } => {
+            match &s.wifi_run {
+                UnlockRun::Working => rows.push(info("Connecting…", "Waiting for an address")),
+                UnlockRun::Failed(e) => rows.push(info("Not connected", e.clone())),
+                UnlockRun::Idle => {}
+            }
+            if !secured {
+                rows.push((row("Connect", "Open network, no password", "action", false), Action::WifiJoin));
+            }
+            (ssid.clone(), if *secured { "Type the password, then Return" } else { "Open network" }.into(), rows)
+        }
         Screen::Fsck { dev, disk, confirm } => {
             // A link to /check/<dev> on a stage without the tools.
             if !s.fsck_available {
@@ -476,6 +557,22 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
             };
             ("Battery".into(), sub, rows)
         }
+        // The micom's frames, decoded, and the alive exchange it resets the
+        // SoC without; read again while the screen is up (App::refresh_power).
+        Screen::Learn => {
+            rows.extend(learn_rows(s.vehicle.as_ref()));
+            ("Learn".into(), "Which bytes change when something on the car does".into(), rows)
+        }
+        Screen::Vehicle => {
+            rows.push((row("Learn", "Which bytes change when something on the car does", "nav", false), Action::Open(Screen::Learn)));
+            rows.extend(vehicle_rows(s.vehicle.as_ref()));
+            let sub = match &s.vehicle {
+                Some(v) if v.present && v.up => "Micom link up".to_string(),
+                Some(v) if v.present => "Micom link silent".to_string(),
+                _ => "No micom link on this stage".to_string(),
+            };
+            ("Vehicle".into(), sub, rows)
+        }
         Screen::Diagnostics => {
             let power = match &s.battery {
                 Some(b) if b.present && b.percent >= 0 => format!("{} %  ·  {}", b.percent, if b.charging { "Charging" } else { "Not charging" }),
@@ -483,6 +580,12 @@ fn screen(s: &State) -> (String, String, Vec<(Row, Action)>) {
                 _ => "No battery found".to_string(),
             };
             rows.push((row("Battery", power, "nav", false), Action::Open(Screen::Battery)));
+            let vehicle = match &s.vehicle {
+                Some(v) if v.present && v.up => "Micom link up".to_string(),
+                Some(v) if v.present => "Micom link silent".to_string(),
+                _ => "The micom's view of the vehicle".to_string(),
+            };
+            rows.push((row("Vehicle", vehicle, "nav", false), Action::Open(Screen::Vehicle)));
             rows.push((row("Boot", "A/B slots and the bootloader's state", "nav", false), Action::Open(Screen::BootInfo(Load::Waiting))));
             ("Diagnostics".into(), "What the device reports".into(), rows)
         }
@@ -529,6 +632,108 @@ const KNOWN: [&str; 31] = [
     "constant_charge_current", "constant_charge_voltage", "charge_term_current", "precharge_current",
     "voltage_min_design", "voltage_max_design", "constant_charge_current_max",
 ];
+
+/// "3 s ago" for a reading's age in milliseconds.
+fn age(ms: i64) -> String {
+    match ms {
+        i64::MIN..=-1 => "never".into(),
+        0..=1499 => "just now".into(),
+        1500..=89_999 => format!("{} s ago", (ms + 500) / 1000),
+        _ => format!("{} min ago", ms / 60_000),
+    }
+}
+
+/// A byte that changed this many times since the mark is a counter or a
+/// timer, not a switch.
+const BUSY: u32 = 6;
+
+fn hex_or_unknown(v: i32) -> String {
+    if v < 0 {
+        "?".into()
+    } else {
+        format!("{v:02x}")
+    }
+}
+
+/// The bytes of a frame that changed, for the Learn screen: the ones that
+/// change constantly are only listed ("busy"), the ones that moved a few
+/// times are shown with what they were and what they are.
+fn diff_text(f: &crate::proto::VehicleFrame) -> String {
+    let busy: Vec<String> = f.diffs.iter().filter(|d| d.changes >= BUSY).map(|d| format!("b{}", d.idx)).collect();
+    let quiet: Vec<String> = f
+        .diffs
+        .iter()
+        .filter(|d| d.changes < BUSY)
+        .map(|d| format!("b{} {}→{} ({}×, {})", d.idx, hex_or_unknown(d.from), hex_or_unknown(d.to), d.changes, age(d.age_ms)))
+        .collect();
+    let mut parts = vec![];
+    for q in quiet.iter().take(6) {
+        parts.push(q.clone());
+    }
+    if quiet.len() > 6 {
+        parts.push(format!("{} more", quiet.len() - 6));
+    }
+    if !busy.is_empty() {
+        parts.push(format!("busy: {}", busy.join(" ")));
+    }
+    parts.join("  ·  ")
+}
+
+/// The Learn screen: Mark records a baseline, then each kind of frame whose
+/// bytes changed since is listed, the quiet changes (a switch, a door) before
+/// the counters, newest first, so what the car just did is on top.
+pub fn learn_rows(v: Option<&crate::proto::Vehicle>) -> Vec<(Row, Action)> {
+    let Some(v) = v.filter(|v| v.present) else {
+        return vec![info("Micom", "This stage does not run the micom link")];
+    };
+    let marked = if v.marked_age_ms >= 0 {
+        format!("Marked {}: now change something on the car", age(v.marked_age_ms))
+    } else {
+        "Records a baseline; what changes after it is listed here".to_string()
+    };
+    let mut rows = vec![(row("Mark now", marked, "action", false), Action::VehicleMark)];
+    let mut changed: Vec<&crate::proto::VehicleFrame> = v.frames.iter().filter(|f| !f.diffs.is_empty()).collect();
+    // Frames with a quiet change first, then by how recent their newest change is.
+    changed.sort_by_key(|f| {
+        let quiet = f.diffs.iter().any(|d| d.changes < BUSY);
+        (!quiet, f.diffs.iter().map(|d| d.age_ms).min().unwrap_or(i64::MAX))
+    });
+    for f in &changed {
+        let title = if f.name.is_empty() { f.key.clone() } else { format!("{}  ({})", f.name, f.key) };
+        rows.push(info(title, diff_text(f)));
+    }
+    rows.push(info("Unchanged", format!("{} kinds of frame", v.frames.len() - changed.len())));
+    rows
+}
+
+/// The micom link for Diagnostics: its health and the alive exchange first,
+/// then each decoded value, then every kind of frame it sent (those with no
+/// known layout by their header and command).
+pub fn vehicle_rows(v: Option<&crate::proto::Vehicle>) -> Vec<(Row, Action)> {
+    let Some(v) = v.filter(|v| v.present) else {
+        return vec![info("Micom", "This stage does not run the micom link")];
+    };
+    let mut rows = vec![];
+    let link = if v.up { "Up" } else { "No frames lately" };
+    rows.push(info("Link", format!("{link}  ·  {} received, {} sent", v.rx_frames, v.tx_frames)));
+    if v.bad_sum > 0 || v.dropped > 0 {
+        rows.push(info("   Errors", format!("{} bad checksums, {} bytes dropped", v.bad_sum, v.dropped)));
+    }
+    let asked = if v.last_alive_age_ms >= 0 { format!("last asked {}", age(v.last_alive_age_ms)) } else { "not asked yet".into() };
+    rows.push(info("CPU alive", format!("{} of {} answered  ·  {asked}", v.alive_tx, v.alive_rx)));
+    for r in &v.readings {
+        let value = if r.valid { format!("{}{}", r.value, r.unit) } else { "n/a".to_string() };
+        rows.push(info(r.name.clone(), format!("{value}  ·  {}", age(r.age_ms))));
+    }
+    if !v.frames.is_empty() {
+        rows.push(info("Frames", format!("{} kinds seen", v.frames.len())));
+        for f in &v.frames {
+            let name = if f.name.is_empty() { f.key.clone() } else { format!("{}  ({})", f.name, f.key) };
+            rows.push(info(format!("   {name}"), format!("{}  ·  {}", f.count, age(f.age_ms))));
+        }
+    }
+    rows
+}
 
 /// What the kernel says of each power supply, for Diagnostics: the battery
 /// first (its level, voltage, current, temperature, health, charge),
@@ -655,6 +860,61 @@ mod tests {
 
     fn slot(name: &str, active: bool, priority: u32, successful: bool) -> Slot {
         Slot { name: name.into(), booted: name == "a", active, priority, retries: 3, successful, unbootable: false }
+    }
+
+    #[test]
+    fn vehicle_rows_read_the_link() {
+        use crate::proto::{Vehicle, VehicleFrame, VehicleReading};
+        let text = |rows: Vec<(Row, Action)>| rows.into_iter().map(|(r, _)| (r.title.to_string(), r.detail.to_string())).collect::<Vec<_>>();
+        assert_eq!(text(vehicle_rows(None))[0].0, "Micom");
+        let v = Vehicle {
+            present: true,
+            up: true,
+            rx_frames: 100,
+            tx_frames: 20,
+            alive_rx: 4,
+            alive_tx: 4,
+            last_alive_age_ms: 3000,
+            readings: vec![
+                VehicleReading { name: "Climate power".into(), value: 255, valid: true, unit: " W".into(), age_ms: 1000 },
+                VehicleReading { name: "AVN motor power".into(), value: 0, valid: false, unit: String::new(), age_ms: 1000 },
+            ],
+            frames: vec![VehicleFrame { key: "0d8f018d 2d".into(), name: String::new(), count: 9, age_ms: 200, payload: String::new(), diffs: vec![] }],
+            ..Default::default()
+        };
+        let rows = text(vehicle_rows(Some(&v)));
+        assert_eq!(rows[0], ("Link".into(), "Up  ·  100 received, 20 sent".into()));
+        assert_eq!(rows[1], ("CPU alive".into(), "4 of 4 answered  ·  last asked 3 s ago".into()));
+        assert_eq!(rows[2], ("Climate power".into(), "255 W  ·  just now".into()));
+        assert_eq!(rows[3].1, "n/a  ·  just now");
+        assert_eq!(rows.last().unwrap(), &("   0d8f018d 2d".into(), "9  ·  just now".into()));
+    }
+
+    #[test]
+    fn learn_rows_put_quiet_changes_first() {
+        use crate::proto::{Vehicle, VehicleDiff, VehicleFrame};
+        let diff = |idx, from, to, changes, age_ms| VehicleDiff { idx, from, to, changes, age_ms };
+        let frame = |key: &str, name: &str, diffs| VehicleFrame { key: key.into(), name: name.into(), count: 10, age_ms: 0, payload: String::new(), diffs };
+        let v = Vehicle {
+            present: true,
+            up: true,
+            marked_age_ms: 12_000,
+            frames: vec![
+                // A counter that moves all the time, and the newest change.
+                frame("0d8f018d 2d", "", vec![diff(0, 1, 90, 40, 100), diff(1, 0, 3, 40, 100)]),
+                frame("0c88018c 4f", "Charger state", vec![diff(3, 0x00, 0x40, 1, 4000)]),
+                frame("0c88018c 55", "Departure timers", vec![]),
+            ],
+            ..Default::default()
+        };
+        let rows: Vec<(String, String)> = learn_rows(Some(&v)).into_iter().map(|(r, _)| (r.title.to_string(), r.detail.to_string())).collect();
+        assert_eq!(rows[0], ("Mark now".into(), "Marked 12 s ago: now change something on the car".into()));
+        // The switch-like change is above the counter, though it is older.
+        assert_eq!(rows[1].0, "Charger state  (0c88018c 4f)");
+        assert_eq!(rows[1].1, "b3 00→40 (1×, 4 s ago)");
+        assert_eq!(rows[2], ("0d8f018d 2d".into(), "busy: b0 b1".into()));
+        assert_eq!(rows[3], ("Unchanged".into(), "1 kinds of frame".into()));
+        assert_eq!(learn_rows(None)[0].0.title.as_str(), "Micom");
     }
 
     #[test]

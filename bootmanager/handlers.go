@@ -16,7 +16,7 @@ import (
 
 // protocolVersion changes whenever a command or event changes shape; the
 // UI refuses a backend of another version.
-const protocolVersion = 7
+const protocolVersion = 10
 
 type none struct{}
 
@@ -30,7 +30,7 @@ type fileArgs struct {
 func (a *app) register() {
 	s := a.rpc
 	rpc.Handle(s, "hello", func(none) (any, error) {
-		return map[string]any{"version": protocolVersion, "files_port": filesPort, "model": model(), "fsck": fsck.Available(*fsckDir), "luks": luks.Available(*cryptsetupBin)}, nil
+		return map[string]any{"version": protocolVersion, "files_port": filesPort, "model": model(), "fsck": fsck.Available(*fsckDir), "luks": luks.Available(*cryptsetupBin), "wifi": a.wifiRunner().HasTools(), "rekexec": *rekexecCmd != ""}, nil
 	})
 	rpc.Handle(s, "stage.ready", func(none) (any, error) {
 		if !a.isReady() {
@@ -46,6 +46,11 @@ func (a *app) register() {
 		Index   int
 		Cmdline string
 	}) (any, error) {
+		// An app returns when it exits, with success: the reply says so, as
+		// a kernel's handover never replies at all.
+		if a.boot.IsApp(x.Index) {
+			return map[string]bool{"app": true}, a.boot.Start(x.Index)
+		}
 		if x.Cmdline != "" {
 			return nil, a.boot.StartWith(x.Index, x.Cmdline)
 		}
@@ -131,6 +136,8 @@ func (a *app) register() {
 	}))
 	a.registerFsck()
 	a.registerUnlock()
+	a.registerWifi()
+	a.registerRekexec()
 	rpc.Handle(s, "display.info", func(none) (any, error) { return displayInfo() })
 	rpc.Handle(s, "log.tail", func(x struct{ Lines int }) (any, error) { return a.logTail(x.Lines), nil })
 	rpc.Handle(s, "power.modes", func(none) (any, error) { return power.Modes(allowedModes()), nil })

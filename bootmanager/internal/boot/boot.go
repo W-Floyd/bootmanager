@@ -38,6 +38,23 @@ type Config struct {
 	ScanDir string
 	// Autoboot is the countdown in seconds; 0 disables it.
 	Autoboot int
+	// ScanRetries is how many more times, a second apart, to scan when a
+	// scan finds nothing (a card can be slow to appear); the UI's splash
+	// stays up meanwhile. 0 settles on the first scan: for a stage that has
+	// no entries to find.
+	ScanRetries int
+	// AndroidBoot names the GPT partitions to look in for an Android boot
+	// image of header version 0, 1 or 2 (androidlegacy.go), each an entry;
+	// empty for none. AndroidDTB names the partition holding the device tree
+	// such an image is booted with when it carries none, and AndroidCmdline
+	// a file of words added to its command line (what the bootloader would
+	// have added).
+	AndroidBoot    []string
+	AndroidDTB     string
+	AndroidCmdline string
+	// Kexec runs kexec-tools to load those entries, where u-root cannot
+	// (32-bit ARM); empty to load them as every other entry.
+	Kexec KexecTools
 	// HoldFile, when it exists as the countdown starts or ends, stops the
 	// autoboot.
 	HoldFile string
@@ -74,6 +91,12 @@ type Config struct {
 	// is not known: how a default inside an encrypted volume is remembered
 	// and then found again while the volume is locked.
 	VolumeUUID func(dev string) string
+	// Apps are tiles that run a program on the stage instead of booting a
+	// kernel (app.go); they follow the boot entries and are never the default.
+	Apps []AppSpec
+	// Suspend and Resume take the UI down while an app runs, and bring it
+	// back after.
+	Suspend, Resume func()
 }
 
 type Manager struct {
@@ -199,6 +222,7 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	// After the console edit: Android's command line is the bootloader's,
 	// console= included.
 	imgs = append(imgs, androidEntries(m.pool.MountPoints, devs, m.cfg.AndroidPartitions, m.cfg.BootloaderDir)...)
+	imgs = append(imgs, legacyAndroidEntries(devs, m.cfg.AndroidBoot, m.cfg.AndroidDTB, m.cfg.AndroidCmdline, m.cfg.BootloaderDir, m.cfg.Kexec)...)
 	return imgs, nil
 }
 
@@ -224,7 +248,7 @@ func (m *Manager) Run() {
 	imgs, err := m.scan()
 	// Not when an encrypted volume is there to unlock: that is why there is
 	// nothing, and waiting would only keep the splash up for ten seconds.
-	for i := 0; i < 10 && len(imgs) == 0 && !m.hasLocked(); i++ {
+	for i := 0; i < m.cfg.ScanRetries && len(imgs) == 0 && !m.hasLocked(); i++ {
 		log.Printf("scan found 0 entries (%v), trying again", err)
 		select {
 		case <-m.stop:
@@ -456,10 +480,13 @@ func (m *Manager) List() Entries {
 	e := Entries{Scanning: !m.scanned, Entries: []Entry{}, Locked: append([]Locked{}, m.locked...), Unlock: m.pendingUnlock, Default: m.def, Explicit: m.explicit}
 	for _, img := range m.images {
 		detail := ""
-		if li, ok := img.(*boot.LinuxImage); ok {
+		if li, ok := asLinux(img); ok {
 			detail = li.Cmdline
 		}
 		e.Entries = append(e.Entries, Entry{Label: img.Label(), Detail: detail, Source: sourceOf(img)})
+	}
+	for _, a := range m.cfg.Apps {
+		e.Entries = append(e.Entries, Entry{Label: a.Label, Detail: a.Detail, Source: "app"})
 	}
 	return e
 }
@@ -477,6 +504,9 @@ func (m *Manager) Image(i int) (boot.OSImage, error) {
 // Start boots entry i; it returns only on failure.
 func (m *Manager) Start(i int) error {
 	m.CancelBy("boot start")
+	if app, ok := m.appAt(i); ok {
+		return m.runApp(app)
+	}
 	img, err := m.Image(i)
 	if err != nil {
 		return err
@@ -503,7 +533,7 @@ func (m *Manager) Handover(img boot.OSImage) error {
 
 	// The options the user set, on the entry's own command line first: what
 	// a dev build then adds for one try goes after, and wins.
-	if li, ok := img.(*boot.LinuxImage); ok {
+	if li, ok := asLinux(img); ok {
 		m.mu.Lock()
 		one := m.oneBoot
 		m.mu.Unlock()
@@ -517,14 +547,14 @@ func (m *Manager) Handover(img boot.OSImage) error {
 			li.Cmdline = edited
 		}
 	}
-	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.CmdlineExtra != nil {
+	if li, ok := asLinux(img); ok && m.cfg.CmdlineExtra != nil {
 		if extra := strings.TrimSpace(m.cfg.CmdlineExtra()); extra != "" {
 			li.Cmdline += " " + extra
 			log.Printf("booting %s: command line words added: %s", img.Label(), extra)
 		}
 	}
 	log.Printf("booting %s", img)
-	if li, ok := img.(*boot.LinuxImage); ok && m.cfg.InitrdExtra != nil {
+	if li, ok := asLinux(img); ok && m.cfg.InitrdExtra != nil {
 		if extra, words := m.cfg.InitrdExtra(li.Cmdline); len(extra) > 0 {
 			// What the extra archive needs the system to be told (where its
 			// unlock key is, for a distribution whose initramfs wants that on

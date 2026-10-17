@@ -92,10 +92,20 @@ pub struct State {
     pub flash_model: crate::flashmodel::FlashModel,
     /// Every power supply's properties, read when Diagnostics opens.
     pub supplies: Vec<proto::Supply>,
+    /// What the micom link reports, read again while the Vehicle screen is up.
+    pub vehicle: Option<proto::Vehicle>,
     /// The stage has the checkers (an optional part of a stage build).
     pub fsck_available: bool,
     /// The stage can unlock LUKS partitions (cryptsetup is optional too).
     pub luks_available: bool,
+    /// The stage has a Wi-Fi radio (wifi.* commands).
+    pub wifi_available: bool,
+    /// The stage can load a kernel from the USB stick and jump to it.
+    pub rekexec_available: bool,
+    /// Where a scan or join stands, on the Wi-Fi screens.
+    pub wifi_run: UnlockRun,
+    /// The last scan's networks.
+    pub wifi_nets: Vec<proto::WifiNetwork>,
     pub unlock: UnlockRun,
     pub modes: Vec<String>,
     /// Files can be handed to a browser (the web build).
@@ -185,8 +195,13 @@ impl App {
                 flash: proto::Flash::default(),
                 flash_model: Default::default(),
                 supplies: vec![],
+                vehicle: None,
                 fsck_available: false,
                 luks_available: false,
+                wifi_available: false,
+                rekexec_available: false,
+                wifi_run: UnlockRun::Idle,
+                wifi_nets: Vec::new(),
                 unlock: UnlockRun::Idle,
                 modes: vec![],
                 browser: matches!(mode, Mode::Browser { .. }),
@@ -221,7 +236,13 @@ impl App {
             }
         };
         ui.on_back(on(|a| a.back()));
-        ui.on_passphrase_accepted(on(|a| a.unlock()));
+        ui.on_passphrase_accepted(on(|a| {
+            if matches!(a.state.borrow().screen, Screen::WifiJoin { .. }) {
+                a.wifi_join()
+            } else {
+                a.unlock()
+            }
+        }));
         // The on-screen keyboard presses a key of the window, as the
         // examples/virtual_keyboard of Slint does; the focused text field
         // takes it like a real key.
@@ -340,10 +361,28 @@ impl App {
     /// every couple of seconds while it is up, which is when a plug or
     /// unplug, or the voltage and current moving, shows.
     fn refresh_power(self: &Rc<Self>) {
-        if !self.client.connected() || !matches!(self.state.borrow().screen, Screen::Battery) {
+        if !self.client.connected() {
             return;
         }
-        self.refresh_power_now();
+        let vehicle = match self.state.borrow().screen {
+            Screen::Battery => false,
+            Screen::Vehicle | Screen::Learn => true,
+            _ => return,
+        };
+        if vehicle {
+            self.refresh_vehicle_now();
+        } else {
+            self.refresh_power_now();
+        }
+    }
+
+    /// The Vehicle screen follows the micom link the same way.
+    fn refresh_vehicle_now(self: &Rc<Self>) {
+        self.call("vehicle.state", json!({}), |a, r: Result<proto::Vehicle, _>| {
+            if let Ok(v) = r {
+                a.state.borrow_mut().vehicle = Some(v);
+            }
+        });
     }
 
     fn refresh_power_now(self: &Rc<Self>) {
@@ -392,6 +431,8 @@ impl App {
                 a.state.borrow_mut().files_port = h.files_port;
                 a.state.borrow_mut().fsck_available = h.fsck;
                 a.state.borrow_mut().luks_available = h.luks;
+                a.state.borrow_mut().wifi_available = h.wifi;
+                a.state.borrow_mut().rekexec_available = h.rekexec;
             }
             Ok(h) => a.state.borrow_mut().error = format!("Backend protocol {}, UI {}: update both", h.version, proto::VERSION),
             Err(e) => a.state.borrow_mut().error = e,
@@ -585,6 +626,7 @@ impl App {
                 }
             }),
             Screen::Battery => self.refresh_power_now(),
+            Screen::Vehicle | Screen::Learn => self.refresh_vehicle_now(),
             Screen::BootInfo(_) => self.fetch("slots.info", json!({}), |s, l| {
                 if let Screen::BootInfo(d) = &mut s.screen {
                     *d = l;
@@ -626,7 +668,12 @@ impl App {
                     Err(e) => a.state.borrow_mut().error = e,
                 });
             }
-            Screen::File { .. } | Screen::Unlock { .. } | Screen::Diagnostics | Screen::About => {}
+            Screen::Wifi(_) => self.fetch("wifi.status", json!({}), |s, l| {
+                if let Screen::Wifi(w) = &mut s.screen {
+                    *w = l
+                }
+            }),
+            Screen::File { .. } | Screen::Unlock { .. } | Screen::WifiJoin { .. } | Screen::Diagnostics | Screen::About => {}
         }
     }
 
@@ -704,7 +751,10 @@ impl App {
             let mut s = self.state.borrow_mut();
             // A passphrase, or an edited command line, lives only while its
             // screen is up.
-            if !matches!(screen, Screen::Unlock { .. } | Screen::EditCmdline { .. }) {
+            if !matches!(screen, Screen::WifiJoin { .. } | Screen::Wifi(_)) {
+                s.wifi_run = UnlockRun::Idle;
+            }
+            if !matches!(screen, Screen::Unlock { .. } | Screen::EditCmdline { .. } | Screen::WifiJoin { .. }) {
                 s.unlock = UnlockRun::Idle;
                 if let Some(ui) = self.ui.upgrade() {
                     ui.set_passphrase("".into());
@@ -1030,12 +1080,85 @@ impl App {
         });
     }
 
+    /// Scans for networks. The radio leaves access-point mode to do it.
+    fn wifi_scan(self: &Rc<Self>) {
+        if matches!(self.state.borrow().wifi_run, UnlockRun::Working) {
+            return;
+        }
+        self.state.borrow_mut().wifi_run = UnlockRun::Working;
+        self.call("wifi.scan", json!({}), |a, r: Result<Vec<proto::WifiNetwork>, _>| {
+            {
+                let mut s = a.state.borrow_mut();
+                match r {
+                    Ok(n) => {
+                        s.wifi_nets = n;
+                        s.wifi_run = UnlockRun::Idle;
+                    }
+                    Err(e) => s.wifi_run = UnlockRun::Failed(e),
+                }
+            }
+            a.load_screen();
+        });
+    }
+
+    fn wifi_ap(self: &Rc<Self>) {
+        if matches!(self.state.borrow().wifi_run, UnlockRun::Working) {
+            return;
+        }
+        self.state.borrow_mut().wifi_run = UnlockRun::Working;
+        self.call("wifi.ap", json!({"on": true}), |a, r: Result<proto::WifiStatus, _>| {
+            a.state.borrow_mut().wifi_run = match r {
+                Ok(_) => UnlockRun::Idle,
+                Err(e) => UnlockRun::Failed(e),
+            };
+            a.load_screen();
+        });
+    }
+
+    /// Joins the network of the WifiJoin screen with the typed password,
+    /// cleared at once like a passphrase. Success goes back to the Wi-Fi
+    /// screen, which then shows the address.
+    fn wifi_join(self: &Rc<Self>) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let (ssid, psk) = {
+            let mut s = self.state.borrow_mut();
+            let Screen::WifiJoin { ssid, secured } = &s.screen else { return };
+            let (ssid, secured) = (ssid.clone(), *secured);
+            let psk = if secured { ui.get_passphrase().to_string() } else { String::new() };
+            if (secured && psk.is_empty()) || matches!(s.wifi_run, UnlockRun::Working) {
+                return;
+            }
+            s.wifi_run = UnlockRun::Working;
+            ui.set_working_text("Connecting…".into());
+            ui.set_working(true);
+            ui.set_passphrase("".into());
+            (ssid, psk)
+        };
+        self.call("wifi.join", json!({"ssid": ssid, "psk": psk}), |a, r: Result<proto::WifiStatus, _>| {
+            if let Some(ui) = a.ui.upgrade() {
+                ui.set_working(false);
+                ui.set_working_text("Unlocking…".into());
+            }
+            match r {
+                Ok(_) => {
+                    a.state.borrow_mut().wifi_run = UnlockRun::Idle;
+                    a.back();
+                }
+                Err(e) => a.state.borrow_mut().wifi_run = UnlockRun::Failed(e),
+            }
+        });
+    }
+
     fn activate(self: &Rc<Self>, i: usize) {
         let action = self.state.borrow().actions.get(i).cloned().unwrap_or(Action::None);
         match action {
             Action::Open(s) => self.open(s),
             Action::Back => self.back(),
             Action::Refresh => self.load_screen(),
+            Action::VehicleMark => self.call("vehicle.mark", json!({}), |a, r: Result<proto::Vehicle, _>| match r {
+                Ok(v) => a.state.borrow_mut().vehicle = Some(v),
+                Err(e) => a.state.borrow_mut().error = e,
+            }),
             Action::Boot(i) => self.launch(i),
             Action::Service(name, on) => self.call("service.set", json!({"name": name, "running": on}), |a, r| match r {
                 Ok(v) => a.state.borrow_mut().services = v,
@@ -1082,6 +1205,31 @@ impl App {
                 })
             }
             Action::Unlock => self.unlock(),
+            Action::WifiJoin => self.wifi_join(),
+            Action::WifiJoinSaved(ssid) => {
+                if matches!(self.state.borrow().wifi_run, UnlockRun::Working) {
+                    return;
+                }
+                self.state.borrow_mut().wifi_run = UnlockRun::Working;
+                self.call("wifi.join", json!({"ssid": ssid, "psk": ""}), |a, r: Result<proto::WifiStatus, _>| {
+                    a.state.borrow_mut().wifi_run = match r {
+                        Ok(_) => UnlockRun::Idle,
+                        Err(e) => UnlockRun::Failed(e),
+                    };
+                    a.load_screen();
+                })
+            }
+            Action::WifiForget => self.call("wifi.forget", json!({"ssid": ""}), |a, r: Result<proto::WifiStatus, _>| {
+                if let Err(e) = r {
+                    a.state.borrow_mut().error = e;
+                }
+                a.load_screen();
+            }),
+            Action::WifiScan => self.wifi_scan(),
+            // Success replaces this stage, so no reply comes: only a
+            // failure does, and goes on the status line.
+            Action::Rekexec => self.call("stage.rekexec", json!({}), App::report),
+            Action::WifiAp => self.wifi_ap(),
             Action::Lock(dev) => self.call("disk.lock", json!({"dev": dev}), |a, r: Result<Value, _>| match r {
                 // The volume is gone: back to the partition list.
                 Ok(_) => a.back(),
@@ -1134,10 +1282,11 @@ impl App {
         }
         ui.set_menu_open(s.menu_open);
         let editing = matches!(s.screen, Screen::EditCmdline { .. });
-        ui.set_text_entry(editing || matches!(s.screen, Screen::Unlock { .. }));
+        let wifi_pass = matches!(s.screen, Screen::WifiJoin { secured: true, .. });
+        ui.set_text_entry(editing || wifi_pass || matches!(s.screen, Screen::Unlock { .. }));
         ui.set_text_secret(!editing);
         ui.set_text_lines(if editing { 6 } else { 1 });
-        ui.set_text_hint(if editing { "Kernel command line" } else { "Passphrase" }.into());
+        ui.set_text_hint(if editing { "Kernel command line" } else if wifi_pass { "Password" } else { "Passphrase" }.into());
         match &s.battery {
             Some(b) if b.present => {
                 ui.set_battery_present(true);

@@ -1,3 +1,10 @@
+# Warning!
+
+This is LLM generated.
+That being said, I still think others might find it interesting, so here it is.
+
+Caveat emptor.
+
 # Boot Manager
 
 A boot menu and recovery screen for a LinuxBoot stage, as a PC's firmware
@@ -59,6 +66,14 @@ differs between devices and stages:
 | `-hold` | `/tmp/hold` | no autoboot while it exists |
 | `-bootloader` | `/sys/firmware/bootloader` | the device tree (`fdt`) and initramfs (`initrd`) the bootloader handed the stage, if the stage keeps them. With them, an Android boot image (v3/v4) at `android/boot.img` on a partition is an entry: its kernel, with these, and the tree's `/chosen/bootargs` as its command line |
 | `-android-partitions` | | GPT labels of partitions that may hold such an image, read raw; empty: the boot partition of the A/B slot the bootloader did not boot (its bootconfig's `androidboot.slot_suffix`), the stage being in the booted one. A partition's image wins over a file's |
+| `-android-boot` | | GPT labels (`boot,recovery`) of partitions to look in for a **legacy Android boot image**, header version 0, 1 or 2 (what a device with its own bootloader, no ABL, has: the image carries its ramdisk, and in v2 its device tree; old Qualcomm images with a QCDT are read as v0). Each is an entry, labelled `Android (boot)`, read raw and never written. Its kernel command line is the header's with `-android-cmdline`'s words after it |
+| `-android-dtb` | | the GPT label of the partition holding the device tree such an image is booted with when it has none (v0 and v1): a raw flattened tree, cut at its own size and parsed before it is used. Else the tree the bootloader handed the stage (`-bootloader`) |
+| `-android-cmdline` | | a file of words a legacy image's bootloader would have added (serial number, partition bases, the tree's own `/chosen/bootargs`, which kexec-tools replaces) |
+| `-kexec` | | kexec-tools' command, split at spaces, to load `-android-boot` entries with where u-root cannot kexec the kernel itself (32-bit ARM); the Boot Manager writes the kernel, ramdisk and tree to RAM and runs `CMD -l KERNEL --append=… --initrd=… --dtb=…`. Empty: load them as every other entry |
+| `-kexec-prep` | | a command, split at spaces, run after `-kexec` has loaded a kernel and before the jump, to quiet what could write to memory (a Wi-Fi chip, USB) |
+| `-scan-retries` | 10 | how many more times, a second apart, to scan when a boot scan finds nothing; the UI's splash waits for it. 0 for a stage with no entries |
+| `-micom` | | a serial device to answer a vehicle microcontroller's keep-alive requests on and read its state from (Diagnostics → Vehicle); a build for one device family, see `internal/micom` |
+| `-micom-log` | | append every frame the micom sends, decoded where known, and the link's counters to this file |
 | `-logs` | | files shown on the Log screen before the backend's (the uinit's log) |
 | `-autoboot` | `10` | seconds |
 | `-settings` | | where the entries' order and default, and whether to autoboot and the countdown's length (the menu's Autoboot screen; from the next start, and `-autoboot` is the default until chosen), are kept: a file, or `DEV:PATH`, a file on block device `DEV` (a kernel name) from its root, mounted only to read or write it (past the boot scan's read-only mount, which comes back as it was), or `@FILE`, a file holding one of those, for a stage that finds its boot partition at run time (`-find-boot-files`) and writes the location once it has: until `FILE` exists the load is tried again, and an empty `FILE` means nowhere to keep them. Empty: for this run only |

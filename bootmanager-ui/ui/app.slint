@@ -37,6 +37,8 @@ export component AppWindow inherits Window {
     // down from the top edge.
     property <length> side-pad: max(18px, root.corner-radius / 2);
     in property <string> busy;
+    // What the veil says while `working`.
+    in property <string> working-text: "Unlocking…";
     // A passphrase is being tried: the veil shows a spinner.
     in property <bool> working;
     // A fastboot flash under way: its screen holds the whole window.
@@ -548,7 +550,7 @@ export component AppWindow inherits Window {
         }
         Text {
             y: parent.height / 2 - 20px;
-            text: root.busy != "" ? root.busy : (root.working ? "Unlocking…" : "");
+            text: root.busy != "" ? root.busy : (root.working ? root.working-text : "");
             font-size: 20px;
             font-weight: 700;
             color: Palette.text;

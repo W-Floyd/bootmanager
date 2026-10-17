@@ -57,6 +57,12 @@ var (
 	compatible   = flag.String("compatible", "", "space-separated DT compatibles to look the panel up by, instead of /proc/device-tree (for -scan)")
 	sshKeys      = flag.String("ssh-keys", "/etc/ssh/authorized_keys", "sshd's authorized_keys")
 	sshHostKey   = flag.String("ssh-hostkey", "/etc/ssh/ssh_host_rsa_key", "sshd's host key")
+	scanRetries  = flag.Int("scan-retries", 10, "how many more times, a second apart, to scan when a boot scan finds no entries (a card can be slow to appear); the splash waits for it. 0 for a stage with no entries")
+	androidBoot  = flag.String("android-boot", "", "comma-separated GPT labels of partitions to look in for an Android boot image of header version 0, 1 or 2 (it carries its own ramdisk), each an entry; v3 and v4 images are -android-partitions'")
+	androidDTB   = flag.String("android-dtb", "", "GPT label of the partition holding the device tree a version 0 or 1 Android image is booted with (version 2 carries its own); else the bootloader's, from -bootloader")
+	androidArgs  = flag.String("android-cmdline", "", "file of words added to an Android image's command line, which its bootloader would have added (and what its device tree's /chosen/bootargs said, which kexec-tools replaces)")
+	kexecTools   = flag.String("kexec", "", "kexec-tools command, as one string split at spaces, to load -android-boot entries with, for a platform whose kernel u-root cannot kexec itself (32-bit ARM); empty loads them as every other entry")
+	kexecPrep    = flag.String("kexec-prep", "", "command, as one string split at spaces, run after -kexec has loaded a kernel and before the jump, to quiet what could write to memory")
 	waitReady    = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
 	settingsFile = flag.String("settings", "", "where the entries' order and default are kept: a file, or DEV:PATH, a file on block device DEV (kernel name) from its root, mounted only to read or write it; empty: for this run only")
 	sendCmd      = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
@@ -75,6 +81,7 @@ type app struct {
 	ui       *uiproc.Supervisor
 	web      *webServer
 	battery  batteryLevel
+	vehicle  *vehicleLink // the micom link, nil without -micom
 	keys     luks.Keyring // passphrases of the volumes unlocked here, for one boot each
 
 	ready     chan struct{} // closed once the stage is set up
@@ -133,13 +140,18 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("bootmanager starting")
 
-	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser(), slots: newSlots(), ready: make(chan struct{})}
+	a := &app{rpc: rpc.NewServer(), disks: storage.NewBrowser(), slots: newSlots(), ready: make(chan struct{}), vehicle: startMicom()}
 	if !*waitReady {
 		a.markReady()
 	}
 	a.boot = boot.New(boot.Config{
 		ScanDir:           *scanDir,
 		Autoboot:          *autoboot,
+		ScanRetries:       *scanRetries,
+		AndroidBoot:       splitList(*androidBoot),
+		AndroidDTB:        *androidDTB,
+		AndroidCmdline:    *androidArgs,
+		Kexec:             boot.KexecTools{Argv: strings.Fields(*kexecTools), Prep: strings.Fields(*kexecPrep)},
 		HoldFile:          *holdFile,
 		BootloaderDir:     *blDir,
 		AndroidPartitions: splitList(*androidParts),
@@ -149,6 +161,9 @@ func main() {
 		InitrdExtra:       a.extraInitrd,
 		CmdlineExtra:      cmdlineExtra,
 		VolumeUUID:        volumeUUID,
+		Apps:              apps,
+		Suspend:           func() { a.ui.Suspend() },
+		Resume:            func() { a.ui.Resume() },
 	})
 	a.ui = &uiproc.Supervisor{
 		Path:   func() string { return *uiPath },
@@ -183,6 +198,7 @@ func main() {
 	}
 	a.register()
 	a.watchBattery()
+	a.registerVehicle()
 	a.registerSlots()
 	if devExt != nil {
 		devExt.register(a)

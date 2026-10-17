@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 /// Changes whenever a command or event changes shape (bootmanager's
 /// protocolVersion).
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 10;
 
 #[derive(Deserialize)]
 pub struct Hello {
@@ -27,6 +27,36 @@ pub struct Hello {
     /// The stage can unlock LUKS partitions.
     #[serde(default)]
     pub luks: bool,
+    /// The stage has a Wi-Fi radio and its tools.
+    #[serde(default)]
+    pub wifi: bool,
+    /// The stage can load a kernel from the USB stick and jump to it.
+    #[serde(default)]
+    pub rekexec: bool,
+}
+
+/// wifi.scan's rows.
+#[derive(Deserialize, Clone)]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal: i32,
+    pub secured: bool,
+}
+
+/// wifi.status, and what wifi.join and wifi.ap leave behind.
+#[derive(Deserialize, Clone, Default)]
+pub struct WifiStatus {
+    /// "ap", "client" or "off".
+    pub mode: String,
+    #[serde(default)]
+    pub ssid: String,
+    #[serde(default)]
+    pub ip: String,
+    #[serde(default)]
+    pub state: String,
+    /// Names of the networks saved on the stick (never their keys).
+    #[serde(default)]
+    pub saved: Vec<String>,
 }
 
 /// disk.unlock's reply: the dm-N device the volume is now.
@@ -141,6 +171,84 @@ pub struct Supply {
     pub kind: String,
     #[serde(default)]
     pub props: std::collections::BTreeMap<String, String>,
+}
+
+/// One value decoded from the micom's frames (vehicle.state).
+#[derive(Deserialize, Clone)]
+pub struct VehicleReading {
+    pub name: String,
+    pub value: i64,
+    /// False when the frame carried its "not available" marker.
+    pub valid: bool,
+    #[serde(default)]
+    pub unit: String,
+    /// Milliseconds since the frame that carried it arrived.
+    pub age_ms: i64,
+}
+
+/// How many frames of one kind the micom sent (vehicle.state).
+#[derive(Deserialize, Clone)]
+pub struct VehicleFrame {
+    /// Header and command in hex, e.g. "0c88018c 55".
+    pub key: String,
+    /// What the frame is, "" when its layout is not known.
+    #[serde(default)]
+    pub name: String,
+    pub count: u64,
+    pub age_ms: i64,
+    /// The latest payload, in hex.
+    #[serde(default)]
+    pub payload: String,
+    /// The payload bytes that changed since the last mark.
+    #[serde(default)]
+    pub diffs: Vec<VehicleDiff>,
+}
+
+/// A payload byte that changed (vehicle.state), for the Learn screen.
+#[derive(Deserialize, Clone)]
+pub struct VehicleDiff {
+    pub idx: usize,
+    /// The value at the mark, -1 when there was none.
+    pub from: i32,
+    pub to: i32,
+    /// How many times it changed since the mark: a counter, constantly; a
+    /// switch, once.
+    pub changes: u32,
+    pub age_ms: i64,
+}
+
+/// The micom link's state and what it said (vehicle.state).
+#[derive(Deserialize, Clone, Default)]
+pub struct Vehicle {
+    /// The stage runs the micom link (-micom) and it is open.
+    pub present: bool,
+    /// Frames are arriving.
+    #[serde(default)]
+    pub up: bool,
+    #[serde(default)]
+    pub rx_frames: u64,
+    #[serde(default)]
+    pub tx_frames: u64,
+    #[serde(default)]
+    pub bad_sum: i64,
+    #[serde(default)]
+    pub dropped: i64,
+    /// The micom's CPU-alive requests and our answers: it resets the SoC
+    /// when they go unanswered.
+    #[serde(default)]
+    pub alive_rx: u64,
+    #[serde(default)]
+    pub alive_tx: u64,
+    /// Milliseconds since the last request, -1 before one.
+    #[serde(default)]
+    pub last_alive_age_ms: i64,
+    #[serde(default)]
+    pub readings: Vec<VehicleReading>,
+    #[serde(default)]
+    pub frames: Vec<VehicleFrame>,
+    /// Milliseconds since the Learn screen's mark, -1 before one.
+    #[serde(default)]
+    pub marked_age_ms: i64,
 }
 
 #[derive(Deserialize)]

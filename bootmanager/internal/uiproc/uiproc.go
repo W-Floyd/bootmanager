@@ -25,6 +25,44 @@ type Supervisor struct {
 	exited   chan struct{}
 	stopping bool
 	restart  bool
+	// resumeCh is non-nil while the UI is suspended: Run waits on it.
+	resumeCh chan struct{}
+}
+
+// Suspend ends the UI and keeps it down until Resume, so a program can have
+// the panel and the touch screen: the UI's end puts the console back to text
+// mode, and its restart then draws the whole screen afresh, which a stopped
+// and continued UI could not.
+func (s *Supervisor) Suspend() {
+	s.mu.Lock()
+	if s.resumeCh != nil {
+		s.mu.Unlock()
+		return
+	}
+	s.resumeCh = make(chan struct{})
+	p, exited := s.proc, s.exited
+	s.mu.Unlock()
+	if p == nil {
+		return
+	}
+	p.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		p.Kill()
+		<-exited
+	}
+}
+
+// Resume starts the UI again after Suspend.
+func (s *Supervisor) Resume() {
+	s.mu.Lock()
+	ch := s.resumeCh
+	s.resumeCh = nil
+	s.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 // Run runs the UI for as long as the backend lives. A UI that dies within
@@ -52,10 +90,15 @@ func (s *Supervisor) Run(adopt int) {
 		s.proc = nil
 		stopping, restart := s.stopping, s.restart
 		s.restart = false
+		suspended := s.resumeCh
 		s.mu.Unlock()
 		switch {
 		case stopping:
 			return
+		case suspended != nil:
+			<-suspended
+			quick = 0
+			continue
 		case restart:
 			quick = 0
 			continue

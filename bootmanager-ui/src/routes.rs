@@ -25,6 +25,8 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Diagnostics => "/diagnostics".into(),
         Screen::About => "/about".into(),
         Screen::Battery => "/diagnostics/battery".into(),
+        Screen::Vehicle => "/diagnostics/vehicle".into(),
+        Screen::Learn => "/diagnostics/vehicle/learn".into(),
         Screen::BootInfo(_) => "/diagnostics/boot".into(),
         Screen::Files { dev, path, .. } => format!("/partitions/{dev}{}", encode(path.trim_end_matches('/'))),
         // The browser previews images itself; the viewer is the panel's.
@@ -32,6 +34,8 @@ pub fn route_of(s: &Screen) -> String {
         Screen::Text { dev, path, .. } => format!("/text/{dev}{}", encode(path)),
         Screen::Fsck { dev, .. } => format!("/check/{dev}"),
         Screen::Unlock { dev, .. } => format!("/unlock/{dev}"),
+        Screen::Wifi(_) => "/wifi".into(),
+        Screen::WifiJoin { ssid, .. } => format!("/wifi/{}", encode(ssid)),
     }
 }
 
@@ -63,9 +67,14 @@ pub fn screens_of(route: &str) -> (Vec<Screen>, Screen) {
         ["diagnostics"] => (vec![Screen::Main], Screen::Diagnostics),
         ["about"] => (vec![Screen::Main], Screen::About),
         ["diagnostics", "battery"] => (vec![Screen::Main, Screen::Diagnostics], Screen::Battery),
+        ["diagnostics", "vehicle"] => (vec![Screen::Main, Screen::Diagnostics], Screen::Vehicle),
+        ["diagnostics", "vehicle", "learn"] => (vec![Screen::Main, Screen::Diagnostics, Screen::Vehicle], Screen::Learn),
         ["diagnostics", "boot"] => (vec![Screen::Main, Screen::Diagnostics], Screen::BootInfo(Load::Waiting)),
         ["partitions"] => (vec![Screen::Main], Screen::Disks(Load::Waiting)),
         ["unlock", dev] => (vec![Screen::Main, Screen::Disks(Load::Waiting)], Screen::Unlock { dev: dev.to_string(), name: String::new() }),
+        ["wifi"] => (vec![Screen::Main], Screen::Wifi(Load::Waiting)),
+        // Whether it wants a password is learnt from the scan; a loaded URL assumes it does.
+        ["wifi", ssid] => (vec![Screen::Main, Screen::Wifi(Load::Waiting)], Screen::WifiJoin { ssid: ssid.to_string(), secured: true }),
         ["check", dev] => (dir_stack(dev, &[]), Screen::Fsck { dev: dev.to_string(), disk: Load::Waiting, confirm: false }),
         ["partitions", dev, rest @ ..] => {
             let mut st = dir_stack(dev, rest);
@@ -98,12 +107,16 @@ mod tests {
             ("/boot", 1),
             ("/autoboot", 1),
             ("/diagnostics/battery", 2),
+            ("/diagnostics/vehicle", 2),
+            ("/diagnostics/vehicle/learn", 3),
             ("/diagnostics/boot", 2),
             ("/diagnostics", 1),
             ("/partitions", 1),
             ("/partitions/mmcblk0p2", 2),
             ("/check/mmcblk0p2", 3),
             ("/unlock/mmcblk0p2", 2),
+            ("/wifi", 1),
+            ("/wifi/my%20net", 2),
             ("/partitions/mmcblk0p2/usr/share", 4),
             ("/file/mmcblk0p2/etc/os-release", 4),
             ("/text/mmcblk0p2/etc/os-release", 5),

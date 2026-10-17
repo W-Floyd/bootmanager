@@ -65,7 +65,7 @@ func (m *Manager) Cmdline(i int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	li, ok := img.(*boot.LinuxImage)
+	li, ok := asLinux(img)
 	if !ok {
 		return "", fmt.Errorf("%s has no kernel command line to edit", img.Label())
 	}
@@ -88,7 +88,7 @@ func (m *Manager) EntryOptions(i int) ([]EntryOption, error) {
 	if err != nil {
 		return nil, err
 	}
-	li, ok := img.(*boot.LinuxImage)
+	li, ok := asLinux(img)
 	if !ok {
 		return nil, nil
 	}
