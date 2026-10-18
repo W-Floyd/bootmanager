@@ -53,9 +53,11 @@ func (f *fakeKeys) Key(code uint16, value int32) error {
 }
 
 func TestNavKeysFrame(t *testing.T) {
-	const fn = 0x8802
+	// The unit's key frames, as captured: hdr 07 84 01 87, cmd 01.
+	const fn = 0x8701
+	hdr := [4]byte{0x07, 0x84, 0x01, 0x87}
 	keyFrame := func(typ, code, press byte) micom.Frame {
-		return micom.Frame{Hdr: [4]byte{0x0c, 0, 0, 0x88}, Cmd: 0x02, Payload: []byte{typ, press<<4 | code}}
+		return micom.Frame{Hdr: hdr, Cmd: 0x01, Payload: []byte{typ, press<<4 | code, 0}}
 	}
 	for _, tc := range []struct {
 		name string
@@ -68,10 +70,9 @@ func TestNavKeysFrame(t *testing.T) {
 		{"a long press would move it twice", keyFrame(5, 1, micom.PressLong), nil, ""},
 		{"a release is not a move", keyFrame(5, 1, micom.PressRelease), nil, ""},
 		{"a key that is not listed is logged", keyFrame(5, 9, micom.PressShort), nil, "key type 5 code 9 (press 1)"},
-		{"a knob is not a push key", micom.Frame{Hdr: [4]byte{0x0c, 0, 0, 0x88}, Cmd: 0x02, Payload: []byte{8, 0x11}}, nil, ""},
-		{"another Func", micom.Frame{Hdr: [4]byte{0x0c, 0, 0, 0x88}, Cmd: 0x03, Payload: []byte{5, 0x11}}, nil, ""},
-		{"a frame to the micom", micom.Frame{Hdr: [4]byte{0x88, 0, 0, 0x88}, Cmd: 0x02, Payload: []byte{5, 0x11}}, nil, ""},
-		{"no payload", micom.Frame{Hdr: [4]byte{0x0c, 0, 0, 0x88}, Cmd: 0x02}, nil, ""},
+		{"a knob is not a push key", micom.Frame{Hdr: hdr, Cmd: 0x01, Payload: []byte{9, 0x11, 0}}, nil, ""},
+		{"another Func", micom.Frame{Hdr: hdr, Cmd: 0x02, Payload: []byte{5, 0x11}}, nil, ""},
+		{"no payload", micom.Frame{Hdr: hdr, Cmd: 0x01}, nil, ""},
 	} {
 		sink := &fakeKeys{}
 		var logged []string
@@ -96,12 +97,12 @@ func TestNavKeysFrame(t *testing.T) {
 func TestNavKeysSinkError(t *testing.T) {
 	var logged []string
 	n := &navKeys{
-		fn:   0x8802,
+		fn:   0x8701,
 		keys: navKeyMap{{5, 1}: 103},
 		out:  &fakeKeys{err: errors.New("no device")},
 		logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
-	n.frame(micom.Frame{Hdr: [4]byte{0x0c, 0, 0, 0x88}, Cmd: 0x02, Payload: []byte{5, 0x11}})
+	n.frame(micom.Frame{Hdr: [4]byte{0x07, 0x84, 0x01, 0x87}, Cmd: 0x01, Payload: []byte{5, 0x11, 0}})
 	if len(logged) != 1 || !strings.Contains(logged[0], "no device") {
 		t.Errorf("logged %q", logged)
 	}

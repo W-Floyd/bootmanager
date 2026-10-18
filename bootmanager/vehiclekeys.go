@@ -86,7 +86,7 @@ type navKeys struct {
 // repeat it sees, so only the short press is sent, as a press and a release:
 // a long press or a release would otherwise move it again.
 func (n *navKeys) frame(f micom.Frame) {
-	if micom.Func(f) != n.fn || f.Hdr[0] != 0x0c {
+	if micom.Func(f) != n.fn {
 		return
 	}
 	e, ok := micom.ParseKey(f.Payload)
