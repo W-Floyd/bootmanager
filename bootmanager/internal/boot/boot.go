@@ -587,6 +587,16 @@ func (m *Manager) Handover(img boot.OSImage) error {
 			log.Printf("booting %s: the unlock key goes with its initramfs", img.Label())
 		}
 	}
+	// On a platform whose kernel u-root cannot kexec itself (32-bit ARM has no
+	// kexec_file_load) every Linux entry is loaded by kexec-tools, not only the
+	// Android ones: the entries found in images are plain LinuxImages inside.
+	if kx := m.cfg.Kexec; len(kx.Argv) > 0 {
+		if li, ok := asLinux(img); ok {
+			if _, wrapped := img.(*kexecToolsImage); !wrapped {
+				img = &kexecToolsImage{LinuxImage: li, kx: kx}
+			}
+		}
+	}
 	m.cfg.Emit("busy", map[string]string{"text": "Loading " + img.Label() + "…"})
 	if err := img.Load(boot.WithLogger(ulog.Log)); err != nil {
 		return fmt.Errorf("load %s: %w", img.Label(), err)
