@@ -9,8 +9,8 @@ const pmosCmdline = "console=tty0 pmos_boot_uuid=aaa pmos_root_uuid=5CE4863D-273
 
 func TestFor(t *testing.T) {
 	d := For(pmosCmdline)
-	if d == nil || d.Name() != "postmarketOS" {
-		t.Fatalf("For(pmOS cmdline) = %v", d)
+	if d == nil || d.Name() != "Nura" {
+		t.Fatalf("For(Nura cmdline) = %v", d)
 	}
 	if got := d.EncryptedRoot(pmosCmdline); got != "5ce4863d-2736" {
 		t.Errorf("EncryptedRoot = %q, want the UUID in lower case", got)
@@ -22,8 +22,8 @@ func TestFor(t *testing.T) {
 	}
 }
 
-func TestPostmarketOSKey(t *testing.T) {
-	files, words := PostmarketOS{}.UnlockKey([]byte("fogona"))
+func TestNuraKey(t *testing.T) {
+	files, words := Nura{}.UnlockKey([]byte("fogona"))
 	if len(files) != 1 || files[0].Path != "bman-unlock.key" || files[0].Mode != 0o400 || string(files[0].Data) != "fogona" {
 		t.Errorf("files %+v", files)
 	}

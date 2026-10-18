@@ -2,7 +2,7 @@
 // one place so the rest of it need not: how a system's kernel command line
 // names its encrypted root, and how a passphrase the stage was given for it
 // reaches that system's initramfs (each distribution's initramfs has its own
-// hook for a key). postmarketOS is the first; another distribution is one
+// hook for a key). Nura (formerly postmarketOS) is the first; another distribution is one
 // more type in All, with its tests.
 package distro
 
@@ -14,7 +14,7 @@ import (
 
 // Distro is a family of systems the stage can boot.
 type Distro interface {
-	// Name is for logs: "postmarketOS".
+	// Name is for logs: "Nura".
 	Name() string
 	// EncryptedRoot is the LUKS UUID, lower case, of the encrypted root
 	// a kernel command line names, "" when it names none (or is not this
@@ -32,7 +32,7 @@ type Distro interface {
 }
 
 // All are the distributions known, tried in order.
-var All = []Distro{PostmarketOS{}}
+var All = []Distro{Nura{}}
 
 // For finds the distribution whose encrypted root a command line names, nil
 // for none.

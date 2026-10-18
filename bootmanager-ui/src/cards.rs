@@ -18,8 +18,10 @@ struct Look {
 // words (Android's, from its bootloader, the stage's own pmos_* ones).
 const LOOKS: &[(&[&str], Look)] = &[
     (&["recovery", "twrp", "rescue", "fallback"], Look { tag: "RECOVERY", icon: "recovery", a: 0xf0a030, b: 0x8a3a12 }),
-    // postmarketOS's green (artwork, docs/assets/attributes.svg).
-    (&["postmarketos", "pmos"], Look { tag: "POSTMARKETOS", icon: "pmos", a: 0x009900, b: 0x003300 }),
+    // Nura, formerly postmarketOS (an entry may still carry the old name,
+    // and the stage's pmos_* words): its logo and green are postmarketOS's
+    // artwork, docs/assets/attributes.svg.
+    (&["nura", "postmarketos", "pmos"], Look { tag: "NURA", icon: "pmos", a: 0x009900, b: 0x003300 }),
     // Android's green, #3ddc84, and a darker one of its hue.
     (&["android", "lineage", "grapheneos", "calyx"], Look { tag: "ANDROID", icon: "android", a: 0x3ddc84, b: 0x0e4d2c }),
     (&["ubuntu"], Look { tag: "UBUNTU", icon: "linux", a: 0xe95420, b: 0x5a1f3f }),
@@ -139,6 +141,8 @@ mod tests {
     #[test]
     fn looks() {
         assert_eq!(look(&entry("postmarketOS", "root=/dev/mmcblk0p2")).icon, "pmos");
+        // The same system under its new name: the logo stays.
+        assert_eq!((look(&entry("Nura", "")).icon, look(&entry("Nura live", "")).tag), ("pmos", "NURA"));
         assert_eq!(look(&entry("LineageOS 21", "")).icon, "android");
         assert_eq!(look(&entry("pmos (recovery)", "")).icon, "recovery");
         assert_eq!(look(&entry("Something", "quiet")).icon, "linux");
