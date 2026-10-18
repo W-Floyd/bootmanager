@@ -54,6 +54,10 @@ type liveImage struct {
 
 type imageKind int
 
+func (k imageKind) String() string {
+	return [...]string{"not a squashfs, btrfs, persistence or disk image", "squashfs", "persistence image", "btrfs image", "disk image"}[k]
+}
+
 const (
 	otherImage imageKind = iota
 	squashImage
@@ -79,9 +83,11 @@ func classifyImage(path, name string) imageKind {
 		if err != nil {
 			return otherImage
 		}
-		if ps, err := disk.ParseTable(f, st.Size()); err == nil && len(ps) > 0 {
+		ps, terr := disk.ParseTable(f, st.Size())
+		if terr == nil && len(ps) > 0 {
 			return diskImage
 		}
+		log.Printf("live: %s: no file system (%v) and no partition table (%v, %d partitions)", path, err, terr, len(ps))
 		return otherImage
 	case fs == "squashfs":
 		return squashImage
@@ -242,6 +248,7 @@ func liveCmdline(sq, persist string) string {
 // Unmount; edit is the stage's command-line edit.
 func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxImage)) []boot.OSImage {
 	var out []boot.OSImage
+	var searched, internal []string
 	for _, mp := range mounts {
 		dev := filepath.Base(mp.Device)
 		switch mp.FSType {
@@ -249,15 +256,20 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 			continue
 		}
 		if !removableDev(dev) {
+			internal = append(internal, dev)
 			continue
 		}
+		searched = append(searched, dev)
 		var squash, persist, btrfsImgs, diskImgs []string
-		for _, rel := range findImages(mp.Path) {
+		imgs := findImages(mp.Path)
+		log.Printf("live: %s (%s) at %s: %d .img files %v", dev, mp.FSType, mp.Path, len(imgs), imgs)
+		for _, rel := range imgs {
 			if strings.ContainsAny(rel, " \t\n") {
 				log.Printf("live: %s on %s: a space in the path, skipped", rel, dev)
 				continue
 			}
 			kind := classifyImage(filepath.Join(mp.Path, rel), rel)
+			log.Printf("live: %s on %s: %s", rel, dev, kind)
 			switch kind {
 			case squashImage:
 				squash = append(squash, rel)
@@ -287,6 +299,7 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 			out = append(out, img)
 		}
 	}
+	log.Printf("live: searched %v for images; not removable, not searched: %v", searched, internal)
 	return out
 }
 
