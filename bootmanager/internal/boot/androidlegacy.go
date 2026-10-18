@@ -109,6 +109,8 @@ func asLinux(img boot.OSImage) (*boot.LinuxImage, bool) {
 		return v.LinuxImage, true
 	case *liveImage:
 		return v.LinuxImage, true
+	case *subvolImage:
+		return v.LinuxImage, true
 	}
 	return nil, false
 }

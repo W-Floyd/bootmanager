@@ -225,9 +225,12 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 		li.Cmdline = f.Update(cmdline.NewCmdLine(), li.Cmdline)
 	}
 	boot.ApplyLinuxModifiers(imgs, editConsole)
+	// The file systems the scan mounted, not the subvolumes and images
+	// searched below, which are added to the pool.
+	scanned := slices.Clone(m.pool.MountPoints)
+	imgs = append(imgs, m.subvolEntries(scanned, editConsole)...)
 	if m.cfg.LiveImages {
-		// The file systems the scan mounted, not the live entries' own.
-		imgs = append(imgs, m.liveEntries(slices.Clone(m.pool.MountPoints), editConsole)...)
+		imgs = append(imgs, m.liveEntries(scanned, editConsole)...)
 	}
 	// After the console edit: Android's command line is the bootloader's,
 	// console= included.

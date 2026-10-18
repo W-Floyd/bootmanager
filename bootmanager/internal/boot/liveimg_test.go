@@ -15,6 +15,12 @@ func extHeader(label string) []byte {
 	return b
 }
 
+func btrfsHeader() []byte {
+	b := make([]byte, 0x10048)
+	copy(b[0x10040:], "_BHRfS_M")
+	return b
+}
+
 func TestClassifyImage(t *testing.T) {
 	squash := append([]byte("hsqs"), make([]byte, 2044)...)
 	for _, c := range []struct {
@@ -27,6 +33,7 @@ func TestClassifyImage(t *testing.T) {
 		{"casper-rw", extHeader("casper-rw"), persistImage},
 		{"my-persist.img", extHeader(""), persistImage},
 		{"data.img", extHeader("data"), otherImage},
+		{"os.img", btrfsHeader(), btrfsImage},
 		{"short.img", []byte("hsqs"), otherImage},
 		{"zero.img", make([]byte, 2048), otherImage},
 	} {
@@ -110,10 +117,18 @@ func TestLiveInitReadsCmdline(t *testing.T) {
 }
 
 func TestLiveSource(t *testing.T) {
-	if got := liveSource(&liveImage{dev: "sda1"}); got != "USB drive" {
+	if got := (&liveImage{dev: "sda1"}).source(); got != "USB drive" {
 		t.Error(got)
 	}
-	if got := liveSource(&liveImage{dev: "mmcblk0p1"}); got != "microSD card" {
+	if got := (&liveImage{dev: "mmcblk0p1"}).source(); got != "microSD card" {
 		t.Error(got)
+	}
+}
+
+func TestSnapshotPath(t *testing.T) {
+	for p, want := range map[string]bool{"@": false, "@/.snapshots/1/snapshot": true, "root": false, "a/snapshots": true, "snapshotter": false} {
+		if got := snapshotPath(p); got != want {
+			t.Errorf("%s: %v", p, got)
+		}
 	}
 }

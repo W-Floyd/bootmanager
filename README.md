@@ -17,7 +17,7 @@ device's panel, driven by its keys or touch, and the same UI, built for
 wasm, runs in a browser on a connected host.
 
 Nothing in it is tied to a device or distribution. Boot entries come from
-extlinux/BLS through u-root, and stock Android's from an Android boot
+extlinux/BLS through u-root (on btrfs, in each subvolume too, up to 16 per file system, snapshot directories skipped), and stock Android's from an Android boot
 image -- in the other A/B slot's boot partition, or at `android/boot.img`
 on a partition -- when the stage kept the device tree and initramfs its
 bootloader handed it (`-bootloader`: a Qualcomm ABL builds both for the
@@ -71,7 +71,7 @@ differs between devices and stages:
 | `-android-cmdline` | | a file of words a legacy image's bootloader would have added (serial number, partition bases, the tree's own `/chosen/bootargs`, which kexec-tools replaces) |
 | `-kexec` | | kexec-tools' command, split at spaces, to load `-android-boot` entries with where u-root cannot kexec the kernel itself (32-bit ARM); the Boot Manager writes the kernel, ramdisk and tree to RAM and runs `CMD -l KERNEL --append=… --initrd=… --dtb=…`. Empty: load them as every other entry |
 | `-kexec-prep` | | a command, split at spaces, run after `-kexec` has loaded a kernel and before the jump, to quiet what could write to memory (a Wi-Fi chip, USB) |
-| `-live-images` | `true` | look for `.img` files on removable media (USB, microSD, up to 3 directories deep): each squashfs is an entry, `Live NAME`, booted with the kernel and initramfs from its `/boot` (or beside it), the root an overlay of it over an ext4 persistence `.img` in the same directory (labelled `persistence`, `casper-rw` or `writable`, or named `*persist*`; the one whose name starts with the squashfs's, else the first), or over RAM when there is none. The initramfs is the system's with its `/init` replaced by one that finds the media by the squashfs's path, so the stage kernel needs loop and squashfs, and the system's initramfs needs sh, mount, modprobe and switch_root. The media is mounted read-write only when there is a persistence image |
+| `-live-images` | `true` | look for `.img` files on removable media (USB, microSD, up to 3 directories deep): each squashfs is an entry, `Live NAME`, booted with the kernel and initramfs from its `/boot` (or beside it), the root an overlay of it over an ext4 persistence `.img` in the same directory (labelled `persistence`, `casper-rw` or `writable`, or named `*persist*`; the one whose name starts with the squashfs's, else the first), or over RAM when there is none. A btrfs `.img` (zstd or not; `nura/os.img`) is searched like a partition instead, each of its subvolumes, and its own entries are shown. The initramfs is the system's with its `/init` replaced by one that finds the media by the squashfs's path, so the stage kernel needs loop and squashfs, and the system's initramfs needs sh, mount, modprobe and switch_root. The media is mounted read-write only when there is a persistence image |
 | `-scan-retries` | 10 | how many more times, a second apart, to scan when a boot scan finds nothing; the UI's splash waits for it. 0 for a stage with no entries |
 | `-micom` | | a serial device to answer a vehicle microcontroller's keep-alive requests on and read its state from (Diagnostics → Vehicle); a build for one device family, see `internal/micom` |
 | `-micom-log` | | append every frame the micom sends, decoded where known, and the link's counters to this file |

@@ -17,12 +17,16 @@ var sysBlock = "/sys/class/block"
 // mounts each under /tmp/u-root-mountsN/<kernel name>/.
 var mountedDev = regexp.MustCompile(`/u-root-mounts\d+/([^/\s]+)/`)
 
+// sourced is an entry that knows where it was found: those that cannot be
+// told by the path their files were mounted at.
+type sourced interface{ source() string }
+
 // sourceOf says where an entry was found, for the card that shows it: a
 // microSD card, a UFS partition by its GPT name, an unlocked volume as what it
 // is made of. "" when it is not known (an Android image, read raw).
 func sourceOf(img boot.OSImage) string {
-	if l, ok := img.(*liveImage); ok {
-		return liveSource(l)
+	if s, ok := img.(sourced); ok {
+		return s.source()
 	}
 	dev := entryDev(img)
 	if dev == "" {

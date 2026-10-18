@@ -22,6 +22,11 @@ import (
 	"bootmanager.local/bootmanager/internal/storage"
 )
 
+// A btrfs .img (zstd compressed or not) is instead searched like a partition
+// (subvol.go): its default subvolume and the others are mounted, and the
+// entries in them are its own, with their own initramfs to find the image
+// again.
+//
 // Live entries: a squashfs root file system in a .img file on removable media
 // (a USB drive), booted with its own kernel and initramfs, the root an
 // overlay of the squashfs over an ext4 persistence .img beside it, or over
@@ -49,6 +54,7 @@ const (
 	otherImage imageKind = iota
 	squashImage
 	persistImage
+	btrfsImage // a whole btrfs file system, which carries its own entries
 )
 
 // classifyImage says what the file at r, called name, is: a squashfs, an ext
@@ -61,6 +67,10 @@ func classifyImage(r io.ReaderAt, name string) imageKind {
 	}
 	if string(b[:4]) == "hsqs" {
 		return squashImage
+	}
+	var bm [8]byte
+	if n, _ := r.ReadAt(bm[:], 0x10040); n == len(bm) && string(bm[:]) == "_BHRfS_M" {
+		return btrfsImage
 	}
 	// ext2/3/4: magic 0xEF53 at 56 in the superblock, the label at 120.
 	if b[1024+56] != 0x53 || b[1024+57] != 0xef {
@@ -222,7 +232,7 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 		if !storage.Removable(dev) {
 			continue
 		}
-		var squash, persist []string
+		var squash, persist, btrfsImgs []string
 		for _, rel := range findImages(mp.Path) {
 			if strings.ContainsAny(rel, " \t\n") {
 				log.Printf("live: %s on %s: a space in the path, skipped", rel, dev)
@@ -239,7 +249,12 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 				squash = append(squash, rel)
 			case persistImage:
 				persist = append(persist, rel)
+			case btrfsImage:
+				btrfsImgs = append(btrfsImgs, rel)
 			}
+		}
+		for _, rel := range btrfsImgs {
+			out = append(out, m.btrfsImageEntries(mp, dev, rel, edit)...)
 		}
 		for _, sq := range squash {
 			p := persistenceFor(sq, persist)
@@ -256,30 +271,40 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 	return out
 }
 
-var errNoLiveKernel = errors.New("no kernel and initramfs in it or beside it")
-
-// liveImage mounts the squashfs sq of mp and makes its entry.
-func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liveImage, error) {
-	l, err := loop.New(filepath.Join(mp.Path, sq), "squashfs", "")
+// mountLoop mounts the file system in the file src read-only, through a loop
+// device; drop undoes it, and until then the caller owns both.
+func mountLoop(src, fstype string) (mp *mount.MountPoint, l *loop.Loop, drop func(), err error) {
+	l, err = loop.New(src, fstype, "")
 	if err != nil {
-		return nil, fmt.Errorf("loop: %w", err)
+		return nil, nil, nil, fmt.Errorf("loop: %w", err)
 	}
 	dir, err := os.MkdirTemp("", "bman-live-")
 	if err != nil {
 		l.Free()
-		return nil, err
+		return nil, nil, nil, err
 	}
-	sqm, err := l.Mount(dir, mount.ReadOnly)
+	mp, err = l.Mount(dir, mount.ReadOnly)
 	if err != nil {
 		os.Remove(dir)
 		l.Free()
-		return nil, fmt.Errorf("mount: %w", err)
+		return nil, nil, nil, fmt.Errorf("mount: %w", err)
 	}
-	drop := func() {
-		sqm.Unmount(mount.MNT_DETACH)
+	return mp, l, func() {
+		mp.Unmount(mount.MNT_DETACH)
 		os.Remove(dir)
 		l.Free()
+	}, nil
+}
+
+var errNoLiveKernel = errors.New("no kernel and initramfs in it or beside it")
+
+// liveImage mounts the squashfs sq of mp and makes its entry.
+func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liveImage, error) {
+	sqm, l, drop, err := mountLoop(filepath.Join(mp.Path, sq), "squashfs")
+	if err != nil {
+		return nil, err
 	}
+	dir := sqm.Path
 	var kernel, ramfs string
 	for _, d := range []string{filepath.Join(dir, "boot"), dir, filepath.Join(mp.Path, filepath.Dir(sq))} {
 		var ok bool
@@ -326,8 +351,7 @@ func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liv
 	}, nil
 }
 
-// liveSource is where a live entry was found, for the card that shows it.
-func liveSource(l *liveImage) string {
+func (l *liveImage) source() string {
 	if strings.HasPrefix(l.dev, "mmcblk") {
 		return "microSD card"
 	}
