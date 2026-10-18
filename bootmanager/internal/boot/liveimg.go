@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/u-root/u-root/pkg/boot"
 	"github.com/u-root/u-root/pkg/mount"
-	"github.com/u-root/u-root/pkg/mount/loop"
 	"golang.org/x/sys/unix"
 
 	"github.com/W-Floyd/bootmanager/bootmanager/internal/disk"
@@ -60,37 +58,47 @@ const (
 	diskImage  // a whole disk: a partition table and partitions
 )
 
-// classifyImage says what the file at r, called name, of size bytes, is: a
-// squashfs, a btrfs, a disk with a partition table, an ext
-// file system that is a persistence image (labelled or named for it), or
-// neither.
-func classifyImage(r io.ReaderAt, name string, size int64) imageKind {
-	var b [1024 + 136]byte
-	if n, _ := r.ReadAt(b[:], 0); n < len(b) {
-		return otherImage
-	}
-	if string(b[:4]) == "hsqs" {
-		return squashImage
-	}
-	var bm [8]byte
-	if n, _ := r.ReadAt(bm[:], 0x10040); n == len(bm) && string(bm[:]) == "_BHRfS_M" {
-		return btrfsImage
-	}
-	// ext2/3/4: magic 0xEF53 at 56 in the superblock, the label at 120.
-	if b[1024+56] != 0x53 || b[1024+57] != 0xef {
-		if ps, err := disk.ParseTable(r, size); err == nil && len(ps) > 0 {
+// classifyImage says what the file at path, called name, is: a squashfs, a
+// btrfs, a disk with a partition table, an ext file system that is a
+// persistence image (labelled or named for it), or neither. The file system
+// is u-root's magic table's, so one the stage's kernel lacks is not found.
+func classifyImage(path, name string) imageKind {
+	fs, _, err := mount.FSFromBlock(path)
+	switch {
+	case err != nil:
+		f, err := os.Open(path)
+		if err != nil {
+			return otherImage
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return otherImage
+		}
+		if ps, err := disk.ParseTable(f, st.Size()); err == nil && len(ps) > 0 {
 			return diskImage
 		}
 		return otherImage
-	}
-	label := strings.ToLower(strings.TrimRight(string(b[1024+120:1024+136]), "\x00"))
-	for _, w := range []string{"persist", "casper-rw", "writable"} {
-		if strings.HasPrefix(label, w) {
+	case fs == "squashfs":
+		return squashImage
+	case fs == "btrfs":
+		return btrfsImage
+	case fs == "ext2" || fs == "ext3" || fs == "ext4":
+		if strings.Contains(strings.ToLower(name), "persist") {
 			return persistImage
 		}
-	}
-	if strings.Contains(strings.ToLower(name), "persist") {
-		return persistImage
+		// The label: 16 bytes at 120 in the superblock, at 1024.
+		var l [16]byte
+		if f, err := os.Open(path); err == nil {
+			f.ReadAt(l[:], 1024+120)
+			f.Close()
+		}
+		label := strings.ToLower(strings.TrimRight(string(l[:]), "\x00"))
+		for _, w := range []string{"persist", "casper-rw", "writable"} {
+			if strings.HasPrefix(label, w) {
+				return persistImage
+			}
+		}
 	}
 	return otherImage
 }
@@ -226,7 +234,7 @@ func liveCmdline(sq, persist string) string {
 
 // liveEntries returns an entry per squashfs image on the removable media
 // among mounts, which are the scan's file system mounts. The squashfs and
-// loop device of each entry stay mounted, in the pool and m.loops, until
+// loop device of each entry stay mounted, in the pool, until
 // Unmount; edit is the stage's command-line edit.
 func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxImage)) []boot.OSImage {
 	var out []boot.OSImage
@@ -245,16 +253,7 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 				log.Printf("live: %s on %s: a space in the path, skipped", rel, dev)
 				continue
 			}
-			f, err := os.Open(filepath.Join(mp.Path, rel))
-			if err != nil {
-				continue
-			}
-			var size int64
-			if st, err := f.Stat(); err == nil {
-				size = st.Size()
-			}
-			kind := classifyImage(f, rel, size)
-			f.Close()
+			kind := classifyImage(filepath.Join(mp.Path, rel), rel)
 			switch kind {
 			case squashImage:
 				squash = append(squash, rel)
@@ -287,54 +286,65 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 	return out
 }
 
-// attachLoop binds a loop device to size bytes of the file src from offset
-// (size 0: to its end).
-func attachLoop(src string, offset, size uint64) (*loop.Loop, error) {
-	dev, err := loop.FindDevice()
+// attachLoop binds a free loop device read-only to size bytes of the file src
+// from offset (size 0: to its end). The device clears itself once nothing
+// holds it: the caller holds it open until its mount is made, then closes
+// hold, and the mount's end frees the device.
+func attachLoop(src string, offset, size uint64) (dev string, hold *os.File, err error) {
+	ctl, err := os.OpenFile("/dev/loop-control", os.O_RDWR, 0)
 	if err != nil {
-		return nil, fmt.Errorf("loop: %w", err)
+		return "", nil, fmt.Errorf("loop: %w", err)
 	}
-	if err := loop.SetFile(dev, src); err != nil {
-		return nil, fmt.Errorf("loop: %w", err)
+	defer ctl.Close()
+	n, err := unix.IoctlRetInt(int(ctl.Fd()), unix.LOOP_CTL_GET_FREE)
+	if err != nil {
+		return "", nil, fmt.Errorf("loop: %w", err)
 	}
-	l := &loop.Loop{Dev: dev, Source: src}
-	if offset != 0 || size != 0 {
-		d, err := os.Open(dev)
-		if err == nil {
-			err = unix.IoctlLoopSetStatus64(int(d.Fd()), &unix.LoopInfo64{Offset: offset, Sizelimit: size})
-			d.Close()
-		}
-		if err != nil {
-			l.Free()
-			return nil, fmt.Errorf("loop range: %w", err)
-		}
+	f, err := os.Open(src)
+	if err != nil {
+		return "", nil, err
 	}
-	return l, nil
+	defer f.Close()
+	dev = fmt.Sprintf("/dev/loop%d", n)
+	hold, err = os.OpenFile(dev, os.O_RDWR, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("loop: %w", err)
+	}
+	cfg := unix.LoopConfig{Fd: uint32(f.Fd()), Info: unix.LoopInfo64{
+		Offset: offset, Sizelimit: size, Flags: unix.LO_FLAGS_READ_ONLY | unix.LO_FLAGS_AUTOCLEAR,
+	}}
+	if err := unix.IoctlLoopConfigure(int(hold.Fd()), &cfg); err != nil {
+		hold.Close()
+		return "", nil, fmt.Errorf("loop: %w", err)
+	}
+	return dev, hold, nil
 }
 
-// mountLoop mounts the file system in the file src read-only, through a loop
-// device; drop undoes it, and until then the caller owns both.
-func mountLoop(src, fstype string) (mp *mount.MountPoint, l *loop.Loop, drop func(), err error) {
-	l, err = attachLoop(src, 0, 0)
+// mountLoop mounts the file system in size bytes of the file src from
+// offset, read-only, through a loop device: as fstype, or whatever it is when
+// fstype is "". drop undoes it, and until then the caller owns the mount.
+func mountLoop(src, fstype string, offset, size uint64) (mp *mount.MountPoint, drop func(), err error) {
+	dev, hold, err := attachLoop(src, offset, size)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	l.FSType = fstype
-	dir, err := os.MkdirTemp("", "bman-live-")
+	defer hold.Close()
+	dir, err := os.MkdirTemp("", "bman-loop-")
 	if err != nil {
-		l.Free()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	mp, err = l.Mount(dir, mount.ReadOnly)
+	if fstype == "" {
+		mp, err = mount.TryMount(dev, dir, "", mount.ReadOnly)
+	} else {
+		mp, err = mount.Mount(dev, dir, fstype, "", mount.ReadOnly)
+	}
 	if err != nil {
 		os.Remove(dir)
-		l.Free()
-		return nil, nil, nil, fmt.Errorf("mount: %w", err)
+		return nil, nil, fmt.Errorf("mount: %w", err)
 	}
-	return mp, l, func() {
+	return mp, func() {
 		mp.Unmount(mount.MNT_DETACH)
 		os.Remove(dir)
-		l.Free()
 	}, nil
 }
 
@@ -342,7 +352,7 @@ var errNoLiveKernel = errors.New("no kernel and initramfs in it or beside it")
 
 // liveImage mounts the squashfs sq of mp and makes its entry.
 func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liveImage, error) {
-	sqm, l, drop, err := mountLoop(filepath.Join(mp.Path, sq), "squashfs")
+	sqm, drop, err := mountLoop(filepath.Join(mp.Path, sq), "squashfs", 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +387,6 @@ func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liv
 		return nil, err
 	}
 	m.pool.Add(sqm)
-	m.loops = append(m.loops, l)
 	name := "Live " + strings.TrimSuffix(filepath.Base(sq), filepath.Ext(sq))
 	if persist != "" {
 		name += " (persistent)"

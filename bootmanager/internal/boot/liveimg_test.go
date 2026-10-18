@@ -1,11 +1,13 @@
 package boot
 
 import (
-	"bytes"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/u-root/u-root/pkg/mount"
 )
 
 func extHeader(label string) []byte {
@@ -47,7 +49,21 @@ func TestClassifyImage(t *testing.T) {
 		{"short.img", []byte("hsqs"), otherImage},
 		{"zero.img", make([]byte, 2048), otherImage},
 	} {
-		if got := classifyImage(bytes.NewReader(c.data), c.name, int64(len(c.data))); got != c.want {
+		// The file system is u-root's, which needs the host kernel to have it.
+		if fs := map[imageKind]string{squashImage: "squashfs", btrfsImage: "btrfs", persistImage: "ext4"}[c.want]; fs != "" && mount.FindFileSystem(fs) != nil {
+			t.Logf("%s: kernel has no %s, skipped", c.name, fs)
+			continue
+		}
+		path := filepath.Join(t.TempDir(), c.name)
+		// u-root's detection reads 128 KiB.
+		data := append(slices.Clone(c.data), make([]byte, 1<<17)...)
+		if c.name == "short.img" {
+			data = c.data
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := classifyImage(path, c.name); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}

@@ -26,7 +26,6 @@ import (
 	"github.com/u-root/u-root/pkg/cmdline"
 	"github.com/u-root/u-root/pkg/mount"
 	"github.com/u-root/u-root/pkg/mount/block"
-	"github.com/u-root/u-root/pkg/mount/loop"
 	"github.com/u-root/u-root/pkg/ulog"
 	"golang.org/x/sys/unix"
 
@@ -107,7 +106,6 @@ type Manager struct {
 	cfg    Config
 	scanMu sync.Mutex // held over a scan and over the pool's mounts' release
 	pool   mount.Pool
-	loops  []*loop.Loop // under live entries' squashfs mounts, freed with them
 
 	mu       sync.Mutex
 	images   []boot.OSImage // in the user's order
@@ -784,9 +782,5 @@ func (m *Manager) Unmount() {
 	if err := m.pool.UnmountAll(mount.MNT_DETACH); err != nil {
 		log.Printf("unmount: %v", err)
 	}
-	for _, l := range m.loops {
-		l.Free()
-	}
-	m.loops = nil
 	unix.Sync()
 }

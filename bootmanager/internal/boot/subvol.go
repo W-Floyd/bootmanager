@@ -82,10 +82,10 @@ func tag(imgs []boot.OSImage, where string, edit func(*boot.LinuxImage)) []boot.
 
 // btrfsImageEntries is the entries in the btrfs image rel of mp (media dev):
 // its default subvolume's, then the other subvolumes'. The mounts stay, in
-// the pool and m.loops, while there are entries.
+// the pool, while there are entries.
 func (m *Manager) btrfsImageEntries(mp *mount.MountPoint, dev, rel string, edit func(*boot.LinuxImage)) []boot.OSImage {
 	media := (&liveImage{dev: dev}).source() + " " + rel
-	bm, l, drop, err := mountLoop(filepath.Join(mp.Path, rel), "btrfs")
+	bm, drop, err := mountLoop(filepath.Join(mp.Path, rel), "btrfs", 0, 0)
 	if err != nil {
 		log.Printf("scan: %s on %s: %v", rel, dev, err)
 		return nil
@@ -100,7 +100,6 @@ func (m *Manager) btrfsImageEntries(mp *mount.MountPoint, dev, rel string, edit 
 	}
 	log.Printf("scan: %d entries in btrfs image %s on %s", len(out), rel, dev)
 	m.pool.Add(bm)
-	m.loops = append(m.loops, l)
 	return out
 }
 

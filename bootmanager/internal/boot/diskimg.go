@@ -27,7 +27,7 @@ var skipPart = map[string]bool{
 
 // diskImageEntries is the entries in the partitions of the disk image rel
 // of mp (media dev). Mounts and loop devices of partitions with entries stay,
-// in the pool and m.loops.
+// in the pool.
 func (m *Manager) diskImageEntries(mp *mount.MountPoint, dev, rel string, edit func(*boot.LinuxImage)) []boot.OSImage {
 	src := filepath.Join(mp.Path, rel)
 	f, err := os.Open(src)
@@ -50,21 +50,9 @@ func (m *Manager) diskImageEntries(mp *mount.MountPoint, dev, rel string, edit f
 		if skipPart[p.Type] {
 			continue
 		}
-		l, err := attachLoop(src, p.Start, p.Size)
-		if err != nil {
-			log.Printf("scan: %s partition %d: %v", rel, p.Index, err)
-			continue
-		}
-		dir, err := os.MkdirTemp("", "bman-part-")
-		if err != nil {
-			l.Free()
-			return out
-		}
-		pm, err := mount.TryMount(l.Dev, dir, "", mount.ReadOnly)
+		pm, drop, err := mountLoop(src, "", p.Start, p.Size)
 		if err != nil {
 			// A swap area, an encrypted volume, a raw partition.
-			os.Remove(dir)
-			l.Free()
 			continue
 		}
 		where := media + " p" + strconv.Itoa(p.Index)
@@ -76,14 +64,11 @@ func (m *Manager) diskImageEntries(mp *mount.MountPoint, dev, rel string, edit f
 			imgs = append(imgs, m.otherSubvols(pm, func(sv string) string { return where + " (" + sv + ")" }, edit)...)
 		}
 		if len(imgs) == 0 {
-			pm.Unmount(mount.MNT_DETACH)
-			os.Remove(dir)
-			l.Free()
+			drop()
 			continue
 		}
 		log.Printf("scan: %d entries in %s partition %d (%s)", len(imgs), rel, p.Index, pm.FSType)
 		m.pool.Add(pm)
-		m.loops = append(m.loops, l)
 		out = append(out, imgs...)
 	}
 	return out
