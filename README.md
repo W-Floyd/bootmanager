@@ -270,7 +270,18 @@ No binary fixture is committed, and `go test ./...` needs no generated file.
 The A/B slot code and its tests, with the generator of synthetic GPT disks
 they run on, are in go-qbootctl; the loader's, with its synthetic super
 metadata, in go-msm-firmware-loader. This module's tests build what they need
-in process.
+in process, except the image scan (`-live-images`, subvolumes), which needs
+real file systems: `sh bootmanager/test/run.sh` builds them in a privileged
+container (`test/fixtures.sh`: squashfs and persistence images, a zstd btrfs
+image, GPT and MBR disks with FAT, ext4 and btrfs partitions) and runs every
+test against them, including the live init shim itself (run in a busybox
+chroot against a FAT stick on a loop device: persistence, RAM root, failures)
+that a scan leaves no loop devices or mounts behind, the whole `scan()` over a
+partitioned stick on a loop device, and awkward inputs (`test/edge.sh`: a bad
+GPT CRC, a 4Kn disk, a truncated disk, LUKS and swap partitions, a squashfs with no kernel,
+spaces and depth limits, persistence pairing, a non-default btrfs subvolume,
+the 16-subvolume cap, snapshots, BLS under `/boot`). Without it those tests
+skip.
 
 ## What stopped the autoboot, and the stage's logs
 

@@ -2,6 +2,7 @@ package boot
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -132,7 +133,7 @@ func TestLiveCmdline(t *testing.T) {
 
 // The shim must read what liveCmdline writes.
 func TestLiveInitReadsCmdline(t *testing.T) {
-	for _, w := range []string{"bman.live=", "bman.persist=", "switch_root /newroot"} {
+	for _, w := range []string{"bman.live=", "bman.persist=", "bman.dev=", "switch_root} /newroot"} {
 		if !strings.Contains(liveInit, w) {
 			t.Errorf("liveInit lacks %q", w)
 		}
@@ -156,5 +157,20 @@ func TestSnapshotPath(t *testing.T) {
 		if got := snapshotPath(p); got != want {
 			t.Errorf("%s: %v", p, got)
 		}
+	}
+}
+
+// The shim is shell: a syntax error would only show on a booting device.
+func TestLiveInitSyntax(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	f := filepath.Join(t.TempDir(), "init")
+	if err := os.WriteFile(f, []byte(liveInit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(sh, "-n", f).CombinedOutput(); err != nil {
+		t.Errorf("sh -n: %v\n%s", err, out)
 	}
 }

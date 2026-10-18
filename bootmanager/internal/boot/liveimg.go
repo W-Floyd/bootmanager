@@ -37,6 +37,10 @@ import (
 // (liveinit.go): finding the media and assembling the overlay are the same
 // for every distribution, which an initramfs's own live hooks are not.
 
+// removableDev is storage.Removable, a variable for the integration test,
+// whose media is a directory in a container.
+var removableDev = storage.Removable
+
 const (
 	liveMaxDepth = 3     // directories below a file system's root searched for images
 	liveMaxFiles = 20000 // files looked at per file system
@@ -244,7 +248,7 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 		case "squashfs", "erofs", "iso9660":
 			continue
 		}
-		if !storage.Removable(dev) {
+		if !removableDev(dev) {
 			continue
 		}
 		var squash, persist, btrfsImgs, diskImgs []string
@@ -387,6 +391,7 @@ func (m *Manager) liveImage(mp *mount.MountPoint, dev, sq, persist string) (*liv
 		return nil, err
 	}
 	m.pool.Add(sqm)
+	m.liveFiles = append(m.liveFiles, k, r)
 	name := "Live " + strings.TrimSuffix(filepath.Base(sq), filepath.Ext(sq))
 	if persist != "" {
 		name += " (persistent)"

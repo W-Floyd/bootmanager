@@ -20,7 +20,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/rekby/gpt v0.0.0-20200219180433-a930afbc6edc // indirect
+	github.com/rekby/gpt v0.0.0-20200219180433-a930afbc6edc
 	github.com/therootcompany/xz v1.0.1 // indirect
 	github.com/u-root/cpuid v0.0.1-0.20250320140348-cc5fe81d966c // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701

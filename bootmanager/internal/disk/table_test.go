@@ -34,7 +34,7 @@ func gptImage(ss int, parts [][3]uint64, names []string) []byte {
 }
 
 func TestGPT(t *testing.T) {
-	for _, ss := range []int{512} {
+	for _, ss := range []int{512, 4096} {
 		img := gptImage(ss, [][3]uint64{{34, 99, 0}, {100, 199, 0}}, []string{"boot", "root"})
 		ps, err := ParseTable(bytes.NewReader(img), int64(len(img)))
 		if err != nil || len(ps) != 2 {
@@ -55,6 +55,30 @@ func TestGPT(t *testing.T) {
 	img = gptImage(512, [][3]uint64{{34, 99, 0}, {100, 1 << 30, 0}}, []string{"a", "b"})
 	if ps, _ := ParseTable(bytes.NewReader(img), int64(len(img))); len(ps) != 1 {
 		t.Errorf("%+v", ps)
+	}
+}
+
+// A header from a hostile file is refused, not trusted: the library under
+// the reader would allocate by these fields.
+func TestGPTHostile(t *testing.T) {
+	for name, set := range map[string]func(h []byte){
+		"huge count":    func(h []byte) { binary.LittleEndian.PutUint32(h[80:], 0xffffffff) },
+		"zero entry":    func(h []byte) { binary.LittleEndian.PutUint32(h[84:], 0) },
+		"tiny entry":    func(h []byte) { binary.LittleEndian.PutUint32(h[84:], 64) },
+		"huge entry":    func(h []byte) { binary.LittleEndian.PutUint32(h[84:], 1<<30) },
+		"entries away":  func(h []byte) { binary.LittleEndian.PutUint64(h[72:], 1<<60) },
+		"entries at 0":  func(h []byte) { binary.LittleEndian.PutUint64(h[72:], 0) },
+		"zero count":    func(h []byte) { binary.LittleEndian.PutUint32(h[80:], 0) },
+		"past the file": func(h []byte) { binary.LittleEndian.PutUint64(h[72:], 1<<19) },
+	} {
+		img := gptImage(512, [][3]uint64{{34, 99, 0}}, []string{"x"})
+		set(img[512:])
+		// Refresh the CRC: the guard, not the checksum, must catch it.
+		binary.LittleEndian.PutUint32(img[512+16:], 0)
+		binary.LittleEndian.PutUint32(img[512+16:], crc32.ChecksumIEEE(img[512:512+92]))
+		if ps, err := ParseTable(bytes.NewReader(img), int64(len(img))); err == nil {
+			t.Errorf("%s: accepted as %+v", name, ps)
+		}
 	}
 }
 

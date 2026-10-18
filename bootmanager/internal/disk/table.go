@@ -7,9 +7,8 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"unicode/utf16"
 
-	"github.com/u-root/u-root/pkg/mount/gpt"
+	"github.com/rekby/gpt"
 )
 
 // ErrNoTable is a file that does not start with a partition table.
@@ -25,7 +24,7 @@ type Part struct {
 	Type, Name  string
 }
 
-const maxParts = gpt.MaxNPart
+const maxParts = 128
 
 // ParseTable reads the table of the disk image r of size bytes: GPT when
 // there is a valid one, else MBR. A FAT, NTFS or exFAT boot sector, which
@@ -37,32 +36,43 @@ func ParseTable(r io.ReaderAt, size int64) ([]Part, error) {
 	return parseMBR(r, size)
 }
 
-// parseGPT reads the primary GPT with u-root's reader, which checks the
-// header and entry CRCs; 512-byte sectors only, as images are.
+// parseGPT reads the primary GPT, with 512-byte sectors or 4096 (4Kn), using
+// rekby/gpt, which checks the header and entry CRCs (u-root's reader is for
+// 512 only). That library trusts the header's counts and sizes, so they are
+// bounded here first: an image is a file from someone's drive.
 func parseGPT(r io.ReaderAt, size int64) ([]Part, bool) {
-	g, err := gpt.Table(r, gpt.HeaderOff)
-	if err != nil {
-		return nil, false
-	}
-	var out []Part
-	for i, e := range g.Parts {
-		if e.PartGUID == (gpt.GUID{}) || e.LastLBA < e.FirstLBA || (e.LastLBA+1)*gpt.BlockSize > uint64(size) {
+	le := binary.LittleEndian
+	for _, ss := range []uint64{512, 4096} {
+		h := make([]byte, 92)
+		if n, _ := r.ReadAt(h, int64(ss)); n < len(h) || string(h[:8]) != "EFI PART" {
 			continue
 		}
-		var name []uint16
-		for j := 0; j+1 < len(e.Name); j += 2 {
-			c := binary.LittleEndian.Uint16(e.Name[j:])
-			if c == 0 {
-				break
-			}
-			name = append(name, c)
+		start, count, esize := le.Uint64(h[72:]), le.Uint32(h[80:]), le.Uint32(h[84:])
+		if count == 0 || count > maxParts || esize < 128 || esize > 1024 || start > uint64(size)/ss ||
+			start*ss+uint64(count)*uint64(esize) > uint64(size) {
+			continue
 		}
-		out = append(out, Part{
-			Index: i + 1, Start: e.FirstLBA * gpt.BlockSize, Size: (e.LastLBA - e.FirstLBA + 1) * gpt.BlockSize,
-			Type: e.PartGUID.String(), Name: string(utf16.Decode(name)),
-		})
+		sr := io.NewSectionReader(r, 0, size)
+		if _, err := sr.Seek(int64(ss), io.SeekStart); err != nil {
+			continue
+		}
+		t, err := gpt.ReadTable(sr, ss)
+		if err != nil {
+			continue
+		}
+		var out []Part
+		for i, p := range t.Partitions {
+			if p.IsEmpty() || p.LastLBA < p.FirstLBA || p.LastLBA >= uint64(size)/ss {
+				continue
+			}
+			out = append(out, Part{
+				Index: i + 1, Start: p.FirstLBA * ss, Size: (p.LastLBA - p.FirstLBA + 1) * ss,
+				Type: strings.ToLower(p.Type.String()), Name: p.Name(),
+			})
+		}
+		return out, true
 	}
-	return out, true
+	return nil, false
 }
 
 func isExtended(t byte) bool { return t == 0x05 || t == 0x0f || t == 0x85 }

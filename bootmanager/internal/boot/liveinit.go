@@ -5,7 +5,12 @@ package boot
 // the media by the squashfs's path on it (bman.live=), puts an overlay of the
 // squashfs over the ext4 persistence image (bman.persist=) or over RAM as
 // the root, and switches to it. The media is mounted read-write only when
-// there is a persistence image to write to. On failure it leaves a shell.
+// there is a persistence image to write to. bman.dev=NAME pins the media to
+// /dev/NAME instead of looking at every disk. On failure it leaves a shell.
+// BMAN_CMDLINE names a file to read the command line from, and BMAN_WAIT is
+// the seconds to wait for the media (30), and BMAN_SWITCH_ROOT the command
+// to run in place of switch_root, for the tests (busybox's shell runs its own
+// applet for that name, whatever is on the path).
 const liveInit = `#!/bin/sh
 export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 mount -t proc proc /proc
@@ -14,9 +19,10 @@ mount -t devtmpfs devtmpfs /dev
 
 fail() { echo "bman live: $*"; exec /bin/sh; }
 
-for w in $(cat /proc/cmdline); do
+for w in $(cat "${BMAN_CMDLINE:-/proc/cmdline}"); do
 	case $w in
 	bman.live=*) LIVE=${w#bman.live=} ;;
+	bman.dev=*) DEV=${w#bman.dev=} ;;
 	bman.persist=*) PERSIST=${w#bman.persist=} ;;
 	init=*) INIT=${w#init=} ;;
 	esac
@@ -32,8 +38,10 @@ opt=ro
 [ -n "$PERSIST" ] && opt=rw
 i=0
 found=
-while [ -z "$found" ] && [ $i -lt 30 ]; do
-	for d in /dev/sd*[0-9] /dev/mmcblk*p[0-9]* /dev/nvme*n*p[0-9]* /dev/vd*[0-9]; do
+cands="/dev/sd*[0-9] /dev/mmcblk*p[0-9]* /dev/nvme*n*p[0-9]* /dev/vd*[0-9]"
+[ -n "$DEV" ] && cands=/dev/$DEV
+while [ -z "$found" ] && [ $i -lt "${BMAN_WAIT:-30}" ]; do
+	for d in $cands; do
 		[ -b "$d" ] || continue
 		mount -o $opt $d /media 2>/dev/null || continue
 		if [ -f "/media$LIVE" ]; then found=$d; break; fi
@@ -52,5 +60,5 @@ fi
 mkdir -p /rw/upper /rw/work
 mount -t overlay overlay -o lowerdir=/ro,upperdir=/rw/upper,workdir=/rw/work /newroot || fail "cannot mount the overlay"
 
-exec switch_root /newroot "${INIT:-/sbin/init}"
+exec ${BMAN_SWITCH_ROOT:-switch_root} /newroot "${INIT:-/sbin/init}"
 `

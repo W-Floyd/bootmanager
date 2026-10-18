@@ -106,6 +106,9 @@ type Manager struct {
 	cfg    Config
 	scanMu sync.Mutex // held over a scan and over the pool's mounts' release
 	pool   mount.Pool
+	// liveFiles are files open in live entries' squashfs, which a lazy
+	// unmount would otherwise keep alive; closed at Unmount.
+	liveFiles []*os.File
 
 	mu       sync.Mutex
 	images   []boot.OSImage // in the user's order
@@ -779,6 +782,10 @@ func (m *Manager) change(f func() error) error {
 // Unmount releases the scan's mounts and syncs, for a handover or a
 // power action.
 func (m *Manager) Unmount() {
+	for _, f := range m.liveFiles {
+		f.Close()
+	}
+	m.liveFiles = nil
 	if err := m.pool.UnmountAll(mount.MNT_DETACH); err != nil {
 		log.Printf("unmount: %v", err)
 	}
