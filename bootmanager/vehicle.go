@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/W-Floyd/bootmanager/bootmanager/internal/micom"
 	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
+	micom "github.com/W-Floyd/go-micomd"
 )
 
 var (

@@ -4,6 +4,7 @@ import (
 	"io"
 	"path/filepath"
 
+	micom "github.com/W-Floyd/go-micomd"
 	msmfw "github.com/W-Floyd/go-msm-firmware-loader"
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 )
@@ -12,6 +13,7 @@ import (
 // the binary run under the name NAME (a symlink), whose args are all of its
 // own. They take their own flags, so main handles them before flag.Parse.
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
+	"micomd":              micom.Main,
 	"msm-firmware-loader": msmfw.Main,
 	"qbootctl":            qbootctl.Main,
 	"reprobe":             reprobeMain,

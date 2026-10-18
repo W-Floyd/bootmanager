@@ -100,6 +100,7 @@ see; it has its own.
 | subcommand | |
 |---|---|
 | `qbootctl [flags]` | the A/B slot tool of [go-qbootctl](https://github.com/W-Floyd/go-qbootctl): the subset of `qbootctl` that postmarketOS uses (`-a`, `-c`, `-m`, `-s`, `-u`, `-b`, `-n`, `-x`), in its output format, with `--dry-run`. It needs no udev; it does not set the UFS boot LUN |
+| `micomd [flags]` | [go-micomd](https://github.com/W-Floyd/go-micomd): takes over the SoC side of a vehicle micom's serial link from Android's daemon of that name (`-dev`, `-dump`, `-clock`, `-noalive`, `-stats`). `-micom` runs the same link inside the Boot Manager |
 | `msm-firmware-loader [flags]` | [go-msm-firmware-loader](https://github.com/W-Floyd/go-msm-firmware-loader): mounts a Qualcomm device's firmware partitions read-only, links their blobs into one directory and points `firmware_class.path` at it. Needs no udev or other program; `--dry-run`, `--teardown` |
 | `reprobe [--dry-run]` | for every bus in `/sys/bus`, writes the name of each device that has **no driver** to the bus's `drivers_probe`, once, so a driver that gave up for want of firmware (`Direct firmware load ... failed`) is probed again after the loader has run. A device that has a driver is never written to, so nothing running is rebound. It costs one probe attempt per unbound device, which for drivers that have none to find is a failed match; `--dry-run` only lists them. One line per device and a summary go to stderr; exit 0 |
 

@@ -3,6 +3,7 @@ module github.com/W-Floyd/bootmanager/bootmanager
 go 1.26.0
 
 require (
+	github.com/W-Floyd/go-micomd v0.0.0-20261018142429-b74864ab6c22
 	github.com/W-Floyd/go-msm-firmware-loader v0.0.0-20261017223257-4833f0db9cc0
 	github.com/W-Floyd/go-qbootctl v0.0.0-20261005215935-28f11d7f207e
 	github.com/coder/websocket v1.8.15
