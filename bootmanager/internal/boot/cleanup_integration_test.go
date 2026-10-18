@@ -78,9 +78,11 @@ func TestScanCleanupReal(t *testing.T) {
 
 		m.Unmount()
 		// A lazy unmount ends when the last user lets go; the loop device
-		// follows (autoclear).
+		// follows (autoclear). On a busy machine (the packages' tests run at
+		// once) that takes seconds; a leak never ends, so the wait is long and
+		// ends as soon as they are gone.
 		var after, left []string
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 			if after, left = loopsInUse(), ourMounts(); slices.Equal(after, before) && len(left) == 0 {
 				break
 			}
