@@ -21,7 +21,7 @@ var bootFilesDirs = []string{"linuxboot", "boot/linuxboot"}
 // bootFilesFS are the file systems worth looking in: the ones an install
 // puts its /boot on. Android's erofs, squashfs and verity images are not.
 var bootFilesFS = map[string]bool{
-	"ext2": true, "ext3": true, "ext4": true, "f2fs": true, "vfat": true, "xfs": true,
+	"btrfs": true, "ext2": true, "ext3": true, "ext4": true, "f2fs": true, "vfat": true, "xfs": true,
 }
 
 // bootFilesIn is the first of bootFilesDirs that is a directory under root.

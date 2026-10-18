@@ -27,6 +27,8 @@ func TestStatus(t *testing.T) {
 		{"f2fs no checkpoint", f2fs, 255, Errors},
 		{"xfs corrupt", xfs, 1, Errors},
 		{"xfs dirty", xfs, 2, DirtyLog},
+		{"btrfs errors", btrfs, 1, Errors},
+		{"btrfs failed", btrfs, 2, Failed},
 	} {
 		if got := c.f(c.code); got != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)
@@ -77,10 +79,11 @@ func TestRefusals(t *testing.T) {
 		dev, fs string
 		repair  bool
 	}{
-		"bad device": {"a/b", "vfat", false},
-		"xfs repair": {"x", "xfs", true},
-		"unknown":    {"x", "ntfs", false},
-		"no binary":  {"x", "vfat", false},
+		"bad device":   {"a/b", "vfat", false},
+		"xfs repair":   {"x", "xfs", true},
+		"btrfs repair": {"x", "btrfs", true},
+		"unknown":      {"x", "ntfs", false},
+		"no binary":    {"x", "vfat", false},
 	} {
 		if _, err := r.Run(c.dev, c.fs, c.repair, func(string) {}); err == nil {
 			t.Errorf("%s accepted", name)

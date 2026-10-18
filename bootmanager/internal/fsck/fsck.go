@@ -96,6 +96,17 @@ func xfs(code int) string {
 	return Failed
 }
 
+// btrfs check: 0 clean, 1 errors.
+func btrfs(code int) string {
+	switch code {
+	case 0:
+		return Clean
+	case 1:
+		return Errors
+	}
+	return Failed
+}
+
 var e2fsck = checker{"e2fsck", []string{"-f", "-n"}, []string{"-f", "-y"}, bitmask}
 
 var checkers = map[string]checker{
@@ -109,6 +120,9 @@ var checkers = map[string]checker{
 	// No repair: it would zero a dirty log, discarding what a mount would
 	// replay.
 	"xfs": {"xfs_repair", []string{"-n"}, nil, xfs},
+	// No repair: btrfs check --repair is documented as dangerous, and can
+	// make a damaged file system worse.
+	"btrfs": {"btrfs", []string{"check", "--readonly"}, nil, btrfs},
 }
 
 // Supported reports whether a checker is known for fstype.
