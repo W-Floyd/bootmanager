@@ -3,8 +3,10 @@ package boot
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -81,8 +83,59 @@ func TestLegacyAndroidImageRejects(t *testing.T) {
 // records its arguments and exits.
 func init() {
 	if out := os.Getenv("KEXEC_HELPER_OUT"); out != "" && os.Getenv("KEXEC_HELPER_RUN") == "1" {
+		// A probe load (-d) answers with KEXEC_HELPER_PROBE, when it is set,
+		// and records nothing.
+		if probe, ok := os.LookupEnv("KEXEC_HELPER_PROBE"); ok && slices.Contains(os.Args[1:], "-d") {
+			fmt.Print(probe)
+			os.Exit(0)
+		}
 		os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
 		os.Exit(0)
+	}
+}
+
+// The load carries the --image-size worked out from a probe load of the kernel:
+// from what the probe prints, a guess when it prints a zImage without sizes,
+// and none when it is not a zImage.
+func TestKexecToolsImageSize(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "args")
+	dev := filepath.Join(dir, "boot")
+	if err := os.WriteFile(dev, legacyImage("KERNEL", "RAMDISK", "console=null"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, probe, want string }{
+		{"sizes printed", "zImage requires 0x00d2a200 bytes\n text+data 0x021c2a50 bss 0x00066634 total 0x02229084\n", "--image-size=0x3300000"},
+		{"a zImage with no sizes", "zImage header: 0x1\n", "--image-size=0x3800000"},
+		{"not a zImage", "kernel: 0x1\n", ""},
+	} {
+		img, err := legacyAndroidImage(dev, "boot", bytes.NewReader([]byte("DTB")), "", KexecTools{Argv: []string{os.Args[0]}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("KEXEC_HELPER_OUT", out)
+		t.Setenv("KEXEC_HELPER_RUN", "1")
+		t.Setenv("KEXEC_HELPER_PROBE", tc.probe)
+		if err := img.Load(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		b, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(string(b), "\n")
+		var got string
+		for _, a := range args {
+			if strings.HasPrefix(a, "--image-size=") {
+				got = a
+			}
+		}
+		if got != tc.want {
+			t.Errorf("%s: image size argument %q, want %q (args %q)", tc.name, got, tc.want, args)
+		}
+		if args[0] != "-l" {
+			t.Errorf("%s: the last command is %q, want the load", tc.name, args)
+		}
 	}
 }
 
