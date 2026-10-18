@@ -16,6 +16,10 @@ import (
 var (
 	micomDev = flag.String("micom", "", "the micom's serial device (/dev/ttyAMA2 on the Kia EV6 head unit): answer its CPU-alive requests, which it takes the SoC for hung and resets without, and read the vehicle's state; empty for none")
 	micomLog = flag.String("micom-log", "", "append every frame the micom sends, decoded where known, and the link's counters to this file")
+	micomTap = flag.String("micom-tap", "", "serve every frame the micom sends, with the time, on this unix socket, so `micomd -attach SOCKET` can watch the live link without taking the port")
+
+	micomKeyFunc = flag.Uint("micom-keyfunc", 0, "Func (header byte 3 << 8 | command, as the -micom-log capture shows it) of the micom's hard-key frames; with -micom-keys, the keys then move around the UI. 0 for none")
+	micomKeys    = flag.String("micom-keys", "", "which hard keys make which move, type.code=up|down|enter|back,... (type 0-7, code 0-15; a key the log reports as not listed is found by pressing it), for -micom-keyfunc")
 )
 
 // micomRetry: the device may not exist yet at start, and a failed link is
@@ -30,8 +34,39 @@ func startMicom() *vehicleLink {
 		return nil
 	}
 	v := &vehicleLink{}
-	go v.run(*micomDev, *micomLog)
+	var tap *micom.Tap
+	if *micomTap != "" {
+		var err error
+		if tap, err = micom.ListenTap(*micomTap); err != nil {
+			log.Printf("micom: no tap: %v", err)
+		}
+	}
+	go v.run(*micomDev, *micomLog, startNavKeys(), tap)
 	return v
+}
+
+// startNavKeys opens the virtual keyboard for the hard keys, nil when they are
+// not asked for, or when there is no uinput: the link goes on without them, as
+// answering the micom is what keeps the SoC alive. Flags that cannot be read
+// stop the start, as other flags do.
+func startNavKeys() *navKeys {
+	if *micomKeyFunc == 0 && *micomKeys == "" {
+		return nil
+	}
+	km, err := parseNavKeys(*micomKeys)
+	if err != nil {
+		log.Fatalf("-micom-keys: %v", err)
+	}
+	if *micomKeyFunc == 0 || *micomKeyFunc > 0xffff || len(km) == 0 {
+		log.Fatal("-micom-keyfunc (0x1 to 0xffff) and -micom-keys go together")
+	}
+	ui, err := micom.OpenUinput("bootmanager micom keys", km.codes())
+	if err != nil {
+		log.Printf("micom: hard keys are off: %v", err)
+		return nil
+	}
+	log.Printf("micom: hard keys of Func %#04x drive the UI: %v", *micomKeyFunc, km)
+	return &navKeys{fn: uint16(*micomKeyFunc), keys: km, out: ui, logf: log.Printf}
 }
 
 // vehicleLink is the current daemon, swapped when the link is reopened.
@@ -46,7 +81,7 @@ func (v *vehicleLink) daemon() *micom.Daemon {
 	return v.d
 }
 
-func (v *vehicleLink) run(dev, logPath string) {
+func (v *vehicleLink) run(dev, logPath string, keys *navKeys, tap *micom.Tap) {
 	var lf *os.File
 	var lmu sync.Mutex
 	if logPath != "" {
@@ -72,11 +107,17 @@ func (v *vehicleLink) run(dev, logPath string) {
 			Port: port,
 			Logf: log.Printf,
 			OnFrame: func(f micom.Frame) {
-				if s := micom.Describe(f); s != "" {
-					line("rx %v  # %s", f, s)
-					return
+				if keys != nil {
+					keys.frame(f)
 				}
-				line("rx %v", f)
+				text := fmt.Sprintf("rx %v", f)
+				if s := micom.Describe(f); s != "" {
+					text += "  # " + s
+				}
+				line("%s", text)
+				if tap != nil {
+					tap.Send(time.Now().Format("15:04:05.000 ") + text + "\n")
+				}
 			},
 		})
 		v.mu.Lock()

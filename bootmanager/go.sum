@@ -1,7 +1,9 @@
 github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2 h1:+vx7roKuyA63nhn5WAunQHLTznkw5W8b1Xc0dNjp83s=
 github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2/go.mod h1:HBCaDeC1lPdgDeDbhX8XFpy1jqjK0IBG8W5K+xYqA0w=
-github.com/W-Floyd/go-micomd v0.0.0-20261018142429-b74864ab6c22 h1:OH9TW1i0dRZQpL2Pb8NuZ/isD87ywwrtvdYV6gTnCL4=
-github.com/W-Floyd/go-micomd v0.0.0-20261018142429-b74864ab6c22/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
+github.com/W-Floyd/go-micomd v0.0.0-20261018143633-f6892283e832 h1:zjpMwrgAwYIxU373GIWRZY3YK7/LTPO/jAyH5Wv3fAg=
+github.com/W-Floyd/go-micomd v0.0.0-20261018143633-f6892283e832/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
+github.com/W-Floyd/go-micomd v0.0.0-20261018215143-2650779ee53b h1:XaiBoaaVrwssMAwUTqFdPcotqzBScXQn2QS5MPvF6H8=
+github.com/W-Floyd/go-micomd v0.0.0-20261018215143-2650779ee53b/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
 github.com/W-Floyd/go-msm-firmware-loader v0.0.0-20261017223257-4833f0db9cc0 h1:pMSjltNGw+Ogo3haxm2SybMjwKzaH3AfYVVsiFNuJ+A=
 github.com/W-Floyd/go-msm-firmware-loader v0.0.0-20261017223257-4833f0db9cc0/go.mod h1:96Kl1QLnNzG4utdtkQvmzKU3b+T3WYfQ58s+eVKtVJE=
 github.com/W-Floyd/go-qbootctl v0.0.0-20261005215935-28f11d7f207e h1:6U91j46yok3n5xa+gIkJgEG3a9qV5s/5tQ9jrCNU9to=
