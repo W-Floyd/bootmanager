@@ -30,7 +30,7 @@ import (
 	"github.com/u-root/u-root/pkg/ulog"
 	"golang.org/x/sys/unix"
 
-	"bootmanager.local/bootmanager/internal/distro"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/distro"
 )
 
 type Config struct {

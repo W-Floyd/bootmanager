@@ -15,6 +15,15 @@ func extHeader(label string) []byte {
 	return b
 }
 
+func mbrDisk() []byte {
+	b := make([]byte, 1<<20)
+	b[510], b[511] = 0x55, 0xaa
+	b[446+4] = 0x83
+	b[446+8] = 8   // start sector
+	b[446+12] = 16 // sectors
+	return b
+}
+
 func btrfsHeader() []byte {
 	b := make([]byte, 0x10048)
 	copy(b[0x10040:], "_BHRfS_M")
@@ -34,10 +43,11 @@ func TestClassifyImage(t *testing.T) {
 		{"my-persist.img", extHeader(""), persistImage},
 		{"data.img", extHeader("data"), otherImage},
 		{"os.img", btrfsHeader(), btrfsImage},
+		{"disk.img", mbrDisk(), diskImage},
 		{"short.img", []byte("hsqs"), otherImage},
 		{"zero.img", make([]byte, 2048), otherImage},
 	} {
-		if got := classifyImage(bytes.NewReader(c.data), c.name); got != c.want {
+		if got := classifyImage(bytes.NewReader(c.data), c.name, int64(len(c.data))); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}

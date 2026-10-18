@@ -7,7 +7,7 @@ import (
 
 	"github.com/u-root/u-root/pkg/mount/block"
 
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 // Locked is an encrypted volume that is not open: the boot entries it may hold

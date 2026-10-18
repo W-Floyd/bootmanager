@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/battery"
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/battery"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 )
 
 var powerSupplyDir = flag.String("power-supply", battery.Root, "where the kernel lists power supplies, for the battery indicator and Diagnostics")

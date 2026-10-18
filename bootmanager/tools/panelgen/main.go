@@ -26,7 +26,7 @@ import (
 
 	"github.com/ulikunitz/xz"
 
-	"bootmanager.local/bootmanager/internal/panel"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/panel"
 )
 
 const (

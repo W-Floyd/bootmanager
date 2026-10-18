@@ -39,9 +39,9 @@ import (
 
 	uboot "github.com/u-root/u-root/pkg/boot"
 
-	"bootmanager.local/bootmanager/internal/fastboot"
-	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/svc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/fastboot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/svc"
 )
 
 const (

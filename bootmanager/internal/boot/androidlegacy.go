@@ -17,7 +17,7 @@ import (
 	"github.com/u-root/u-root/pkg/mount/block"
 	"github.com/u-root/uio/uio"
 
-	"bootmanager.local/bootmanager/internal/androidboot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/androidboot"
 )
 
 // Legacy Android entries: the boot image of header version 0, 1 or 2, which

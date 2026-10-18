@@ -9,7 +9,7 @@ package distro
 import (
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/initrd"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/initrd"
 )
 
 // Distro is a family of systems the stage can boot.

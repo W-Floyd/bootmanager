@@ -6,9 +6,9 @@ import (
 	"log"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/luks"
-	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/luks"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 var cryptsetupBin = flag.String("cryptsetup", "/usr/libexec/cryptsetup/cryptsetup", "cryptsetup, for unlocking LUKS partitions to browse and check them; unlocking is left out of the UI when it is missing (or this is empty)")

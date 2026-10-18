@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 )
 
 var rekexecCmd = flag.String("rekexec", "", "a command (program and arguments, space separated) that loads another kernel from outside the stage and jumps to it, so a new build can be tried without going back through the vendor system; it only returns on failure, printing why. The UI offers 'Re-kexec' when this is set")

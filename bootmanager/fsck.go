@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/fsck"
-	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/fsck"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 var fsckDir = flag.String("fsck-dir", "/usr/libexec/fsck", "where the file system checkers are (e2fsck, fsck.f2fs, fsck.fat, fsck.exfat, xfs_repair); Check and Repair are left out of the UI when there are none (or this is empty)")

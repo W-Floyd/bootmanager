@@ -5,7 +5,7 @@ import (
 	"flag"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
 )
 
 // appFlags is -app, once per tile.

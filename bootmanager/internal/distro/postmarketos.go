@@ -3,7 +3,7 @@ package distro
 import (
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/initrd"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/initrd"
 )
 
 // keyFile is where the pmOS initramfs finds the passphrase.

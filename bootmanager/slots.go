@@ -9,8 +9,8 @@ import (
 
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 
-	"bootmanager.local/bootmanager/internal/boot"
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 )
 
 var markSuccessful = flag.Bool("mark-successful", false, "mark the booted A/B slot successful once the stage is ready, as Android does once it is up, so the bootloader stops counting its tries down")

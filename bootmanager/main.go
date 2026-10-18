@@ -32,12 +32,12 @@ import (
 
 	qbootctl "github.com/W-Floyd/go-qbootctl"
 
-	"bootmanager.local/bootmanager/internal/boot"
-	"bootmanager.local/bootmanager/internal/luks"
-	"bootmanager.local/bootmanager/internal/rpc"
-	"bootmanager.local/bootmanager/internal/storage"
-	"bootmanager.local/bootmanager/internal/svc"
-	"bootmanager.local/bootmanager/internal/uiproc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/luks"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/svc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/uiproc"
 )
 
 var (

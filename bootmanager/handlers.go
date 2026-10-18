@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/fsck"
-	"bootmanager.local/bootmanager/internal/luks"
-	"bootmanager.local/bootmanager/internal/panel"
-	"bootmanager.local/bootmanager/internal/power"
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/fsck"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/luks"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/panel"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/power"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 )
 
 // protocolVersion changes whenever a command or event changes shape; the

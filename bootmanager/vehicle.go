@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/micom"
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/micom"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 )
 
 var (

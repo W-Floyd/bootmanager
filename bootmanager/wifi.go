@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/rpc"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/rpc"
 
-	"bootmanager.local/bootmanager/internal/wifi"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/wifi"
 )
 
 var (

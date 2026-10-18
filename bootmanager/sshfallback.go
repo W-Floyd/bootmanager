@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"bootmanager.local/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
 )
 
 var sshFallback = flag.String("ssh-fallback", "", "give sshd what the boot partition did not: the authorized keys kept in the tail of this GPT partition (boot_a), and a host key made now if there is none, then exit; a client, not the backend")

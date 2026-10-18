@@ -21,7 +21,7 @@ import (
 	"syscall"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/micom"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/micom"
 )
 
 func main() {

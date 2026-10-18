@@ -6,7 +6,7 @@ import (
 
 	"github.com/u-root/u-root/pkg/mount/block"
 
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 // userdataReplaced says whether the partition named userdata no longer holds

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/distro"
-	"bootmanager.local/bootmanager/internal/initrd"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/distro"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/initrd"
 )
 
 var (

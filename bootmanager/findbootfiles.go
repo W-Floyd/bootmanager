@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
 )
 
 var findBootFiles = flag.Bool("find-boot-files", false, "print where the stage keeps its files and exit: DEV FSTYPE DIR, the first block device (kernel name) whose file system has a linuxboot directory at its root or under boot/, a microSD card's partitions first; a client, not the backend")

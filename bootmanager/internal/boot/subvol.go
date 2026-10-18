@@ -9,13 +9,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dennwc/btrfs"
 	"github.com/u-root/u-root/pkg/boot"
 	"github.com/u-root/u-root/pkg/boot/bls"
 	"github.com/u-root/u-root/pkg/boot/syslinux"
 	"github.com/u-root/u-root/pkg/mount"
 	"github.com/u-root/u-root/pkg/ulog"
-
-	"bootmanager.local/bootmanager/internal/btrfs"
 )
 
 // Subvolume entries: the scan mounts a btrfs file system's default
@@ -111,15 +110,22 @@ func (m *Manager) btrfsImageEntries(mp *mount.MountPoint, dev, rel string, edit 
 func (m *Manager) otherSubvols(mp *mount.MountPoint, where func(subvol string) string, edit func(*boot.LinuxImage)) []boot.OSImage {
 	var out []boot.OSImage
 	name := filepath.Base(mp.Device)
-	subs, err := btrfs.Subvolumes(mp.Path)
+	fs, err := btrfs.Open(mp.Path, true)
+	if err != nil {
+		log.Printf("scan: %s: %v", name, err)
+		return nil
+	}
+	defer fs.Close()
+	subs, err := fs.ListSubvolumes(nil)
 	if err != nil {
 		log.Printf("scan: subvolumes of %s: %v", name, err)
 		return nil
 	}
-	cur, _ := btrfs.MountedID(mp.Path)
+	slices.SortFunc(subs, func(a, b btrfs.SubvolInfo) int { return strings.Compare(a.Path, b.Path) })
+	cur, _ := fs.SubVolumeID()
 	tried := 0
 	for _, sv := range subs {
-		if sv.ID == cur || snapshotPath(sv.Path) {
+		if sv.RootID == cur || snapshotPath(sv.Path) {
 			continue
 		}
 		if tried++; tried > maxSubvols {
@@ -130,7 +136,7 @@ func (m *Manager) otherSubvols(mp *mount.MountPoint, where func(subvol string) s
 		if err != nil {
 			return out
 		}
-		sm, err := mount.Mount(mp.Device, dir, "btrfs", "subvolid="+strconv.FormatUint(sv.ID, 10), mount.ReadOnly)
+		sm, err := mount.Mount(mp.Device, dir, "btrfs", "subvolid="+strconv.FormatUint(sv.RootID, 10), mount.ReadOnly)
 		if err != nil {
 			log.Printf("scan: %s subvolume %s: %v", name, sv.Path, err)
 			os.Remove(dir)

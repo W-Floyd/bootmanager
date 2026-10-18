@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/boot"
-	"bootmanager.local/bootmanager/internal/fastboot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/boot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/fastboot"
 )
 
 var fastbootGadget = flag.String("fastboot-gadget", "", "configfs USB gadget the Fastboot service adds its function to; empty: the one bound to a UDC")

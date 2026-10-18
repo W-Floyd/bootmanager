@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"bootmanager.local/bootmanager/internal/reprobe"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/reprobe"
 )
 
 // reprobeMain is `bootmanager reprobe [--dry-run]`: ask the kernel to probe

@@ -17,9 +17,11 @@ import (
 	"github.com/u-root/u-root/pkg/boot"
 	"github.com/u-root/u-root/pkg/mount"
 	"github.com/u-root/u-root/pkg/mount/loop"
+	"golang.org/x/sys/unix"
 
-	"bootmanager.local/bootmanager/internal/initrd"
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/disk"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/initrd"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 // A btrfs .img (zstd compressed or not) is instead searched like a partition
@@ -55,12 +57,14 @@ const (
 	squashImage
 	persistImage
 	btrfsImage // a whole btrfs file system, which carries its own entries
+	diskImage  // a whole disk: a partition table and partitions
 )
 
-// classifyImage says what the file at r, called name, is: a squashfs, an ext
+// classifyImage says what the file at r, called name, of size bytes, is: a
+// squashfs, a btrfs, a disk with a partition table, an ext
 // file system that is a persistence image (labelled or named for it), or
 // neither.
-func classifyImage(r io.ReaderAt, name string) imageKind {
+func classifyImage(r io.ReaderAt, name string, size int64) imageKind {
 	var b [1024 + 136]byte
 	if n, _ := r.ReadAt(b[:], 0); n < len(b) {
 		return otherImage
@@ -74,6 +78,9 @@ func classifyImage(r io.ReaderAt, name string) imageKind {
 	}
 	// ext2/3/4: magic 0xEF53 at 56 in the superblock, the label at 120.
 	if b[1024+56] != 0x53 || b[1024+57] != 0xef {
+		if ps, err := disk.ParseTable(r, size); err == nil && len(ps) > 0 {
+			return diskImage
+		}
 		return otherImage
 	}
 	label := strings.ToLower(strings.TrimRight(string(b[1024+120:1024+136]), "\x00"))
@@ -232,7 +239,7 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 		if !storage.Removable(dev) {
 			continue
 		}
-		var squash, persist, btrfsImgs []string
+		var squash, persist, btrfsImgs, diskImgs []string
 		for _, rel := range findImages(mp.Path) {
 			if strings.ContainsAny(rel, " \t\n") {
 				log.Printf("live: %s on %s: a space in the path, skipped", rel, dev)
@@ -242,7 +249,11 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 			if err != nil {
 				continue
 			}
-			kind := classifyImage(f, rel)
+			var size int64
+			if st, err := f.Stat(); err == nil {
+				size = st.Size()
+			}
+			kind := classifyImage(f, rel, size)
 			f.Close()
 			switch kind {
 			case squashImage:
@@ -251,7 +262,12 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 				persist = append(persist, rel)
 			case btrfsImage:
 				btrfsImgs = append(btrfsImgs, rel)
+			case diskImage:
+				diskImgs = append(diskImgs, rel)
 			}
+		}
+		for _, rel := range diskImgs {
+			out = append(out, m.diskImageEntries(mp, dev, rel, edit)...)
 		}
 		for _, rel := range btrfsImgs {
 			out = append(out, m.btrfsImageEntries(mp, dev, rel, edit)...)
@@ -271,13 +287,39 @@ func (m *Manager) liveEntries(mounts []*mount.MountPoint, edit func(*boot.LinuxI
 	return out
 }
 
+// attachLoop binds a loop device to size bytes of the file src from offset
+// (size 0: to its end).
+func attachLoop(src string, offset, size uint64) (*loop.Loop, error) {
+	dev, err := loop.FindDevice()
+	if err != nil {
+		return nil, fmt.Errorf("loop: %w", err)
+	}
+	if err := loop.SetFile(dev, src); err != nil {
+		return nil, fmt.Errorf("loop: %w", err)
+	}
+	l := &loop.Loop{Dev: dev, Source: src}
+	if offset != 0 || size != 0 {
+		d, err := os.Open(dev)
+		if err == nil {
+			err = unix.IoctlLoopSetStatus64(int(d.Fd()), &unix.LoopInfo64{Offset: offset, Sizelimit: size})
+			d.Close()
+		}
+		if err != nil {
+			l.Free()
+			return nil, fmt.Errorf("loop range: %w", err)
+		}
+	}
+	return l, nil
+}
+
 // mountLoop mounts the file system in the file src read-only, through a loop
 // device; drop undoes it, and until then the caller owns both.
 func mountLoop(src, fstype string) (mp *mount.MountPoint, l *loop.Loop, drop func(), err error) {
-	l, err = loop.New(src, fstype, "")
+	l, err = attachLoop(src, 0, 0)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("loop: %w", err)
+		return nil, nil, nil, err
 	}
+	l.FSType = fstype
 	dir, err := os.MkdirTemp("", "bman-live-")
 	if err != nil {
 		l.Free()

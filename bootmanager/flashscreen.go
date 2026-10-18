@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"bootmanager.local/bootmanager/internal/fastboot"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/fastboot"
 )
 
 // flashEvent is what the UI's flash screen shows: a fastboot.Progress, an

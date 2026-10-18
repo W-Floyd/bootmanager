@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"bootmanager.local/bootmanager/internal/storage"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/storage"
 )
 
 // ErrWrongPassphrase: cryptsetup's exit code 2, "no key available".

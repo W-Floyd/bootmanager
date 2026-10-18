@@ -8,7 +8,7 @@ import (
 
 	"github.com/u-root/u-root/pkg/boot"
 
-	"bootmanager.local/bootmanager/internal/distro"
+	"github.com/W-Floyd/bootmanager/bootmanager/internal/distro"
 )
 
 // OptionState is one command-line option and where the user has it: "" (the
