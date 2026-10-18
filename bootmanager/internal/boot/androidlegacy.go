@@ -10,8 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/u-root/u-root/pkg/boot"
@@ -83,9 +81,6 @@ func (k *kexecToolsImage) Load(...boot.LoadOption) error {
 		return err
 	}
 	args := append(append([]string{}, k.kx.Argv[1:]...), "-l", kernel, "--append="+k.Cmdline)
-	if size := k.imageSize(kernel); size != "" {
-		args = append(args, "--image-size="+size)
-	}
 	if initrd != "" {
 		args = append(args, "--initrd="+initrd)
 	}
@@ -102,65 +97,6 @@ func (k *kexecToolsImage) Load(...boot.LoadOption) error {
 		}
 	}
 	return nil
-}
-
-// A zImage copies its decompressor to just past the decompressed kernel
-// before it starts, over anything kexec-tools put there, and kexec-tools
-// places the initramfs right after its estimate of the kernel. That estimate
-// assumes the kernel runs at TEXT_OFFSET 0x8000: a kernel linked
-// kernelTextGap higher (multi_v7's ARCH_MESON, 0x208000) ends that much later.
-// So the size handed to --image-size is that gap, the decompressed text and
-// data, what the zImage needs, and kernelSlack over, from kexec-tools' own
-// reading of the kernel. fallbackImageSize if its output cannot be read.
-const (
-	kernelTextGap     = 0x200000
-	kernelSlack       = 0x200000
-	fallbackImageSize = 0x3800000
-)
-
-var (
-	probeTextData = regexp.MustCompile(`text\+data (0x[0-9a-f]+)`)
-	probeZImage   = regexp.MustCompile(`zImage requires (0x[0-9a-f]+)`)
-)
-
-// imageSize is the --image-size for the kernel at path, "" when it is not a
-// zImage (the option is for those). It has kexec-tools load the kernel alone
-// with debug output and unload it again.
-func (k *kexecToolsImage) imageSize(kernel string) string {
-	probe := append(append([]string{}, k.kx.Argv[1:]...), "-d", "-l", kernel)
-	out, _ := exec.Command(k.kx.Argv[0], probe...).CombinedOutput()
-	unload := append(append([]string{}, k.kx.Argv[1:]...), "-u")
-	_ = exec.Command(k.kx.Argv[0], unload...).Run()
-	size := parseImageSize(string(out))
-	if size == fmt.Sprintf("%#x", fallbackImageSize) {
-		// The kernel will be placed on this guess: say why, with the end of
-		// what the probe printed.
-		tail := strings.TrimSpace(string(out))
-		if len(tail) > 400 {
-			tail = "…" + tail[len(tail)-400:]
-		}
-		log.Printf("kexec-tools: the probe load of %s did not say how big the kernel is: --image-size=%s is a guess: %s", kernel, size, tail)
-	}
-	return size
-}
-
-// parseImageSize is imageSize's reading of kexec-tools' debug output.
-func parseImageSize(out string) string {
-	if !strings.Contains(out, "zImage") {
-		return ""
-	}
-	td, zr := probeTextData.FindStringSubmatch(out), probeZImage.FindStringSubmatch(out)
-	if td == nil || zr == nil {
-		return fmt.Sprintf("%#x", fallbackImageSize)
-	}
-	text, err1 := strconv.ParseUint(td[1], 0, 64)
-	need, err2 := strconv.ParseUint(zr[1], 0, 64)
-	if err1 != nil || err2 != nil {
-		return fmt.Sprintf("%#x", fallbackImageSize)
-	}
-	size := kernelTextGap + text + need + kernelSlack
-	size = (size + 0xfffff) &^ 0xfffff
-	return fmt.Sprintf("%#x", size)
 }
 
 // asLinux is the LinuxImage of an entry that has one: the entry itself, or
