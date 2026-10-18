@@ -26,6 +26,7 @@ import (
 	"github.com/u-root/u-root/pkg/cmdline"
 	"github.com/u-root/u-root/pkg/mount"
 	"github.com/u-root/u-root/pkg/mount/block"
+	"github.com/u-root/u-root/pkg/mount/loop"
 	"github.com/u-root/u-root/pkg/ulog"
 	"golang.org/x/sys/unix"
 
@@ -94,6 +95,9 @@ type Config struct {
 	// Apps are tiles that run a program on the stage instead of booting a
 	// kernel (app.go); they follow the boot entries and are never the default.
 	Apps []AppSpec
+	// LiveImages looks for squashfs .img files on removable media, each an
+	// entry (liveimg.go).
+	LiveImages bool
 	// Suspend and Resume take the UI down while an app runs, and bring it
 	// back after.
 	Suspend, Resume func()
@@ -103,6 +107,7 @@ type Manager struct {
 	cfg    Config
 	scanMu sync.Mutex // held over a scan and over the pool's mounts' release
 	pool   mount.Pool
+	loops  []*loop.Loop // under live entries' squashfs mounts, freed with them
 
 	mu       sync.Mutex
 	images   []boot.OSImage // in the user's order
@@ -216,9 +221,14 @@ func (m *Manager) scan() ([]boot.OSImage, error) {
 	m.mu.Unlock()
 	imgs = append(imgs, bootDirEntries(m.pool.MountPoints)...)
 	f := cmdline.NewUpdateFilter("", []string{"console"}, []string{"console"})
-	boot.ApplyLinuxModifiers(imgs, func(li *boot.LinuxImage) {
+	editConsole := func(li *boot.LinuxImage) {
 		li.Cmdline = f.Update(cmdline.NewCmdLine(), li.Cmdline)
-	})
+	}
+	boot.ApplyLinuxModifiers(imgs, editConsole)
+	if m.cfg.LiveImages {
+		// The file systems the scan mounted, not the live entries' own.
+		imgs = append(imgs, m.liveEntries(slices.Clone(m.pool.MountPoints), editConsole)...)
+	}
 	// After the console edit: Android's command line is the bootloader's,
 	// console= included.
 	imgs = append(imgs, androidEntries(m.pool.MountPoints, devs, m.cfg.AndroidPartitions, m.cfg.BootloaderDir)...)
@@ -771,5 +781,9 @@ func (m *Manager) Unmount() {
 	if err := m.pool.UnmountAll(mount.MNT_DETACH); err != nil {
 		log.Printf("unmount: %v", err)
 	}
+	for _, l := range m.loops {
+		l.Free()
+	}
+	m.loops = nil
 	unix.Sync()
 }

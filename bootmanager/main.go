@@ -63,6 +63,7 @@ var (
 	androidArgs  = flag.String("android-cmdline", "", "file of words added to an Android image's command line, which its bootloader would have added (and what its device tree's /chosen/bootargs said, which kexec-tools replaces)")
 	kexecTools   = flag.String("kexec", "", "kexec-tools command, as one string split at spaces, to load -android-boot entries with, for a platform whose kernel u-root cannot kexec itself (32-bit ARM); empty loads them as every other entry")
 	kexecPrep    = flag.String("kexec-prep", "", "command, as one string split at spaces, run after -kexec has loaded a kernel and before the jump, to quiet what could write to memory")
+	liveImages   = flag.Bool("live-images", true, "look for squashfs .img files on removable media (USB, microSD), each a live entry, with an ext4 persistence .img beside it as the overlay's writable layer")
 	waitReady    = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
 	settingsFile = flag.String("settings", "", "where the entries' order and default are kept: a file, or DEV:PATH, a file on block device DEV (kernel name) from its root, mounted only to read or write it; empty: for this run only")
 	sendCmd      = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
@@ -150,6 +151,7 @@ func main() {
 		ScanRetries:       *scanRetries,
 		AndroidBoot:       splitList(*androidBoot),
 		AndroidDTB:        *androidDTB,
+		LiveImages:        *liveImages,
 		AndroidCmdline:    *androidArgs,
 		Kexec:             boot.KexecTools{Argv: strings.Fields(*kexecTools), Prep: strings.Fields(*kexecPrep)},
 		HoldFile:          *holdFile,

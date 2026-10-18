@@ -21,6 +21,9 @@ var mountedDev = regexp.MustCompile(`/u-root-mounts\d+/([^/\s]+)/`)
 // microSD card, a UFS partition by its GPT name, an unlocked volume as what it
 // is made of. "" when it is not known (an Android image, read raw).
 func sourceOf(img boot.OSImage) string {
+	if l, ok := img.(*liveImage); ok {
+		return liveSource(l)
+	}
 	dev := entryDev(img)
 	if dev == "" {
 		return ""

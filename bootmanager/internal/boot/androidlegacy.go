@@ -107,6 +107,8 @@ func asLinux(img boot.OSImage) (*boot.LinuxImage, bool) {
 		return v, true
 	case *kexecToolsImage:
 		return v.LinuxImage, true
+	case *liveImage:
+		return v.LinuxImage, true
 	}
 	return nil, false
 }
