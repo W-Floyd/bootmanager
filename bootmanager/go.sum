@@ -6,6 +6,8 @@ github.com/W-Floyd/go-micomd v0.0.0-20261018215143-2650779ee53b h1:XaiBoaaVrwssM
 github.com/W-Floyd/go-micomd v0.0.0-20261018215143-2650779ee53b/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
 github.com/W-Floyd/go-micomd v0.0.0-20261019001004-f7b045b5c64a h1:1uRgyWg487ghOD5zZCE6e2lyvV6qRxq3SOII74CvQqc=
 github.com/W-Floyd/go-micomd v0.0.0-20261019001004-f7b045b5c64a/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
+github.com/W-Floyd/go-micomd v0.0.0-20261019001511-eae47aed78cb h1:oS0ozjPNS9tFewi4pA1/MURgzWZ+RVIF10tvXh4kXRc=
+github.com/W-Floyd/go-micomd v0.0.0-20261019001511-eae47aed78cb/go.mod h1:nZ/lvoq1K+iW4SnBxTrNdDKSyOgO86YcCLJSyW9//4A=
 github.com/W-Floyd/go-msm-firmware-loader v0.0.0-20261017223257-4833f0db9cc0 h1:pMSjltNGw+Ogo3haxm2SybMjwKzaH3AfYVVsiFNuJ+A=
 github.com/W-Floyd/go-msm-firmware-loader v0.0.0-20261017223257-4833f0db9cc0/go.mod h1:96Kl1QLnNzG4utdtkQvmzKU3b+T3WYfQ58s+eVKtVJE=
 github.com/W-Floyd/go-qbootctl v0.0.0-20261005215935-28f11d7f207e h1:6U91j46yok3n5xa+gIkJgEG3a9qV5s/5tQ9jrCNU9to=
