@@ -39,6 +39,13 @@ func (a *app) register() {
 		a.markReady()
 		return nil, nil
 	})
+	// toast: a one-line message for the UI, for a script (uinit, or
+	// anything else with -send) to report something without a screen of
+	// its own. Reuses the "error" event's existing toast rendering.
+	rpc.Handle(s, "toast", func(x struct{ Message string }) (any, error) {
+		s.Broadcast("error", map[string]string{"text": x.Message})
+		return nil, nil
+	})
 	rpc.Handle(s, "boot.list", func(none) (any, error) { return a.boot.List(), nil })
 	// Cmdline, when set, is the whole command line for this boot only (the
 	// editor's, like GRUB's e): nothing is saved.

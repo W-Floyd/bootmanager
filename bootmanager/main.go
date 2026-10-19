@@ -67,6 +67,7 @@ var (
 	waitReady    = flag.Bool("wait-ready", false, "hold the boot scan, disks, services and dev-once until stage.ready (or readyTimeout)")
 	settingsFile = flag.String("settings", "", "where the entries' order and default are kept: a file, or DEV:PATH, a file on block device DEV (kernel name) from its root, mounted only to read or write it; empty: for this run only")
 	sendCmd      = flag.String("send", "", "send this command to -socket, print the reply and exit: a client, not the backend")
+	sendArgs     = flag.String("send-args", "", "raw JSON sent as -send's request \"args\" (e.g. -send toast -send-args '{\"message\":\"...\"}')")
 )
 
 // readyTimeout: a stage that never sends stage.ready still boots.
@@ -131,7 +132,7 @@ func main() {
 		os.Exit(sshFallbackCmd(*sshFallback))
 	}
 	if *sendCmd != "" {
-		os.Exit(send(*socketPath, *sendCmd))
+		os.Exit(send(*socketPath, *sendCmd, *sendArgs))
 	}
 	logOut := io.Writer(os.Stderr)
 	if f, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {

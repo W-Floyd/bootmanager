@@ -9,10 +9,11 @@ import (
 )
 
 // send is -send: one command to a running backend, for scripts (the
-// stage's uinit: stage.ready). The socket may not be up yet when the
-// script gets here, so it retries for a while. The exit status is 0 only
-// for a reply without an error.
-func send(socket, cmd string) int {
+// stage's uinit: stage.ready, or -toast). The socket may not be up yet
+// when the script gets here, so it retries for a while. The exit status is
+// 0 only for a reply without an error. args, when non-empty, is raw JSON
+// sent as the request's "args" (-send-args).
+func send(socket, cmd, args string) int {
 	var conn net.Conn
 	var err error
 	for deadline := time.Now().Add(5 * time.Second); ; {
@@ -27,7 +28,11 @@ func send(socket, cmd string) int {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := json.NewEncoder(conn).Encode(map[string]any{"id": 1, "cmd": cmd}); err != nil {
+	req := map[string]any{"id": 1, "cmd": cmd}
+	if args != "" {
+		req["args"] = json.RawMessage(args)
+	}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		fmt.Fprintf(os.Stderr, "bootmanager -send: %v\n", err)
 		return 1
 	}
