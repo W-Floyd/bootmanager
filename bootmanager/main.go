@@ -172,6 +172,7 @@ func main() {
 		Path:   func() string { return *uiPath },
 		Args:   []string{"--socket", *socketPath},
 		Output: logOut,
+		Needs:  "/dev/fb0", // the UI's default --fb
 	}
 	a.web = newWebServer(a)
 	a.services = []*svc.Service{

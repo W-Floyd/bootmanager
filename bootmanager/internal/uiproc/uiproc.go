@@ -19,6 +19,11 @@ type Supervisor struct {
 	// Output gets the UI's stdout and stderr: what it found (fb format,
 	// input devices) belongs on the Log screen.
 	Output io.Writer
+	// Needs is a path the UI cannot start without (its framebuffer), waited
+	// for before the first start: a framebuffer driver can probe seconds
+	// after the backend starts, and five quick failures meanwhile would give
+	// the UI up.
+	Needs string
 
 	mu       sync.Mutex
 	proc     *os.Process
@@ -70,6 +75,9 @@ func (s *Supervisor) Resume() {
 // carry on without it. adopt is a UI already running as this process's
 // child (left by the image it exec'd from), or 0.
 func (s *Supervisor) Run(adopt int) {
+	if adopt == 0 && s.Needs != "" {
+		waitFor(s.Needs)
+	}
 	for quick := 0; quick < 5; {
 		p, err := s.start(adopt)
 		adopt = 0
@@ -111,6 +119,21 @@ func (s *Supervisor) Run(adopt int) {
 		time.Sleep(time.Second)
 	}
 	log.Printf("ui: giving up after 5 quick exits")
+}
+
+func waitFor(path string) {
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	log.Printf("ui: waiting for %s", path)
+	start := time.Now()
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := os.Stat(path); err == nil {
+			log.Printf("ui: %s after %v", path, time.Since(start).Round(time.Millisecond))
+			return
+		}
+	}
 }
 
 func (s *Supervisor) start(adopt int) (*os.Process, error) {
